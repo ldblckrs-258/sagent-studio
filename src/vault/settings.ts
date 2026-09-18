@@ -39,6 +39,8 @@ export interface Settings {
 export const MAX_PROVIDERS = 20
 export const MAX_MODELS_PER_PROVIDER = 50
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 export function defaultSettings(): Settings {
   return {
     version: SETTINGS_VERSION,
@@ -66,7 +68,9 @@ export type DeepPartial<T> = T extends object
   : T
 
 function isPlainObject(value: unknown): value is PlainObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
 }
 
 export function deepMerge<T>(base: T, patch: unknown): T {
@@ -78,6 +82,7 @@ export function deepMerge<T>(base: T, patch: unknown): T {
   }
   const out: PlainObject = { ...base }
   for (const [key, value] of Object.entries(patch)) {
+    if (FORBIDDEN_KEYS.has(key)) continue
     if (value === undefined) continue
     const current = out[key]
     out[key] = isPlainObject(value) && isPlainObject(current) ? deepMerge(current, value) : value
@@ -93,6 +98,9 @@ export function migrate(version: number, data: unknown): Settings {
     throw new VaultMigrationError(
       `Settings version ${version} is newer than this app supports (${SETTINGS_VERSION}).`,
     )
+  }
+  if (!isPlainObject(data)) {
+    throw new VaultMigrationError('Decrypted settings were not an object.')
   }
   return deepMerge(defaultSettings(), data)
 }

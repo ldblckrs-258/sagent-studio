@@ -96,11 +96,15 @@ describe('encrypt / decrypt', () => {
     )
   })
 
-  it('rejects a malformed blob as CorruptVaultError', async () => {
+  it('rejects a malformed blob as MalformedBlobError (a CorruptVaultError)', async () => {
     const key = await deriveKey('pw', FAST)
-    await expect(
-      decrypt(key, { iv: new Uint8Array(4), ciphertext: new Uint8Array(8) }, AAD_SETTINGS),
-    ).rejects.toBeInstanceOf(CorruptVaultError)
+    const error = await decrypt(
+      key,
+      { iv: new Uint8Array(4), ciphertext: new Uint8Array(8) },
+      AAD_SETTINGS,
+    ).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(CorruptVaultError)
+    expect((error as Error).name).toBe('MalformedBlobError')
   })
 
   it('rejects a mismatched AAD as CorruptVaultError', async () => {
@@ -163,6 +167,20 @@ describe('insecure context', () => {
     const blob = await encrypt(key, 'x', AAD_SETTINGS)
     removeSubtle()
     await expect(decrypt(key, blob, AAD_SETTINGS)).rejects.toBeInstanceOf(InsecureContextError)
+  })
+
+  it('decryptCanary propagates InsecureContextError instead of a WrongPasswordError', async () => {
+    const key = await deriveKey('pw', FAST)
+    const canary = await encrypt(key, CANARY_PLAINTEXT, AAD_CANARY)
+    removeSubtle()
+    await expect(decryptCanary(key, canary)).rejects.toBeInstanceOf(InsecureContextError)
+  })
+
+  it('decryptCanary reports a malformed canary as corruption, not a wrong password', async () => {
+    const key = await deriveKey('pw', FAST)
+    await expect(
+      decryptCanary(key, { iv: new Uint8Array(3), ciphertext: new Uint8Array(2) }),
+    ).rejects.toBeInstanceOf(CorruptVaultError)
   })
 })
 

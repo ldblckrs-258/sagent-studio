@@ -23,16 +23,19 @@ import { defaultSettings, deepMerge, migrate, SETTINGS_VERSION } from './setting
 import type { DeepPartial, Settings } from './settings'
 import type { KdfParams } from './types'
 import { createWriteQueue } from './write-queue'
-import { invalidate as invalidateClients } from '../ai/client-cache'
+import { invalidate as invalidateClients, setGeneration } from '../ai/client-cache'
 
 export type VaultStatus = 'locked' | 'unlocking' | 'unlocked' | 'recovering'
 export type VaultPresence = 'none' | 'complete' | 'partial'
 
 export interface VaultState {
   status: VaultStatus
+  presence: VaultPresence | null
   settings: Settings | null
+  persistedStorage: boolean | null
   unlockGeneration: number
   error: string | null
+  refreshPresence(): Promise<void>
   setup(password: string): Promise<void>
   unlock(password: string): Promise<void>
   lock(): Promise<void>
@@ -106,7 +109,7 @@ async function createVaultInternal(password: string): Promise<CryptoKey> {
 
 async function createVaultOnce(password: string): Promise<CryptoKey> {
   if (createInFlight) {
-    await createInFlight
+    await createInFlight.catch(() => undefined)
     throw new VaultStorageError('A vault was created concurrently.')
   }
   let derivedKey: CryptoKey | null = null
@@ -123,7 +126,7 @@ async function createVaultOnce(password: string): Promise<CryptoKey> {
   return derivedKey
 }
 
-async function unlockInternal(password: string): Promise<Settings> {
+async function unlockInternal(password: string): Promise<{ settings: Settings; persisted: boolean }> {
   const meta = await db.meta.get(META_ID)
   const vault = await db.vault.get(VAULT_ID)
   if (!meta || !vault) {
@@ -144,7 +147,7 @@ async function unlockInternal(password: string): Promise<Settings> {
       : meta.settingsVersion
   const settings = migrate(version, parsed)
   key = derived
-  return settings
+  return { settings, persisted: meta.persistedStorage }
 }
 
 async function persistSettings(currentKey: CryptoKey, next: Settings): Promise<void> {
@@ -163,14 +166,6 @@ async function persistSettings(currentKey: CryptoKey, next: Settings): Promise<v
   }
 }
 
-function enqueueWrite(task: () => Promise<void>): Promise<void> {
-  return writeQueue.enqueue(task)
-}
-
-async function drainWrites(): Promise<void> {
-  await writeQueue.drain()
-}
-
 function describeError(error: unknown): string {
   if (
     error instanceof WrongPasswordError ||
@@ -186,21 +181,38 @@ function describeError(error: unknown): string {
 
 export const useVaultStore = create<VaultState>((set, get) => ({
   status: 'locked',
+  presence: null,
   settings: null,
+  persistedStorage: null,
   unlockGeneration: 0,
   error: null,
+
+  async refreshPresence() {
+    try {
+      const presence = await hasVault()
+      set({ presence })
+    } catch (cause) {
+      // A Dexie open failure must reach the recovery screen, not leave the app
+      // on an indefinite loading state.
+      set({ presence: 'partial', status: 'recovering', error: describeError(cause) })
+    }
+  },
 
   async setup(password) {
     set({ status: 'unlocking', error: null })
     try {
       const derived = await createVaultOnce(password)
       key = derived
-      set((state) => ({
+      const generation = get().unlockGeneration + 1
+      setGeneration(generation)
+      set({
         status: 'unlocked',
+        presence: 'complete',
         settings: defaultSettings(),
-        unlockGeneration: state.unlockGeneration + 1,
+        persistedStorage: await requestPersistence(),
+        unlockGeneration: generation,
         error: null,
-      }))
+      })
     } catch (error) {
       key = null
       set({ status: 'locked', settings: null, error: describeError(error) })
@@ -211,13 +223,17 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   async unlock(password) {
     set({ status: 'unlocking', error: null })
     try {
-      const settings = await unlockInternal(password)
-      set((state) => ({
+      const { settings, persisted } = await unlockInternal(password)
+      const generation = get().unlockGeneration + 1
+      setGeneration(generation)
+      set({
         status: 'unlocked',
+        presence: 'complete',
         settings,
-        unlockGeneration: state.unlockGeneration + 1,
+        persistedStorage: persisted,
+        unlockGeneration: generation,
         error: null,
-      }))
+      })
     } catch (error) {
       key = null
       const status: VaultStatus = error instanceof CorruptVaultError ? 'recovering' : 'locked'
@@ -227,9 +243,11 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   async lock() {
-    await drainWrites()
+    // Null the key synchronously so any update enqueued after this point fails
+    // its identity check instead of landing after the store reports `locked`.
     key = null
     invalidateClients()
+    await writeQueue.drain()
     set((state) => ({
       status: 'locked',
       settings: null,
@@ -239,28 +257,31 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   },
 
   async update(patch) {
-    if (!key) throw new VaultLockedError()
-    await enqueueWrite(async () => {
-      const currentKey = key
-      if (!currentKey) throw new VaultLockedError()
+    const currentKey = key
+    if (!currentKey) throw new VaultLockedError()
+    await writeQueue.enqueue(async () => {
+      if (key !== currentKey) throw new VaultLockedError()
       const latest = get().settings
       if (!latest) throw new VaultLockedError()
       const next = deepMerge(latest, patch)
       await persistSettings(currentKey, next)
-      set({ settings: next })
+      if (key === currentKey) set({ settings: next })
     })
   },
 
   async recover() {
-    await drainWrites()
     key = null
+    await writeQueue.drain()
     await db.transaction('rw', db.vault, db.meta, async () => {
       await db.vault.clear()
       await db.meta.clear()
     })
+    invalidateClients()
     set((state) => ({
       status: 'locked',
+      presence: 'none',
       settings: null,
+      persistedStorage: null,
       error: null,
       unlockGeneration: state.unlockGeneration + 1,
     }))

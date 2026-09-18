@@ -1,15 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { ErrorBoundary } from './vault/ErrorBoundary'
 import { RecoveryScreen } from './vault/RecoveryScreen'
 import { UnlockScreen } from './vault/UnlockScreen'
-import { hasVault, useVaultStore } from './vault/store'
-import type { VaultPresence } from './vault/store'
+import { useVaultStore } from './vault/store'
 import { useIdleLock } from './vault/use-idle-lock'
 import { ProvidersPanel } from './settings/ProvidersPanel'
 import { DataEgressNotice } from './settings/DataEgressNotice'
 
 function UnlockedApp() {
   const settings = useVaultStore((s) => s.settings)
+  const persistedStorage = useVaultStore((s) => s.persistedStorage)
   const lock = useVaultStore((s) => s.lock)
 
   useIdleLock(settings?.idleLockMinutes ?? 15, true, () => void lock())
@@ -26,6 +26,12 @@ function UnlockedApp() {
           Lock
         </button>
       </header>
+      {persistedStorage === false ? (
+        <p role="alert" className="mb-4 rounded border border-[var(--accent-border)] p-3 text-xs">
+          Persistent storage was denied. The browser may evict the vault under storage pressure,
+          which would make it unrecoverable.
+        </p>
+      ) : null}
       <DataEgressNotice />
       <ProvidersPanel />
     </section>
@@ -33,26 +39,13 @@ function UnlockedApp() {
 }
 
 export default function App() {
-  const [presence, setPresence] = useState<VaultPresence | null>(null)
+  const presence = useVaultStore((s) => s.presence)
   const status = useVaultStore((s) => s.status)
+  const refreshPresence = useVaultStore((s) => s.refreshPresence)
 
   useEffect(() => {
-    let active = true
-    hasVault()
-      .then((result) => {
-        if (active) setPresence(result)
-      })
-      .catch((cause: unknown) => {
-        if (active) useVaultStore.setState({ status: 'recovering', error: String(cause) })
-      })
-    return () => {
-      active = false
-    }
-  }, [])
-
-  if (presence === null) {
-    return <p className="mt-24 text-center text-sm">Loading…</p>
-  }
+    void refreshPresence()
+  }, [refreshPresence])
 
   if (status === 'recovering' || presence === 'partial') {
     return (
@@ -60,6 +53,10 @@ export default function App() {
         <RecoveryScreen />
       </ErrorBoundary>
     )
+  }
+
+  if (presence === null) {
+    return <p className="mt-24 text-center text-sm">Loading…</p>
   }
 
   if (status === 'unlocked') {

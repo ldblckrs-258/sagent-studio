@@ -81,4 +81,20 @@ describe('migrate', () => {
   it('throws on a non-positive version', () => {
     expect(() => migrate(0, {})).toThrow(VaultMigrationError)
   })
+
+  it('rejects non-object decrypted data instead of returning it verbatim', () => {
+    expect(() => migrate(1, null)).toThrow(VaultMigrationError)
+    expect(() => migrate(1, 'x')).toThrow(VaultMigrationError)
+    expect(() => migrate(1, 42)).toThrow(VaultMigrationError)
+  })
+
+  it('ignores __proto__ keys so a decrypted blob cannot set a prototype', () => {
+    const payload = JSON.parse('{"__proto__":{"injected":"yes"},"version":1}') as Record<
+      string,
+      unknown
+    >
+    const merged = migrate(1, payload)
+    expect((merged as unknown as Record<string, unknown>).injected).toBeUndefined()
+    expect(Object.getPrototypeOf(merged)).toBe(Object.prototype)
+  })
 })

@@ -1,6 +1,7 @@
 import {
   CorruptVaultError,
   InsecureContextError,
+  MalformedBlobError,
   UnsupportedKdfError,
   WrongPasswordError,
 } from './errors'
@@ -13,9 +14,16 @@ export const IV_BYTES = 12
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-export const AAD_SETTINGS: Bytes = encoder.encode('settings:v1')
-export const AAD_CANARY: Bytes = encoder.encode('canary:v1')
+export const AAD_SETTINGS = encoder.encode('settings:v1')
+export const AAD_CANARY = encoder.encode('canary:v1')
 export const CANARY_PLAINTEXT = 'vault-canary-v1'
+
+class AuthenticationError extends Error {
+  constructor(cause: unknown) {
+    super('AES-GCM authentication failed.', { cause })
+    this.name = 'AuthenticationError'
+  }
+}
 
 export function assertSubtle(): SubtleCrypto {
   const impl = globalThis.crypto?.subtle
@@ -23,14 +31,15 @@ export function assertSubtle(): SubtleCrypto {
   return impl
 }
 
-function bufferOf(value: ArrayBufferView): Bytes {
-  return new Uint8Array(
-    value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer,
-  )
+function bufferOf(value: ArrayBufferView): ArrayBuffer {
+  return value.buffer.slice(
+    value.byteOffset,
+    value.byteOffset + value.byteLength,
+  ) as ArrayBuffer
 }
 
 function toBytes(value: ArrayBuffer | ArrayBufferView): Bytes {
-  if (ArrayBuffer.isView(value)) return bufferOf(value)
+  if (ArrayBuffer.isView(value)) return new Uint8Array(bufferOf(value))
   return new Uint8Array(value)
 }
 
@@ -104,10 +113,10 @@ export async function decryptBytes(
   key: CryptoKey,
   blob: EncryptedBlob,
   aad: Uint8Array,
-): Promise<Bytes> {
+): Promise<Uint8Array> {
   const impl = assertSubtle()
   if (!isWellFormed(blob)) {
-    throw new CorruptVaultError('Encrypted blob is malformed.')
+    throw new MalformedBlobError()
   }
   try {
     const plaintext = await impl.decrypt(
@@ -117,10 +126,7 @@ export async function decryptBytes(
     )
     return toBytes(plaintext)
   } catch (cause) {
-    throw new CorruptVaultError(
-      'The ciphertext failed authentication (tampered data, mismatched AAD, or wrong key).',
-      { cause },
-    )
+    throw new AuthenticationError(cause)
   }
 }
 
@@ -129,15 +135,33 @@ export async function decrypt(
   blob: EncryptedBlob,
   aad: Uint8Array,
 ): Promise<string> {
-  return decoder.decode(await decryptBytes(key, blob, aad))
+  try {
+    return decoder.decode(await decryptBytes(key, blob, aad))
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      throw new CorruptVaultError(
+        'The ciphertext failed authentication (tampered data, mismatched AAD, or wrong key).',
+        { cause: error },
+      )
+    }
+    throw error
+  }
 }
 
+/**
+ * Validates a password against the canary blob. Only an authentication failure
+ * is interpreted as a wrong password; insecure-context and malformed-blob errors
+ * propagate unchanged so they are not misreported as a credential problem.
+ */
 export async function decryptCanary(key: CryptoKey, canary: EncryptedBlob): Promise<void> {
   let value: string
   try {
-    value = await decrypt(key, canary, AAD_CANARY)
-  } catch (cause) {
-    throw new WrongPasswordError(undefined, { cause })
+    value = decoder.decode(await decryptBytes(key, canary, AAD_CANARY))
+  } catch (error) {
+    if (error instanceof AuthenticationError) {
+      throw new WrongPasswordError(undefined, { cause: error })
+    }
+    throw error
   }
   if (value !== CANARY_PLAINTEXT) {
     throw new CorruptVaultError('Canary decrypted but did not match its expected value.')

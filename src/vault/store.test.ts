@@ -14,7 +14,14 @@ import {
 
 async function resetAll() {
   await vaultInternals.reset()
-  useVaultStore.setState({ status: 'locked', settings: null, error: null, unlockGeneration: 0 })
+  useVaultStore.setState({
+    status: 'locked',
+    presence: null,
+    settings: null,
+    persistedStorage: null,
+    error: null,
+    unlockGeneration: 0,
+  })
 }
 
 function seededSecret(): string {
@@ -132,15 +139,37 @@ describe('vault store', () => {
     expect(useVaultStore.getState().settings?.typesafe.apiKey).toBe(seededSecret())
   })
 
-  it('byte-scans records and finds no seeded plaintext', async () => {
+  it('byte-scans records and finds no seeded plaintext in any byte field', async () => {
     await useVaultStore.getState().setup('scan-password')
     await useVaultStore.getState().update({ typesafe: { apiKey: seededSecret() } })
 
+    const chunks: Uint8Array[] = []
+    const collect = (value: unknown): void => {
+      if (value instanceof Uint8Array) {
+        chunks.push(value)
+        return
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) collect(item)
+        return
+      }
+      if (typeof value === 'object' && value !== null) {
+        for (const nested of Object.values(value as Record<string, unknown>)) collect(nested)
+      }
+    }
+
     const records = [...(await db.vault.toArray()), ...(await db.meta.toArray())]
-    const haystack = records
-      .flatMap((record) => Object.values(record as unknown as Record<string, unknown>))
-      .map((value) => JSON.stringify(value))
-      .join('')
+    for (const record of records) collect(record)
+
+    const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+    const merged = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      merged.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    const haystack = new TextDecoder('utf-8', { fatal: false }).decode(merged)
+    expect(chunks.length).toBeGreaterThan(0)
     expect(haystack).not.toContain(seededSecret())
     expect(haystack).not.toContain('scan-password')
   })
@@ -213,5 +242,58 @@ describe('vault store', () => {
     const key = await deriveKey('aad-password', meta.kdfParams)
     const plaintext = await decrypt(key, record.blob, AAD_SETTINGS)
     expect(JSON.parse(plaintext).version).toBe(SETTINGS_VERSION)
+  })
+
+  it('does not let an update land after lock, and clears resident settings', async () => {
+    await useVaultStore.getState().setup('late-write-password')
+    const store = useVaultStore.getState()
+    const results = await Promise.allSettled([
+      store.lock(),
+      useVaultStore.getState().update({ idleLockMinutes: 42 }),
+    ])
+    void results
+    expect(useVaultStore.getState().status).toBe('locked')
+    expect(useVaultStore.getState().settings).toBeNull()
+
+    const meta = await db.meta.get(META_ID)
+    const record = await db.vault.get(VAULT_ID)
+    if (!meta || !record) throw new Error('missing records')
+    const key = await deriveKey('late-write-password', meta.kdfParams)
+    const plaintext = await decrypt(key, record.blob, AAD_SETTINGS)
+    expect(JSON.parse(plaintext).idleLockMinutes).toBe(15)
+  })
+
+  it('reports presence after recover so the recovery screen can exit', async () => {
+    await useVaultStore.getState().setup('recover-presence')
+    await useVaultStore.getState().recover()
+    expect(useVaultStore.getState().presence).toBe('none')
+    await useVaultStore.getState().refreshPresence()
+    expect(useVaultStore.getState().presence).toBe('none')
+  })
+
+  it('routes a Dexie open failure to the recovering state with a presence set', async () => {
+    const original = db.vault.get.bind(db.vault)
+    db.vault.get = (() => Promise.reject(new Error('IndexedDB API missing'))) as unknown as typeof db.vault.get
+    try {
+      await useVaultStore.getState().refreshPresence()
+    } finally {
+      db.vault.get = original
+    }
+    expect(useVaultStore.getState().status).toBe('recovering')
+    expect(useVaultStore.getState().presence).not.toBeNull()
+  })
+
+  it('records that persistent storage was denied', async () => {
+    const original = navigator.storage
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { persist: () => Promise.resolve(false) },
+    })
+    try {
+      await useVaultStore.getState().setup('no-persist-password')
+    } finally {
+      Object.defineProperty(navigator, 'storage', { configurable: true, value: original })
+    }
+    expect(useVaultStore.getState().persistedStorage).toBe(false)
   })
 })

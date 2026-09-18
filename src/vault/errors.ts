@@ -26,6 +26,13 @@ export class CorruptVaultError extends VaultError {
   }
 }
 
+export class MalformedBlobError extends CorruptVaultError {
+  constructor(message = 'Encrypted blob is malformed.', options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'MalformedBlobError'
+  }
+}
+
 export class InsecureContextError extends VaultError {
   constructor(
     message = 'WebCrypto is unavailable. A secure context (HTTPS or localhost) is required.',
@@ -47,13 +54,6 @@ export class VaultStorageError extends VaultError {
   constructor(message = 'The browser refused to persist vault data.', options?: ErrorOptions) {
     super(message, options)
     this.name = 'VaultStorageError'
-  }
-}
-
-export class VaultPartialStateError extends VaultError {
-  constructor(message = 'The vault is in a partial state and must be recreated.', options?: ErrorOptions) {
-    super(message, options)
-    this.name = 'VaultPartialStateError'
   }
 }
 

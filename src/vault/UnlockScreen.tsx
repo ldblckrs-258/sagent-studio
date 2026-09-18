@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from 'react'
+import type { FormEvent } from 'react'
 import { useVaultStore } from './store'
 
 export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
@@ -56,14 +56,5 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
       </form>
       {error ? <p role="alert" className="mt-3 text-sm text-red-500">{error}</p> : null}
     </section>
-  )
-}
-
-export function LockButton({ children }: { children?: ReactNode }) {
-  const lock = useVaultStore((s) => s.lock)
-  return (
-    <button type="button" onClick={() => void lock()} className="rounded border border-[var(--border)] px-3 py-1">
-      {children ?? 'Lock'}
-    </button>
   )
 }

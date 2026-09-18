@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useVaultStore } from '../vault/store'
 import type { ProviderConfig, Settings } from '../vault/settings'
-import { MAX_MODELS_PER_PROVIDER, validateProvider } from '../ai/providers'
+import { MAX_MODELS_PER_PROVIDER, MAX_PROVIDERS, validateProvider } from '../ai/providers'
 import type { ProviderValidationErrors } from '../ai/providers'
 import { createLLM } from '../ai/llm'
 import { SecretField } from '../ai/secret-field'
@@ -158,7 +158,9 @@ function TypeSafeForm({ settings }: { settings: Settings }) {
   const persist = (next: typeof draft) => {
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => {
-      void update({ typesafe: next })
+      // A lock may win the race with this debounced write; that is benign and
+      // must not surface as a vault failure.
+      void update({ typesafe: next }).catch(() => undefined)
     }, 400)
   }
 
@@ -220,6 +222,7 @@ export function ProvidersPanel() {
       setNewProvider(null)
       return
     }
+    if (providers.length >= MAX_PROVIDERS) return
     setNewProvider(emptyProvider())
     setAdding(true)
   }

@@ -17,7 +17,7 @@ export function DataEgressNotice() {
       </p>
       <button
         type="button"
-        onClick={() => void update({ egressNoticeDismissed: true })}
+        onClick={() => void update({ egressNoticeDismissed: true }).catch(() => undefined)}
         className="rounded border border-[var(--border)] px-3 py-1 text-xs"
       >
         I understand

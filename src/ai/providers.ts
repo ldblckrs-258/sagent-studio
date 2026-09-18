@@ -41,10 +41,6 @@ export function validateProvider(provider: ProviderConfig): ProviderValidationEr
   return errors
 }
 
-export function isValidProvider(provider: ProviderConfig): boolean {
-  return Object.keys(validateProvider(provider)).length === 0
-}
-
 export function resolveProvider(
   providers: readonly ProviderConfig[],
   providerId: string,

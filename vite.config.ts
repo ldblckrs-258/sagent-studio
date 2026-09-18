@@ -2,12 +2,53 @@ import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import babel from '@rolldown/plugin-babel'
 import { defineConfig } from 'vite'
+import type { Plugin } from 'vite'
+
+/**
+ * Injects the strict Content-Security-Policy meta tag into the production build only.
+ *
+ * Keys live in browser memory, so script injection is the primary threat and
+ * script-src 'self' is the containment control that must not be relaxed. The dev
+ * server is deliberately excluded: @vitejs/plugin-react injects an inline module
+ * preamble for Fast Refresh, which a strict script-src would block.
+ *
+ * connect-src cannot enumerate runtime-configured provider origins (the user adds
+ * arbitrary OpenAI-compatible endpoints), so it allows https plus localhost. That is
+ * a deliberate trade-off; script-src stays locked. A public deployment should
+ * generate the CSP server-side from the configured provider allowlist and send
+ * frame-ancestors / X-Frame-Options as headers, which a meta tag cannot enforce.
+ */
+function cspPlugin(): Plugin {
+  const policy = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self' https: http://localhost:* http://127.0.0.1:*",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join('; ')
+
+  return {
+    name: 'inject-csp-meta',
+    apply: 'build',
+    transformIndexHtml(html) {
+      return html.replace(
+        '<head>',
+        `<head>\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`,
+      )
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    babel({ presets: [reactCompilerPreset()] })
+    babel({ presets: [reactCompilerPreset()] }),
+    cspPlugin(),
   ],
 })
