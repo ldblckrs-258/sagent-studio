@@ -42,3 +42,24 @@ export class UnsupportedKdfError extends VaultError {
     this.name = 'UnsupportedKdfError'
   }
 }
+
+export class VaultStorageError extends VaultError {
+  constructor(message = 'The browser refused to persist vault data.', options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'VaultStorageError'
+  }
+}
+
+export class VaultPartialStateError extends VaultError {
+  constructor(message = 'The vault is in a partial state and must be recreated.', options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'VaultPartialStateError'
+  }
+}
+
+export class VaultMigrationError extends VaultError {
+  constructor(message = 'The vault settings version is not supported.', options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'VaultMigrationError'
+  }
+}

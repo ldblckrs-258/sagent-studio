@@ -1,122 +1,85 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from 'react'
+import { ErrorBoundary } from './vault/ErrorBoundary'
+import { RecoveryScreen } from './vault/RecoveryScreen'
+import { UnlockScreen } from './vault/UnlockScreen'
+import { hasVault, useVaultStore } from './vault/store'
+import type { VaultPresence } from './vault/store'
+import { useIdleLock } from './vault/use-idle-lock'
 
-function App() {
-  const [count, setCount] = useState(0)
+function UnlockedApp() {
+  const settings = useVaultStore((s) => s.settings)
+  const lock = useVaultStore((s) => s.lock)
+  const update = useVaultStore((s) => s.update)
+
+  useIdleLock(settings?.idleLockMinutes ?? 15, true, () => void lock())
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
+    <section className="mx-auto mt-16 w-full max-w-2xl text-left">
+      <header className="mb-6 flex items-center justify-between">
+        <h1 className="text-3xl">Sagent Studio</h1>
         <button
           type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
+          onClick={() => void lock()}
+          className="rounded border border-[var(--border)] px-3 py-1"
         >
-          Count is {count}
+          Lock
         </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      </header>
+      <p className="text-sm">
+        Vault unlocked. Configure providers and the TypeSafe key to get started.
+      </p>
+      <button
+        type="button"
+        onClick={() => void update({ idleLockMinutes: settings?.idleLockMinutes === 15 ? 5 : 15 })}
+        className="mt-4 rounded border border-[var(--border)] px-3 py-1 text-xs"
+      >
+        Idle lock: {settings?.idleLockMinutes} min (click to toggle)
+      </button>
+    </section>
   )
 }
 
-export default App
+export default function App() {
+  const [presence, setPresence] = useState<VaultPresence | null>(null)
+  const status = useVaultStore((s) => s.status)
+
+  useEffect(() => {
+    let active = true
+    hasVault()
+      .then((result) => {
+        if (active) setPresence(result)
+      })
+      .catch((cause: unknown) => {
+        if (active) useVaultStore.setState({ status: 'recovering', error: String(cause) })
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  if (presence === null) {
+    return <p className="mt-24 text-center text-sm">Loading…</p>
+  }
+
+  if (status === 'recovering' || presence === 'partial') {
+    return (
+      <ErrorBoundary>
+        <RecoveryScreen />
+      </ErrorBoundary>
+    )
+  }
+
+  if (status === 'unlocked') {
+    return (
+      <ErrorBoundary>
+        <UnlockedApp />
+      </ErrorBoundary>
+    )
+  }
+
+  return (
+    <ErrorBoundary>
+      <UnlockScreen presence={presence} />
+    </ErrorBoundary>
+  )
+}
