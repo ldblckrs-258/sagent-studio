@@ -5,16 +5,17 @@ import { UnlockScreen } from './vault/UnlockScreen'
 import { hasVault, useVaultStore } from './vault/store'
 import type { VaultPresence } from './vault/store'
 import { useIdleLock } from './vault/use-idle-lock'
+import { ProvidersPanel } from './settings/ProvidersPanel'
+import { DataEgressNotice } from './settings/DataEgressNotice'
 
 function UnlockedApp() {
   const settings = useVaultStore((s) => s.settings)
   const lock = useVaultStore((s) => s.lock)
-  const update = useVaultStore((s) => s.update)
 
   useIdleLock(settings?.idleLockMinutes ?? 15, true, () => void lock())
 
   return (
-    <section className="mx-auto mt-16 w-full max-w-2xl text-left">
+    <section className="mx-auto mt-12 w-full max-w-2xl pb-24 text-left">
       <header className="mb-6 flex items-center justify-between">
         <h1 className="text-3xl">Sagent Studio</h1>
         <button
@@ -25,16 +26,8 @@ function UnlockedApp() {
           Lock
         </button>
       </header>
-      <p className="text-sm">
-        Vault unlocked. Configure providers and the TypeSafe key to get started.
-      </p>
-      <button
-        type="button"
-        onClick={() => void update({ idleLockMinutes: settings?.idleLockMinutes === 15 ? 5 : 15 })}
-        className="mt-4 rounded border border-[var(--border)] px-3 py-1 text-xs"
-      >
-        Idle lock: {settings?.idleLockMinutes} min (click to toggle)
-      </button>
+      <DataEgressNotice />
+      <ProvidersPanel />
     </section>
   )
 }

@@ -23,6 +23,7 @@ import { defaultSettings, deepMerge, migrate, SETTINGS_VERSION } from './setting
 import type { DeepPartial, Settings } from './settings'
 import type { KdfParams } from './types'
 import { createWriteQueue } from './write-queue'
+import { invalidate as invalidateClients } from '../ai/client-cache'
 
 export type VaultStatus = 'locked' | 'unlocking' | 'unlocked' | 'recovering'
 export type VaultPresence = 'none' | 'complete' | 'partial'
@@ -228,6 +229,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   async lock() {
     await drainWrites()
     key = null
+    invalidateClients()
     set((state) => ({
       status: 'locked',
       settings: null,

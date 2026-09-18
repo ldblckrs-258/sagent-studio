@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Strict CSP. Keys live in browser memory, so script injection is the primary
+      threat; script-src 'self' is the containment control and must not be relaxed.
+      connect-src cannot enumerate runtime-configured provider origins (the user adds
+      arbitrary OpenAI-compatible endpoints), so it allows https plus localhost.
+      This is a deliberate trade-off: an injected script could exfiltrate to any https
+      origin, which is why script-src stays locked. A public deployment should
+      generate the CSP server-side from the configured provider allowlist.
+      'unsafe-inline' for styles is required by Vite's dev style injection; a public
+      deployment should drop it and use a nonce. Note: frame-ancestors is a
+      header-only directive and is ignored in a meta tag; a deployment should send it
+      (and X-Frame-Options) from the server.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'self'; object-src 'none'"
+    />
     <title>sagent-studio</title>
   </head>
   <body>
