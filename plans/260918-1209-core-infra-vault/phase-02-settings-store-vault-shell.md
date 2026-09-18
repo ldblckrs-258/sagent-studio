@@ -1,6 +1,6 @@
 ---
 title: "Phase 2: Settings Store + Vault Shell"
-status: todo
+status: done
 ---
 
 # Phase 2: Settings Store + Vault Shell
@@ -15,7 +15,7 @@ status: todo
 ## Overview
 
 - **Priority:** P1
-- **Status:** todo
+- **Status:** done
 - **Description:** Turn the Phase 1 crypto helpers into a persistent, versioned
   settings store and an app shell that gates everything behind a password. Includes
   first-run setup, unlock, lock, idle auto-lock, and encrypted updates.
@@ -223,20 +223,20 @@ Settings shape (encrypted inside the vault record):
 
 ## Todo
 
-- [ ] Create Dexie database with `vault` and `meta` tables
-- [ ] Define `Settings`, `SETTINGS_VERSION`, `deepMerge`, and migration
-- [ ] Implement `hasVault` returning none/complete/partial
-- [ ] Implement atomic `createVault` with an in-flight guard and `storage.persist()`
-- [ ] Implement `unlock` with canary-based wrong-password vs corruption detection
-- [ ] Implement the Zustand vault store with idempotent transitions
-- [ ] Implement the serialized deep-merge write queue
-- [ ] Implement `update(patch)` with quota handling
-- [ ] Implement idle auto-lock with a configurable timeout
-- [ ] Implement `lock()` draining the write queue and bumping `unlockGeneration`
-- [ ] Build `UnlockScreen`, `RecoveryScreen`, and `ErrorBoundary`
-- [ ] Gate `App.tsx` on vault status; register `unhandledrejection`
-- [ ] Write state-machine, concurrency, and automated secret-scan tests
-- [ ] Write the migration test against a checked-in fixture blob
+- [x] Create Dexie database with `vault` and `meta` tables
+- [x] Define `Settings`, `SETTINGS_VERSION`, `deepMerge`, and migration
+- [x] Implement `hasVault` returning none/complete/partial
+- [x] Implement atomic `createVault` with an in-flight guard and `storage.persist()`
+- [x] Implement `unlock` with canary-based wrong-password vs corruption detection
+- [x] Implement the Zustand vault store with idempotent transitions
+- [x] Implement the serialized deep-merge write queue
+- [x] Implement `update(patch)` with quota handling
+- [x] Implement idle auto-lock with a configurable timeout
+- [x] Implement `lock()` draining the write queue and bumping `unlockGeneration`
+- [x] Build `UnlockScreen`, `RecoveryScreen`, and `ErrorBoundary`
+- [x] Gate `App.tsx` on vault status; register `unhandledrejection`
+- [x] Write state-machine, concurrency, and automated secret-scan tests
+- [x] Write the migration test against a checked-in fixture blob
 
 ## Success Criteria
 

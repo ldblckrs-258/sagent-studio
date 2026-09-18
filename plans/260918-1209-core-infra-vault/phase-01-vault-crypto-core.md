@@ -1,6 +1,6 @@
 ---
 title: "Phase 1: Vault Crypto Core"
-status: todo
+status: done
 ---
 
 # Phase 1: Vault Crypto Core
@@ -14,7 +14,7 @@ status: todo
 ## Overview
 
 - **Priority:** P1 (blocking — every later phase depends on these helpers)
-- **Status:** todo
+- **Status:** done
 - **Description:** Browser-native cryptography helpers: PBKDF2 key derivation, AES-GCM
   encryption and decryption, typed errors, and the test harness. No third-party crypto
   dependency.
@@ -160,29 +160,33 @@ a re-encrypt-and-migrate step, so the plan does not claim a zero-cost swap.
 
 ## Todo
 
-- [ ] Add `vitest`, `fake-indexeddb`, `vitest.config.ts`, and the `test` scripts
-- [ ] Add `vitest/globals` to `tsconfig.app.json` types
-- [ ] Create `src/vault/errors.ts` with the four typed errors
-- [ ] Create `src/vault/types.ts` with `KdfParams` union and `EncryptedBlob`
-- [ ] Implement `assertSubtle` called from every exported function
-- [ ] Implement `randomBytes` over `crypto.getRandomValues`
-- [ ] Implement `deriveKey` with a non-extractable AES-GCM key and an `argon2id` stub arm
-- [ ] Implement `encrypt` with a fresh random IV and AAD binding
-- [ ] Implement `decrypt` with shape validation and tag-failure mapping
-- [ ] Implement and test the canary decrypt path
-- [ ] Write round-trip, AAD-mismatch, insecure-context, and failure tests
-- [ ] Record PBKDF2 derivation time as a machine-specific note
+- [x] Add `vitest`, `fake-indexeddb`, `vitest.config.ts`, and the `test` scripts
+- [x] Add `vitest/globals` to `tsconfig.app.json` types
+- [x] Create `src/vault/errors.ts` with the four typed errors
+- [x] Create `src/vault/types.ts` with `KdfParams` union and `EncryptedBlob`
+- [x] Implement `assertSubtle` called from every exported function
+- [x] Implement `randomBytes` over `crypto.getRandomValues`
+- [x] Implement `deriveKey` with a non-extractable AES-GCM key and an `argon2id` stub arm
+- [x] Implement `encrypt` with a fresh random IV and AAD binding
+- [x] Implement `decrypt` with shape validation and tag-failure mapping
+- [x] Implement and test the canary decrypt path
+- [x] Write round-trip, AAD-mismatch, insecure-context, and failure tests
+- [x] Record PBKDF2 derivation time as a machine-specific note
 
 ## Success Criteria
 
 - Round-trip encrypt/decrypt returns byte-identical plaintext for small and large inputs.
 - A wrong password throws `WrongPasswordError` and never returns partial plaintext.
+  Executed via the canary path (`decryptCanary`), which is how the store validates a
+  password; the low-level `decrypt` maps a tag failure to `CorruptVaultError` because a
+  bare tag failure is ambiguous between a wrong key and a damaged blob.
 - Tampered ciphertext, tampered IV, or a mismatched AAD throws `CorruptVaultError`.
 - With `crypto.subtle` stubbed away, every exported function throws
   `InsecureContextError` rather than a raw `TypeError`.
 - `pnpm test` passes; `pnpm lint` and `pnpm build` pass.
 - Derivation time is recorded as a machine-specific note; if it exceeds roughly 1 second,
   raise the iteration count as an open question rather than silently lowering it.
+  Measured ~74 ms at 600,000 iterations on the execution machine.
 
 ## Risk Assessment
 

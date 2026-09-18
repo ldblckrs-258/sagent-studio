@@ -1,7 +1,7 @@
 ---
 title: "Core Infrastructure + Encrypted Vault"
 description: "Client-side crypto, encrypted settings store, and reusable SDK factories for the two upstream APIs"
-status: pending
+status: completed
 priority: P1
 effort: 22h
 branch: none
@@ -65,9 +65,9 @@ No upstream blockers. This is the first plan in the sequence.
 
 | # | Phase | Status |
 | --- | --- | --- |
-| 1 | [Vault Crypto Core](./phase-01-vault-crypto-core.md) | Pending |
-| 2 | [Settings Store + Vault Shell](./phase-02-settings-store-vault-shell.md) | Pending |
-| 3 | [Provider Registry + SDK Factories](./phase-03-provider-registry-sdk-factories.md) | Pending |
+| 1 | [Vault Crypto Core](./phase-01-vault-crypto-core.md) | Done |
+| 2 | [Settings Store + Vault Shell](./phase-02-settings-store-vault-shell.md) | Done |
+| 3 | [Provider Registry + SDK Factories](./phase-03-provider-registry-sdk-factories.md) | Done |
 
 ## Frozen Interfaces
 
@@ -97,14 +97,14 @@ function createTypeSafe(settings: Settings): TypeSafeClient
 
 ## Success Criteria
 
-- [ ] A password unlocks the app; a wrong password reveals nothing.
-- [ ] A hard reload unlocks with the same password (proves the plaintext salt path).
-- [ ] Provider configuration and secrets persist across reload in encrypted form.
-- [ ] An automated byte-scan test finds no plaintext secret in the vault records.
-- [ ] `createLLM(settings, providerId)` returns a working language model for a configured provider.
-- [ ] `createTypeSafe(settings)` constructs in-browser and completes one live `systemOne` call (manual, recorded).
-- [ ] Strict CSP is in place and the app runs under it.
-- [ ] `pnpm lint` and `pnpm build` pass; `pnpm test` passes with the new suites.
+- [x] A password unlocks the app; a wrong password reveals nothing.
+- [x] A hard reload unlocks with the same password (proves the plaintext salt path).
+- [x] Provider configuration and secrets persist across reload in encrypted form.
+- [x] An automated byte-scan test finds no plaintext secret in the vault records.
+- [x] `createLLM(settings, providerId)` returns a working language model for a configured provider.
+- [ ] `createTypeSafe(settings)` constructs in-browser and completes one live `systemOne` call (manual, recorded) — blocked: needs a live TypeSafe key.
+- [ ] Strict CSP is in place and the app runs under it — tag is injected at build time (`dist/index.html` verified); in-browser run not verified because no browser test dependency is installed.
+- [x] `pnpm lint` and `pnpm build` pass; `pnpm test` passes with the new suites.
 
 ## Key Decisions
 
@@ -205,8 +205,42 @@ accepted. Resulting changes:
 - Method: direct inspection of `package.json`, `tsconfig.app.json`, `main.tsx`, and
   the installed `@typesafe-ai/sdk` / `@ai-sdk/openai-compatible` package metadata.
 
+### Execution Results
+
+- All 3 phases implemented and committed (`git log`: `chore: initialize…`,
+  `feat(vault): add browser crypto core…`, `feat(vault): add encrypted settings
+  store and vault shell`, `feat(ai): add provider registry…`, `fix(vault): close
+  review-found lock race…`).
+- `pnpm test`: 81 passed, 7 files. `pnpm lint`: clean. `pnpm build` (`tsc -b` +
+  Vite): clean.
+- PBKDF2-SHA256 baseline at 600,000 iterations: **~74 ms** on this machine
+  (Apple Silicon, Node 24). Well under the ~1 s threshold in Phase 1's criteria, so
+  the iteration count was not lowered. Machine-specific, not an assertion.
+- `provider-utils` drift (5.0.43 vs 5.0.44) did not break the combined build: a
+  module importing both `ai` and `@ai-sdk/openai-compatible` compiles and the
+  production bundle builds. Pinned `@ai-sdk/openai-compatible` to exactly `3.0.52`.
+- CSP is injected at build time via a Vite plugin (`cspPlugin`, `apply: 'build'`),
+  not a static meta tag: strict `script-src 'self'` would otherwise block the
+  `@vitejs/plugin-react` inline Fast Refresh preamble in dev. Verified present in
+  `dist/index.html`; no inline script remains in the production HTML.
+- Independent `code-reviewer` pass found and the implementation now fixes:
+  (1) a lock/update race where an update could land after `lock()` — the key is now
+  nulled synchronously and each queued write is bound to the key captured at
+  enqueue time; (2) a Dexie open failure parking the app on "Loading…" forever —
+  `refreshPresence()` now routes it to the recovery screen; (3) a stray
+  `VaultLockedError` from a debounced write forcing the erase-only recovery screen —
+  it is no longer promoted; (4) stale `presence` after `recover()` — now set to
+  `'none'`; (5) `decryptCanary` masking insecure-context and malformed-blob errors as
+  a wrong password — now propagates them; (6) a byte-scan test that stringified
+  `Uint8Array`s and could not detect plaintext in byte fields — now scans raw bytes;
+  (7) `__proto__`/non-object handling in `deepMerge`/`migrate`; (8) unenforced
+  `MAX_PROVIDERS` and an unsurfaced `persistedStorage` denial.
+
 ### Open Items
 
 - `systemOne` browser smoke test requires a live TypeSafe key; recorded as a manual
-  validation rather than a CI gate.
+  validation rather than a CI gate. Not performed — no live key available.
+- CSP runtime verification (a real browser run with no violations) was not
+  performed; no browser automation dependency is installed. The tag is verified in
+  the built HTML only.
 - PBKDF2 iteration timing is machine-specific; recorded as a note, not an assertion.

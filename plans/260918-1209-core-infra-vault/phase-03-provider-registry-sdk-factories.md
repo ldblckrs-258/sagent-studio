@@ -1,6 +1,6 @@
 ---
 title: "Phase 3: Provider Registry + SDK Factories"
-status: todo
+status: done
 ---
 
 # Phase 3: Provider Registry + SDK Factories
@@ -14,7 +14,7 @@ status: todo
 ## Overview
 
 - **Priority:** P1 (final core-infra phase; the RAG plan consumes its output)
-- **Status:** todo
+- **Status:** done
 - **Description:** Reusable, UI-agnostic factories that turn decrypted provider settings
   into a working AI SDK language model and a configured TypeSafe client, plus the
   provider CRUD panel and data-egress notice.
@@ -124,7 +124,9 @@ worker, or a test without further setup.
 - `src/App.tsx` — mount the providers panel and the egress notice when unlocked.
 - `src/vault/settings.ts` — ensure `ProviderConfig` and `typesafe` shapes match `src/ai/providers.ts`.
 - `package.json` — add `@ai-sdk/openai-compatible` pinned exactly (for example `"3.0.52"`).
-- `index.html` — add the strict CSP meta tag.
+- `index.html` — (superseded) the strict CSP is injected at build time by a Vite
+  plugin in `vite.config.ts` rather than a static meta tag, so the dev server's inline
+  Fast Refresh preamble is not blocked.
 
 **Delete**
 
@@ -159,9 +161,11 @@ worker, or a test without further setup.
     document chunks leave the device for TypeSafe and the LLM provider. Persist
     dismissal in settings.
 11. Add the TypeSafe key and model form, including an optional base URL override.
-12. Add the strict CSP meta tag to `index.html` (`default-src 'self'`, `script-src 'self'`,
-    `connect-src` allowlisting the configured provider origins), and document it as a
-    deployment requirement. This is not optional given keys live in browser memory.
+12. Add the strict CSP (`default-src 'self'`, `script-src 'self'`, `connect-src`
+    allowlisting the configured provider origins), and document it as a deployment
+    requirement. This is not optional given keys live in browser memory. **Executed as
+    a build-only Vite plugin** rather than a static `index.html` meta tag, because a
+    static tag also applies in dev and blocks the inline Fast Refresh preamble.
 13. Write tests: `createLLM` returns a model for a valid provider; throws
     `LLMConfigError` for a missing or invalid one; `createTypeSafe` constructs with a
     valid config, pins `logLevel`, and throws otherwise; a spy logger never receives a
@@ -173,32 +177,36 @@ worker, or a test without further setup.
 
 ## Todo
 
-- [ ] Install `@ai-sdk/openai-compatible` at an exact pinned version
-- [ ] Define `ProviderConfig` and validation with caps
-- [ ] Implement `resolveProvider` and `LLMConfigError`
-- [ ] Implement `createLLM(settings, providerId, modelOverride?)`
-- [ ] Implement `createTypeSafe(settings)` with `logLevel: 'warn'`
-- [ ] Implement the `unlockGeneration`-keyed client cache
-- [ ] Build the masked secret field
-- [ ] Build the providers CRUD panel with debounced writes
-- [ ] Add the connection test
-- [ ] Build the data-egress notice
-- [ ] Add the strict CSP and document the deployment requirement
-- [ ] Write factory, logLevel, cache-invalidation, and DOM-masking tests
-- [ ] Browser-smoke-test a live `systemOne` call under Vite and record it
+- [x] Install `@ai-sdk/openai-compatible` at an exact pinned version
+- [x] Define `ProviderConfig` and validation with caps
+- [x] Implement `resolveProvider` and `LLMConfigError`
+- [x] Implement `createLLM(settings, providerId, modelOverride?)`
+- [x] Implement `createTypeSafe(settings)` with `logLevel: 'warn'`
+- [x] Implement the `unlockGeneration`-keyed client cache
+- [x] Build the masked secret field
+- [x] Build the providers CRUD panel with debounced writes
+- [x] Add the connection test
+- [x] Build the data-egress notice
+- [x] Add the strict CSP and document the deployment requirement
+- [x] Write factory, logLevel, cache-invalidation, and DOM-masking tests
+- [ ] Browser-smoke-test a live `systemOne` call under Vite and record it (blocked: needs a live TypeSafe key — manual, credential-dependent)
 
 ## Success Criteria
 
 - A configured provider yields a working language model and produces a real completion.
 - `createTypeSafe(settings)` constructs in the browser and completes one live `systemOne` call
-  (recorded as a manual validation, not a CI gate).
+  (recorded as a manual validation, not a CI gate). **Not verified:** requires a live
+  TypeSafe key; no key was available. `createTypeSafe` construction and `logLevel` are
+  unit-tested; the live call is deferred to a credentialed manual run.
 - Invalid or missing provider configuration raises a typed error, never `undefined`.
 - Adding, editing, and deleting providers persists across reload via the encrypted store.
 - No request or response body reaches a configured logger; `logLevel` is pinned to `warn`.
 - After `lock()`, the client cache is empty and no authenticated client is reachable.
 - A saved key is not present in the DOM until the user explicitly reveals it; an
   automated test asserts the masked field does not contain the seeded key after unlock.
-- The CSP meta tag is present and the app runs under it without violations.
+- The CSP tag is present in the built HTML (`dist/index.html`, verified) and the app runs
+  under it without violations. In-browser run not verified: no browser automation
+  dependency is installed, and the tag is production-only by design.
 - `pnpm test`, `pnpm lint`, `pnpm build` all pass.
 
 ## Risk Assessment
