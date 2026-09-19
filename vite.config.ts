@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import babel from '@rolldown/plugin-babel'
@@ -17,11 +18,22 @@ import type { Plugin } from 'vite'
  * a deliberate trade-off; script-src stays locked. A public deployment should
  * generate the CSP server-side from the configured provider allowlist and send
  * frame-ancestors / X-Frame-Options as headers, which a meta tag cannot enforce.
+ *
+ * Sandbox workers: a same-origin http(s) worker does not inherit this document
+ * policy; its policy comes from its own response headers (HTML §7.1.7). Vite emits
+ * the runner chunks as separate same-origin assets, so they run without a document
+ * CSP and may use eval/WASM, which is why script-src needs no 'unsafe-eval'. The
+ * worker therefore also has page-equivalent network egress and can open IndexedDB.
+ * That is an accepted residual risk recorded in the core chat engine plan; the
+ * vault key never enters a worker and only explicit tool inputs cross the bridge.
+ * A production host may optionally serve the worker assets with a
+ * `connect-src 'self'` response header; that is host-dependent and not a gate.
  */
 function cspPlugin(): Plugin {
   const policy = [
     "default-src 'self'",
     "script-src 'self'",
+    "worker-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self'",
@@ -51,4 +63,12 @@ export default defineConfig({
     babel({ presets: [reactCompilerPreset()] }),
     cspPlugin(),
   ],
+  worker: {
+    format: 'es',
+  },
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
 })

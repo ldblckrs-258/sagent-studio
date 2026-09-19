@@ -13,20 +13,69 @@ export interface MetaRecord {
   kdfParams: KdfParams
   canary: EncryptedBlob
   settingsVersion: number
-  persistedStorage: boolean
+  /** Last known grant. `null` means the browser exposed no persistent storage API. */
+  persistedStorage: boolean | null
   createdAt: number
+  updatedAt: number
+}
+
+export interface ThreadRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
+export interface SkillRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
+export interface ToolRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
+export interface FsHandleRecord {
+  id: 'workspace'
+  handle: FileSystemDirectoryHandle
   updatedAt: number
 }
 
 export class VaultDatabase extends Dexie {
   vault!: Table<VaultRecord, string>
   meta!: Table<MetaRecord, string>
+  threads!: Table<ThreadRecord, string>
+  skills!: Table<SkillRecord, string>
+  tools!: Table<ToolRecord, string>
+  fs!: Table<FsHandleRecord, string>
 
   constructor(name = 'sagent-vault') {
     super(name)
     this.version(1).stores({
       vault: 'id',
       meta: 'id',
+    })
+    this.version(2).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+    })
+    this.version(3).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+    })
+    this.version(4).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+      fs: 'id',
     })
   }
 }

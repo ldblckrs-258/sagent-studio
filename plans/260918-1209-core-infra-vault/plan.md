@@ -95,6 +95,25 @@ function createLLM(settings: Settings, providerId: string, modelOverride?: strin
 function createTypeSafe(settings: Settings): TypeSafeClient
 ```
 
+### Additive extension — 2026-09-19 (Core Chat Engine, Phase 2)
+
+The chat-engine plan extends this surface without breaking it:
+
+- New `src/vault/keyring.ts` becomes the single owner of `{ key, generation }`.
+  `VaultState.unlockGeneration` is now a projection of `keyring.getGeneration()`
+  rather than an independently incremented counter. `setup`/`unlock` install a
+  key; `lock`/`recover` clear it; each install/clear increments the generation.
+  The public `VaultState` shape and `createLLM` signature are unchanged.
+- New `src/vault/records.ts` exposes `encryptRecord`/`decryptRecord` bound to a
+  keyring snapshot; they reject with `VaultLockedError` if the keyring changes
+  across the `await`.
+- `src/vault/write-queue.ts` additionally exports a shared `vaultWriteQueue`
+  instance used by settings writes and record writes, drained by
+  `lock()`/`recover()`/`reset()`.
+- `src/vault/db.ts` adds `version(2)` with a `threads: 'id, updatedAt'` table.
+  `recover()` and `vaultInternals.reset()` now also clear the `threads` table so
+  no orphaned encrypted record survives an erase.
+
 ## Success Criteria
 
 - [x] A password unlocks the app; a wrong password reveals nothing.

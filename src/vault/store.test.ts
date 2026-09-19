@@ -287,7 +287,10 @@ describe('vault store', () => {
     const original = navigator.storage
     Object.defineProperty(navigator, 'storage', {
       configurable: true,
-      value: { persist: () => Promise.resolve(false) },
+      value: {
+        persist: () => Promise.resolve(false),
+        persisted: () => Promise.resolve(false),
+      },
     })
     try {
       await useVaultStore.getState().setup('no-persist-password')
@@ -295,5 +298,68 @@ describe('vault store', () => {
       Object.defineProperty(navigator, 'storage', { configurable: true, value: original })
     }
     expect(useVaultStore.getState().persistedStorage).toBe(false)
+  })
+
+  it('re-reads live persistence on unlock instead of trusting the stored flag', async () => {
+    await useVaultStore.getState().setup('recheck-password')
+    await useVaultStore.getState().lock()
+
+    const original = navigator.storage
+    let live = false
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: {
+        persist: () => Promise.resolve(live),
+        persisted: () => Promise.resolve(live),
+      },
+    })
+    try {
+      // The recorded flag was true from setup; a revoked grant must win.
+      await useVaultStore.getState().unlock('recheck-password')
+      expect(useVaultStore.getState().persistedStorage).toBe(false)
+
+      await useVaultStore.getState().lock()
+      live = true
+      await useVaultStore.getState().unlock('recheck-password')
+      expect(useVaultStore.getState().persistedStorage).toBe(true)
+    } finally {
+      Object.defineProperty(navigator, 'storage', { configurable: true, value: original })
+    }
+  })
+
+  it('grants persistence from an explicit request and clears the warning state', async () => {
+    const original = navigator.storage
+    let granted = false
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: {
+        persist: () => Promise.resolve(granted),
+        persisted: () => Promise.resolve(granted),
+      },
+    })
+    try {
+      await useVaultStore.getState().setup('request-password')
+      expect(useVaultStore.getState().persistedStorage).toBe(false)
+
+      await expect(useVaultStore.getState().requestPersistentStorage()).resolves.toBe(false)
+      expect(useVaultStore.getState().persistedStorage).toBe(false)
+
+      granted = true
+      await expect(useVaultStore.getState().requestPersistentStorage()).resolves.toBe(true)
+      expect(useVaultStore.getState().persistedStorage).toBe(true)
+    } finally {
+      Object.defineProperty(navigator, 'storage', { configurable: true, value: original })
+    }
+  })
+
+  it('treats a missing persistent storage API as unknown, not denied', async () => {
+    const original = navigator.storage
+    Object.defineProperty(navigator, 'storage', { configurable: true, value: undefined })
+    try {
+      await useVaultStore.getState().setup('noapi-password')
+      expect(useVaultStore.getState().persistedStorage).not.toBe(false)
+    } finally {
+      Object.defineProperty(navigator, 'storage', { configurable: true, value: original })
+    }
   })
 })

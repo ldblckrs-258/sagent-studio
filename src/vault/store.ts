@@ -22,7 +22,8 @@ import {
 import { defaultSettings, deepMerge, migrate, SETTINGS_VERSION } from './settings'
 import type { DeepPartial, Settings } from './settings'
 import type { KdfParams } from './types'
-import { createWriteQueue } from './write-queue'
+import { vaultWriteQueue } from './write-queue'
+import * as keyring from './keyring'
 import { invalidate as invalidateClients, setGeneration } from '../ai/client-cache'
 
 export type VaultStatus = 'locked' | 'unlocking' | 'unlocked' | 'recovering'
@@ -42,11 +43,11 @@ export interface VaultState {
   update(patch: DeepPartial<Settings>): Promise<void>
   recover(): Promise<void>
   clearError(): void
+  /** Requests persistent storage from the browser and records the outcome. */
+  requestPersistentStorage(): Promise<boolean>
 }
 
-let key: CryptoKey | null = null
 let createInFlight: Promise<unknown> | null = null
-const writeQueue = createWriteQueue()
 
 function newKdfParams(): KdfParams {
   return {
@@ -56,15 +57,40 @@ function newKdfParams(): KdfParams {
   }
 }
 
-async function requestPersistence(): Promise<boolean> {
+/**
+ * Reads whether this origin is already granted persistent storage. This never
+ * prompts, so it is safe to call on every unlock.
+ */
+async function readPersisted(): Promise<boolean | null> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage?.persisted) {
+      return await navigator.storage.persisted()
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/**
+ * Asks the browser to grant persistent storage. Chromium decides silently from
+ * engagement heuristics; Firefox shows a prompt, which is why this is only
+ * called from a user gesture or shortly after one.
+ */
+async function askPersisted(): Promise<boolean | null> {
   try {
     if (typeof navigator !== 'undefined' && navigator.storage?.persist) {
       return await navigator.storage.persist()
     }
   } catch {
-    return false
+    return null
   }
-  return false
+  return null
+}
+
+async function writePersisted(persisted: boolean): Promise<void> {
+  const meta = await db.meta.get(META_ID)
+  if (meta) await db.meta.put({ ...meta, persistedStorage: persisted, updatedAt: Date.now() })
 }
 
 export async function hasVault(): Promise<VaultPresence> {
@@ -77,7 +103,7 @@ export async function hasVault(): Promise<VaultPresence> {
 }
 
 async function createVaultInternal(password: string): Promise<CryptoKey> {
-  const persisted = await requestPersistence()
+  const persisted = await askPersisted()
   const kdfParams = newKdfParams()
   const derived = await deriveKey(password, kdfParams)
   const canary = await encrypt(derived, CANARY_PLAINTEXT, AAD_CANARY)
@@ -126,7 +152,9 @@ async function createVaultOnce(password: string): Promise<CryptoKey> {
   return derivedKey
 }
 
-async function unlockInternal(password: string): Promise<{ settings: Settings; persisted: boolean }> {
+async function unlockInternal(
+  password: string,
+): Promise<{ settings: Settings; persisted: boolean | null; key: CryptoKey }> {
   const meta = await db.meta.get(META_ID)
   const vault = await db.vault.get(VAULT_ID)
   if (!meta || !vault) {
@@ -146,8 +174,15 @@ async function unlockInternal(password: string): Promise<{ settings: Settings; p
       ? Number((parsed as { version: unknown }).version)
       : meta.settingsVersion
   const settings = migrate(version, parsed)
-  key = derived
-  return { settings, persisted: meta.persistedStorage }
+  // The stored flag only records what was true at creation time. The live
+  // reading is authoritative: a user may have granted persistence since, or had
+  // it revoked. Falls back to the recorded value when the API is unavailable.
+  const live = await readPersisted()
+  const persisted = live ?? meta.persistedStorage
+  if (live !== null && live !== meta.persistedStorage) {
+    await writePersisted(live)
+  }
+  return { settings, persisted, key: derived }
 }
 
 async function persistSettings(currentKey: CryptoKey, next: Settings): Promise<void> {
@@ -202,20 +237,25 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     set({ status: 'unlocking', error: null })
     try {
       const derived = await createVaultOnce(password)
-      key = derived
-      const generation = get().unlockGeneration + 1
+      keyring.install(derived)
+      const generation = keyring.getGeneration()
       setGeneration(generation)
       set({
         status: 'unlocked',
         presence: 'complete',
         settings: defaultSettings(),
-        persistedStorage: await requestPersistence(),
+        persistedStorage: (await readPersisted()) ?? true,
         unlockGeneration: generation,
         error: null,
       })
     } catch (error) {
-      key = null
-      set({ status: 'locked', settings: null, error: describeError(error) })
+      keyring.clear()
+      set({
+        status: 'locked',
+        settings: null,
+        unlockGeneration: keyring.getGeneration(),
+        error: describeError(error),
+      })
       throw error
     }
   },
@@ -223,8 +263,9 @@ export const useVaultStore = create<VaultState>((set, get) => ({
   async unlock(password) {
     set({ status: 'unlocking', error: null })
     try {
-      const { settings, persisted } = await unlockInternal(password)
-      const generation = get().unlockGeneration + 1
+      const { settings, persisted, key: derived } = await unlockInternal(password)
+      keyring.install(derived)
+      const generation = keyring.getGeneration()
       setGeneration(generation)
       set({
         status: 'unlocked',
@@ -234,74 +275,103 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         unlockGeneration: generation,
         error: null,
       })
+      // Retry the grant on every successful unlock. Unlock always follows a user
+      // gesture (the password submit), which is the context where a browser may
+      // still be willing to grant persistence.
+      if (!persisted) void get().requestPersistentStorage()
     } catch (error) {
-      key = null
+      keyring.clear()
       const status: VaultStatus = error instanceof CorruptVaultError ? 'recovering' : 'locked'
-      set({ status, settings: null, error: describeError(error) })
+      set({
+        status,
+        settings: null,
+        unlockGeneration: keyring.getGeneration(),
+        error: describeError(error),
+      })
       throw error
     }
   },
 
   async lock() {
-    // Null the key synchronously so any update enqueued after this point fails
+    // Clear the key synchronously so any update enqueued after this point fails
     // its identity check instead of landing after the store reports `locked`.
-    key = null
+    keyring.clear()
     invalidateClients()
-    await writeQueue.drain()
-    set((state) => ({
+    await vaultWriteQueue.drain()
+    set({
       status: 'locked',
       settings: null,
       error: null,
-      unlockGeneration: state.unlockGeneration + 1,
-    }))
+      unlockGeneration: keyring.getGeneration(),
+    })
   },
 
   async update(patch) {
-    const currentKey = key
+    const currentKey = keyring.getKey()
     if (!currentKey) throw new VaultLockedError()
-    await writeQueue.enqueue(async () => {
-      if (key !== currentKey) throw new VaultLockedError()
+    await vaultWriteQueue.enqueue(async () => {
+      if (keyring.getKey() !== currentKey) throw new VaultLockedError()
       const latest = get().settings
       if (!latest) throw new VaultLockedError()
       const next = deepMerge(latest, patch)
       await persistSettings(currentKey, next)
-      if (key === currentKey) set({ settings: next })
+      if (keyring.getKey() === currentKey) set({ settings: next })
     })
   },
 
   async recover() {
-    key = null
-    await writeQueue.drain()
-    await db.transaction('rw', db.vault, db.meta, async () => {
-      await db.vault.clear()
-      await db.meta.clear()
-    })
+    keyring.clear()
+    await vaultWriteQueue.drain()
+    await db.transaction(
+      'rw',
+      [db.vault, db.meta, db.threads, db.skills, db.tools, db.fs],
+      async () => {
+        await db.vault.clear()
+        await db.meta.clear()
+        await db.threads.clear()
+        await db.skills.clear()
+        await db.tools.clear()
+        await db.fs.clear()
+      },
+    )
     invalidateClients()
-    set((state) => ({
+    set({
       status: 'locked',
       presence: 'none',
       settings: null,
       persistedStorage: null,
       error: null,
-      unlockGeneration: state.unlockGeneration + 1,
-    }))
+      unlockGeneration: keyring.getGeneration(),
+    })
   },
 
   clearError() {
     set({ error: null })
   },
+
+  async requestPersistentStorage() {
+    const granted = await askPersisted()
+    if (granted === null) return get().persistedStorage === true
+    await writePersisted(granted)
+    set({ persistedStorage: granted })
+    return granted
+  },
 }))
 
 export const vaultInternals = {
-  getKey: () => key,
+  getKey: () => keyring.getKey(),
   reset: async () => {
     await db.vault.clear()
     await db.meta.clear()
-    key = null
+    await db.threads.clear()
+    await db.skills.clear()
+    await db.tools.clear()
+    await db.fs.clear()
+    keyring.reset()
     createInFlight = null
-    writeQueue.reset()
+    vaultWriteQueue.reset()
   },
-  hasKey: () => key !== null,
+  hasKey: () => keyring.getKey() !== null,
 }
 
 export type { VaultRecord, MetaRecord }

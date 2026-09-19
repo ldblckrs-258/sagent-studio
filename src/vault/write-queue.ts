@@ -20,3 +20,5 @@ export function createWriteQueue(): WriteQueue {
     },
   }
 }
+
+export const vaultWriteQueue = createWriteQueue()
