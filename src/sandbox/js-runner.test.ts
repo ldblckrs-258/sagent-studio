@@ -178,6 +178,19 @@ describe('JsRunner', () => {
     await expect(runner.run('x', {})).resolves.toMatchObject({ stdout: 'good' })
   })
 
+  it('dispose terminates an in-flight worker', async () => {
+    const worker = new FakeWorker()
+    const factory: WorkerFactory = () => worker as unknown as Worker
+    const runner = new JsRunner({ workerFactory: factory })
+    worker.onPost = () => {}
+
+    const pending = runner.run('while(true){}', { timeoutMs: 30 })
+    expect(worker.terminated).toBe(false)
+    runner.dispose()
+    expect(worker.terminated).toBe(true)
+    await expect(pending).rejects.toBeInstanceOf(SandboxTimeoutError)
+  })
+
   it('stops posting to the worker after it is disposed', async () => {
     const worker = new FakeWorker()
     const factory: WorkerFactory = () => worker as unknown as Worker

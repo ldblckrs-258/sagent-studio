@@ -56,6 +56,11 @@ export const FIXTURE_SETTINGS: Settings = {
     thresholds: {},
     concurrency: 2,
   },
+  sandbox: {
+    enabled: true,
+    jsTimeoutMs: 10_000,
+    pyTimeoutMs: 30_000,
+  },
   egressNoticeDismissed: false,
   idleLockMinutes: 15,
 }

@@ -27,13 +27,40 @@ export interface RagSettings {
   concurrency: number
 }
 
+/**
+ * Structural mirror of the chat layer's `SkillRef`, declared locally so the
+ * vault layer imports nothing from `src/chat`.
+ */
+export interface PersistedSkillRef {
+  id: string
+  source: 'vault' | 'workspace'
+}
+
+export interface SandboxSettings {
+  enabled: boolean
+  jsTimeoutMs: number
+  pyTimeoutMs: number
+}
+
+// Kept in sync with the runner constants by a unit test, without importing
+// app-local sandbox modules into the vault layer.
+export const DEFAULT_SANDBOX_JS_TIMEOUT_MS = 10_000
+export const DEFAULT_SANDBOX_PY_TIMEOUT_MS = 30_000
+
 export interface Settings {
   version: number
   providers: ProviderConfig[]
   typesafe: TypeSafeSettings
   rag: RagSettings
+  sandbox: SandboxSettings
   egressNoticeDismissed: boolean
   idleLockMinutes: number
+  /**
+   * Optional and deliberately absent by default: an absent policy means
+   * "enable every vault skill", so existing vaults keep working. Adding it to
+   * `defaultSettings()` would stamp an empty policy and disable every skill.
+   */
+  skills?: { enabled?: PersistedSkillRef[] }
 }
 
 export const MAX_PROVIDERS = 20
@@ -53,6 +80,11 @@ export function defaultSettings(): Settings {
       topK: 5,
       thresholds: {},
       concurrency: 2,
+    },
+    sandbox: {
+      enabled: true,
+      jsTimeoutMs: DEFAULT_SANDBOX_JS_TIMEOUT_MS,
+      pyTimeoutMs: DEFAULT_SANDBOX_PY_TIMEOUT_MS,
     },
     egressNoticeDismissed: false,
     idleLockMinutes: 15,

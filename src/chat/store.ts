@@ -8,11 +8,16 @@ export interface ChatState {
   threads: Record<string, ChatThread>
   activeThreadId: string | null
   status: ChatStoreStatus
+  /** Number of in-flight runs across every thread. Derived from `runningThreads`. */
+  activeRuns: number
+  /** Per-thread in-flight run count, so `isRunning` is correct per conversation. */
+  runningThreads: Record<string, number>
   error: string | null
   setThread(thread: ChatThread): void
   removeThread(id: string): void
   setActiveThread(id: string | null): void
-  setStatus(status: ChatStoreStatus): void
+  beginRun(threadId: string): void
+  endRun(threadId: string): void
   setError(error: string | null): void
   clear(): void
 }
@@ -21,6 +26,8 @@ export const useChatStore = create<ChatState>((set) => ({
   threads: {},
   activeThreadId: null,
   status: 'idle',
+  activeRuns: 0,
+  runningThreads: {},
   error: null,
 
   setThread(thread) {
@@ -42,8 +49,26 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ activeThreadId: id })
   },
 
-  setStatus(status) {
-    set({ status })
+  beginRun(threadId) {
+    set((state) => ({
+      activeRuns: state.activeRuns + 1,
+      runningThreads: {
+        ...state.runningThreads,
+        [threadId]: (state.runningThreads[threadId] ?? 0) + 1,
+      },
+      status: 'streaming',
+    }))
+  },
+
+  endRun(threadId) {
+    set((state) => {
+      const runningThreads = { ...state.runningThreads }
+      const remaining = Math.max(0, (runningThreads[threadId] ?? 0) - 1)
+      if (remaining === 0) delete runningThreads[threadId]
+      else runningThreads[threadId] = remaining
+      const activeRuns = Math.max(0, state.activeRuns - 1)
+      return { activeRuns, runningThreads, status: activeRuns > 0 ? 'streaming' : 'idle' }
+    })
   },
 
   setError(error) {
@@ -51,7 +76,14 @@ export const useChatStore = create<ChatState>((set) => ({
   },
 
   clear() {
-    set({ threads: {}, activeThreadId: null, status: 'idle', error: null })
+    set({
+      threads: {},
+      activeThreadId: null,
+      status: 'idle',
+      activeRuns: 0,
+      runningThreads: {},
+      error: null,
+    })
   },
 }))
 
@@ -66,6 +98,11 @@ export function registerAbortAll(abort: () => void): () => void {
 
 function abortAll(): void {
   for (const abort of aborters) abort()
+}
+
+/** Live global abort callbacks. Exposed so the engine-dispose test can assert no leak. */
+export function abortersCount(): number {
+  return aborters.size
 }
 
 useVaultStore.subscribe((state, previous) => {

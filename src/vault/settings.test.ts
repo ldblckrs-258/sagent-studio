@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { deepMerge, defaultSettings, migrate, SETTINGS_VERSION } from './settings'
+import { DEFAULT_JS_TIMEOUT_MS } from '../sandbox/js-runner'
+import { DEFAULT_PY_TIMEOUT_MS } from '../sandbox/py-runner'
+import {
+  DEFAULT_SANDBOX_JS_TIMEOUT_MS,
+  DEFAULT_SANDBOX_PY_TIMEOUT_MS,
+  deepMerge,
+  defaultSettings,
+  migrate,
+  SETTINGS_VERSION,
+} from './settings'
 import { VaultMigrationError } from './errors'
 
 describe('defaultSettings', () => {
@@ -25,6 +34,24 @@ describe('defaultSettings', () => {
       defaultModel: '',
     })
     expect(defaultSettings().providers).toEqual([])
+  })
+})
+
+describe('sandbox settings', () => {
+  it('defaults match the runner timeout constants', () => {
+    const sandbox = defaultSettings().sandbox
+    expect(sandbox.enabled).toBe(true)
+    expect(sandbox.jsTimeoutMs).toBe(DEFAULT_JS_TIMEOUT_MS)
+    expect(sandbox.pyTimeoutMs).toBe(DEFAULT_PY_TIMEOUT_MS)
+    expect(DEFAULT_SANDBOX_JS_TIMEOUT_MS).toBe(DEFAULT_JS_TIMEOUT_MS)
+    expect(DEFAULT_SANDBOX_PY_TIMEOUT_MS).toBe(DEFAULT_PY_TIMEOUT_MS)
+  })
+
+  it('fills a missing sandbox slice on migrate without a version bump', () => {
+    const migrated = migrate(1, { idleLockMinutes: 30 })
+    expect(migrated.version).toBe(1)
+    expect(migrated.sandbox).toEqual(defaultSettings().sandbox)
+    expect(migrated.idleLockMinutes).toBe(30)
   })
 })
 

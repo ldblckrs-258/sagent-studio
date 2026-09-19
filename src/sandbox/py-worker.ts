@@ -27,14 +27,24 @@ function describe(error: unknown): string {
   return String(error)
 }
 
+function pyodideIndexUrl(): string {
+  const base = import.meta.env.BASE_URL
+  const withSlash = base.endsWith('/') ? base : `${base}/`
+  return new URL(`${withSlash}pyodide/`, self.location.origin).href
+}
+
 async function loadPyodideOnce(): Promise<PyodideLike> {
   if (!pyodidePromise) {
     pyodidePromise = (async () => {
-      const moduleUrl = '/pyodide/pyodide.mjs'
+      const indexURL = pyodideIndexUrl()
+      // The URL must be absolute: Vite wraps non-literal dynamic imports in
+      // __vite__injectQuery, which appends `?import` to values starting with
+      // "/" and routes the public asset through the dev transform middleware.
+      const moduleUrl = `${indexURL}pyodide.mjs`
       const mod = (await import(/* @vite-ignore */ moduleUrl)) as {
         loadPyodide(options: { indexURL: string }): Promise<PyodideLike>
       }
-      return mod.loadPyodide({ indexURL: '/pyodide/' })
+      return mod.loadPyodide({ indexURL })
     })().catch((error: unknown) => {
       pyodidePromise = null
       throw error

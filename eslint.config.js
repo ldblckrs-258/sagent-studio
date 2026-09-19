@@ -19,4 +19,16 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // assistant-ui registry output, copied into the project by the CLI. The
+    // upstream source is not written for this repo's strict React rules:
+    // it reads refs during render for render-prop caching, exports variants
+    // beside components, and uses intentional empty catch blocks.
+    files: ['src/components/**/*.{ts,tsx}'],
+    rules: {
+      'react-hooks/refs': 'off',
+      'react-refresh/only-export-components': 'off',
+      'no-empty': 'off',
+    },
+  },
 ])

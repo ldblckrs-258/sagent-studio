@@ -1,5 +1,6 @@
 import type { ResolvedSkill } from '../chat/context'
 import type { SkillRef } from '../chat/types'
+import type { SkillEnablementPort } from './enablement'
 import { SkillParseError, isSkillManifest, skillKey, skillRefOf } from './schema'
 import type { SkillManifest } from './schema'
 import { skillStore } from './store'
@@ -14,13 +15,17 @@ export interface SkillStore {
   list(): Promise<SkillManifest[]>
 }
 
+export type { SkillEnablementPort }
+
 export class SkillRegistry {
   private readonly skills = new Map<string, SkillManifest>()
   private readonly enabled = new Set<string>()
   private readonly store: SkillStore
+  private readonly enablement?: SkillEnablementPort
 
-  constructor(store: SkillStore = skillStore) {
+  constructor(store: SkillStore = skillStore, enablement?: SkillEnablementPort) {
     this.store = store
+    this.enablement = enablement
   }
 
   register(manifest: SkillManifest, options: { enabled?: boolean } = {}): void {
@@ -48,6 +53,22 @@ export class SkillRegistry {
     const key = skillKey(ref)
     if (enabled) this.enabled.add(key)
     else this.enabled.delete(key)
+  }
+
+  /** Reconstructs the enabled refs from the registered manifests. */
+  snapshotEnabled(): SkillRef[] {
+    const refs: SkillRef[] = []
+    for (const manifest of this.skills.values()) {
+      const ref = skillRefOf(manifest)
+      if (this.enabled.has(skillKey(ref))) refs.push(ref)
+    }
+    return refs.sort((a, b) => skillKey(a).localeCompare(skillKey(b)))
+  }
+
+  /** Persists the current enablement. No-op without a port (tests/legacy). */
+  async persistEnabled(): Promise<void> {
+    if (!this.enablement) return
+    await this.enablement.save(this.snapshotEnabled())
   }
 
   resolve(refs: readonly SkillRef[]): ResolvedSkill[] {
@@ -99,7 +120,9 @@ export class SkillRegistry {
     const stored: SkillManifest = { ...manifest, source: 'vault', allowedTools: [...manifest.allowedTools] }
     if (!isSkillManifest(stored)) throw new SkillParseError('The skill manifest is malformed.')
     await this.store.save(stored)
-    this.register(stored, { enabled: true })
+    // An imported file is untrusted until the user explicitly enables it.
+    this.register(stored, { enabled: false })
+    await this.persistEnabled()
     return stored
   }
 
@@ -118,19 +141,34 @@ export class SkillRegistry {
     const key = skillKey(ref)
     this.skills.delete(key)
     this.enabled.delete(key)
+    await this.persistEnabled()
+  }
+
+  private async allowedKeys(): Promise<Set<string> | null> {
+    if (!this.enablement) return null
+    const policy = await this.enablement.load()
+    return policy ? new Set(policy.map(skillKey)) : null
   }
 
   async loadWorkspaceSkills(source: SkillSource): Promise<SkillManifest[]> {
     const manifests = await source.list()
+    const allowed = await this.allowedKeys()
     for (const manifest of manifests) {
-      this.register({ ...manifest, source: 'workspace' }, { enabled: false })
+      const ref = skillRefOf({ ...manifest, source: 'workspace' })
+      // A persisted workspace ref is honoured on reload; without a policy the
+      // untrusted workspace skill stays disabled.
+      const enabled = allowed === null ? false : allowed.has(skillKey(ref))
+      this.register({ ...manifest, source: 'workspace' }, { enabled })
     }
     return manifests
   }
 
   async hydrate(): Promise<void> {
+    const allowed = await this.allowedKeys()
     for (const manifest of await this.store.list()) {
-      this.register(manifest, { enabled: true })
+      // `null` policy means legacy enable-all; a policy enables exactly its refs.
+      const enabled = allowed === null ? true : allowed.has(skillKey(skillRefOf(manifest)))
+      this.register(manifest, { enabled })
     }
   }
 }

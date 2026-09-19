@@ -9,9 +9,12 @@ import { useVaultStore, vaultInternals } from '../vault/store'
 import {
   createThread,
   deleteThread,
+  listThreadSummaries,
   listThreads,
   loadThread,
+  renameThread,
   saveThread,
+  setThreadWorkspaceLabel,
   THREAD_ENVELOPE_VERSION,
 } from './persistence'
 import { defaultThreadConfig } from './types'
@@ -50,16 +53,68 @@ describe('thread persistence', () => {
     await expect(loadThread('missing')).resolves.toBeNull()
   })
 
-  it('lists only id and updatedAt, newest first', async () => {
+  it('lists id, title, and updatedAt, newest first, with no plaintext label', async () => {
     await saveThread(thread('a', { updatedAt: 1000 }))
     await saveThread(thread('b', { updatedAt: 2000 }))
 
     const list = await listThreads()
     expect(list).toEqual([
-      { id: 'b', updatedAt: 2000 },
-      { id: 'a', updatedAt: 1000 },
+      { id: 'b', title: 'Thread b', updatedAt: 2000 },
+      { id: 'a', title: 'Thread a', updatedAt: 1000 },
     ])
-    expect(Object.keys(list[0])).toEqual(['id', 'updatedAt'])
+    expect(Object.keys(list[0])).toEqual(['id', 'title', 'updatedAt'])
+  })
+
+  it('round-trips an optional workspace label without a version bump', async () => {
+    await saveThread(thread('w', { workspaceName: 'project-x' }))
+    const list = await listThreads()
+    expect(list[0]).toMatchObject({ id: 'w', workspaceName: 'project-x' })
+  })
+
+  it('skips a corrupt row and still lists the valid rows', async () => {
+    await saveThread(thread('good-1', { updatedAt: 1000 }))
+    await db.threads.put({
+      id: 'bad',
+      blob: { iv: new Uint8Array([0]), ciphertext: new Uint8Array([1, 2, 3]) },
+      updatedAt: 2000,
+    })
+    await saveThread(thread('good-2', { updatedAt: 3000 }))
+
+    const result = await listThreadSummaries()
+    expect(result.failures).toBe(1)
+    expect(result.locked).toBe(false)
+    expect(result.summaries.map((summary) => summary.id)).toEqual(['good-2', 'good-1'])
+  })
+
+  it('returns a locked marker instead of throwing while locked', async () => {
+    await saveThread(thread('locked'))
+    keyring.clear()
+
+    const result = await listThreadSummaries()
+    expect(result.locked).toBe(true)
+    expect(result.summaries).toEqual([])
+  })
+
+  it('renames a thread and keeps the new title on reload', async () => {
+    await saveThread(thread('r', { title: 'Old' }))
+    await renameThread('r', 'New title')
+    await expect(loadThread('r')).resolves.toMatchObject({ title: 'New title' })
+  })
+
+  it('does not resurrect a deleted thread when patched after the delete', async () => {
+    await saveThread(thread('gone'))
+    await deleteThread('gone')
+    await renameThread('gone', 'Zombie')
+    await expect(loadThread('gone')).resolves.toBeNull()
+    await expect(db.threads.get('gone')).resolves.toBeUndefined()
+  })
+
+  it('sets and clears the workspace label', async () => {
+    await saveThread(thread('label'))
+    await setThreadWorkspaceLabel('label', 'folder-name')
+    await expect(loadThread('label')).resolves.toMatchObject({ workspaceName: 'folder-name' })
+    await setThreadWorkspaceLabel('label', undefined)
+    await expect(loadThread('label')).resolves.not.toHaveProperty('workspaceName')
   })
 
   it('serializes concurrent saves in enqueue order so the newest turn wins', async () => {
@@ -81,12 +136,15 @@ describe('thread persistence', () => {
     expect(useVaultStore.getState().status).toBe('locked')
   })
 
-  it('writes no plaintext title or message content', async () => {
-    const marker = 'PLAINTEXT_MARKER_9f2c4a'
+  it('writes no plaintext title, workspace label, or message content', async () => {
+    const titleMarker = 'PLAINTEXT_TITLE_9f2c4a'
+    const labelMarker = 'PLAINTEXT_LABEL_1a7b3c'
+    const bodyMarker = 'PLAINTEXT_BODY_55ee11'
     await saveThread(
       thread('e', {
-        title: marker,
-        messages: [userMessage('e-m1', marker)],
+        title: titleMarker,
+        workspaceName: labelMarker,
+        messages: [userMessage('e-m1', bodyMarker)],
       }),
     )
 
@@ -115,7 +173,9 @@ describe('thread persistence', () => {
     }
     const haystack = new TextDecoder('utf-8', { fatal: false }).decode(merged)
     expect(chunks.length).toBeGreaterThan(0)
-    expect(haystack).not.toContain(marker)
+    expect(haystack).not.toContain(titleMarker)
+    expect(haystack).not.toContain(labelMarker)
+    expect(haystack).not.toContain(bodyMarker)
   })
 
   it('rejects a newer envelope version', async () => {

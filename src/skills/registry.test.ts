@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import type { SkillRef } from '../chat/types'
 import { deriveKey, randomBytes } from '../vault/crypto'
 import { db } from '../vault/db'
 import * as keyring from '../vault/keyring'
@@ -172,6 +173,110 @@ describe('SkillRegistry', () => {
       const registry = new SkillRegistry()
       await expect(registry.updateSkill(manifest({ id: 'nope' }))).rejects.toThrow()
     })
+  })
+})
+
+describe('SkillRegistry enablement port', () => {
+  function fakePort(initial: SkillRef[] | null) {
+    let current = initial
+    const state = { failNext: false }
+    const writes: Array<SkillRef[]> = []
+    return {
+      writes,
+      state,
+      port: {
+        load: async () => current,
+        save: async (enabled: readonly SkillRef[]) => {
+          writes.push([...enabled])
+          if (state.failNext) throw new Error('persist failed')
+          current = [...enabled]
+        },
+      },
+    }
+  }
+
+  it('treats a null policy as legacy enable-all', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 's1' }))
+    const registry = new SkillRegistry(store, fakePort(null).port)
+    await registry.hydrate()
+    await registry.loadWorkspaceSkills({
+      list: async () => [manifest({ id: 'ws', instructions: 'repo' })],
+    })
+    // Vault skills enabled, workspace skills stay untrusted without a policy.
+    expect(registry.resolve([{ id: 's1', source: 'vault' }])).toHaveLength(1)
+    expect(registry.isEnabled({ id: 'ws', source: 'workspace' })).toBe(false)
+  })
+
+  it('enables exactly the persisted refs, including a workspace ref', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 's1' }))
+    const { port } = fakePort([
+      { id: 's1', source: 'vault' },
+      { id: 'ws', source: 'workspace' },
+    ])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+    await registry.loadWorkspaceSkills({
+      list: async () => [manifest({ id: 'ws', instructions: 'repo' })],
+    })
+
+    expect(registry.isEnabled({ id: 's1', source: 'vault' })).toBe(true)
+    expect(registry.isEnabled({ id: 'ws', source: 'workspace' })).toBe(true)
+  })
+
+  it('persists the new policy when a skill is toggled', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 's1' }))
+    const { port, writes } = fakePort([])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+    expect(registry.isEnabled({ id: 's1', source: 'vault' })).toBe(false)
+
+    registry.setEnabled({ id: 's1', source: 'vault' }, true)
+    await registry.persistEnabled()
+    expect(writes.at(-1)).toEqual([{ id: 's1', source: 'vault' }])
+  })
+
+  it('registers an import disabled and persists it only after an explicit enable', async () => {
+    const store = fakeStore()
+    const { port, writes } = fakePort([])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+
+    await registry.importSkill(manifest({ id: 'imp' }))
+    expect(registry.isEnabled({ id: 'imp', source: 'vault' })).toBe(false)
+    expect(writes.at(-1)).toEqual([])
+
+    registry.setEnabled({ id: 'imp', source: 'vault' }, true)
+    await registry.persistEnabled()
+    expect(writes.at(-1)).toEqual([{ id: 'imp', source: 'vault' }])
+  })
+
+  it('drops a removed skill from the persisted policy', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 'keep' }))
+    const { port, writes } = fakePort([{ id: 'keep', source: 'vault' }])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+    await registry.removeSkill({ id: 'keep', source: 'vault' })
+    expect(writes.at(-1)).toEqual([])
+  })
+
+  it('surfaces a persist failure without corrupting the in-memory set', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 's1' }))
+    const { port, state } = fakePort([])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+
+    registry.setEnabled({ id: 's1', source: 'vault' }, true)
+    state.failNext = true
+    await expect(registry.persistEnabled()).rejects.toThrow('persist failed')
+    // In-memory state is still consistent and re-persistable.
+    expect(registry.isEnabled({ id: 's1', source: 'vault' })).toBe(true)
+    state.failNext = false
+    await expect(registry.persistEnabled()).resolves.toBeUndefined()
   })
 })
 

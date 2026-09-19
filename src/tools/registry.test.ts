@@ -6,6 +6,7 @@ import { ToolRegistry } from './registry'
 import {
   HttpToolError,
   ToolNameConflictError,
+  ToolNotFoundError,
   ToolRuntimeUnavailableError,
   ToolSchemaError,
 } from './types'
@@ -176,6 +177,38 @@ describe('ToolRegistry', () => {
     const registry = new ToolRegistry(store)
     await registry.hydrate()
     expect(registry.availableNames({})).toEqual(['hydrated'])
+  })
+
+  it('skips already-registered tools on a second hydrate', async () => {
+    const store = {
+      save: async () => {},
+      remove: async () => {},
+      list: async () => [httpTool('hydrated')],
+    }
+    const registry = new ToolRegistry(store)
+    await registry.hydrate()
+    await expect(registry.hydrate()).resolves.toBeUndefined()
+    expect(registry.availableNames({})).toEqual(['hydrated'])
+  })
+
+  it('skips a hydrated name that collides with a registered provider', async () => {
+    const store = {
+      save: async () => {},
+      remove: async () => {},
+      list: async () => [httpTool('read_file')],
+    }
+    const registry = new ToolRegistry(store)
+    registry.registerProvider(provider(['read_file']))
+    await expect(registry.hydrate()).resolves.toBeUndefined()
+  })
+
+  it('removes a user tool and narrows the available pool', () => {
+    const registry = new ToolRegistry()
+    registry.registerUserTool(httpTool('gone'))
+    expect(registry.availableNames({})).toEqual(['gone'])
+    registry.removeUserTool('gone')
+    expect(registry.availableNames({})).toEqual([])
+    expect(() => registry.removeUserTool('gone')).toThrow(ToolNotFoundError)
   })
 
   it('toggles enabled state through setEnabled', () => {

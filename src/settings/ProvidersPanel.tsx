@@ -1,10 +1,15 @@
 import { useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { ChevronDown, CircleCheck, CircleX, Plus, Trash2 } from 'lucide-react'
 import { useVaultStore } from '../vault/store'
 import type { ProviderConfig, Settings } from '../vault/settings'
-import { MAX_MODELS_PER_PROVIDER, MAX_PROVIDERS, validateProvider } from '../ai/providers'
+import { MAX_PROVIDERS, validateProvider } from '../ai/providers'
 import type { ProviderValidationErrors } from '../ai/providers'
 import { createLLM } from '../ai/llm'
+import { ModelManager } from '../ai/model-manager'
 import { SecretField } from '../ai/secret-field'
+import { Button, Input, Row } from '../ui/primitives'
+import { Spinner } from '../ui/shortcuts'
 import { generateText } from 'ai'
 
 function emptyProvider(): ProviderConfig {
@@ -21,37 +26,57 @@ function emptyProvider(): ProviderConfig {
 
 type ConnectionState = { status: 'idle' | 'testing' | 'ok' | 'error'; message?: string }
 
-function ProviderCard({
+function SectionHeader({
+  title,
+  description,
+  action,
+}: {
+  title: string
+  description: string
+  action?: ReactNode
+}) {
+  return (
+    <header className="flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <h2 className="text-sm font-medium text-ink">{title}</h2>
+        <p className="mt-1 text-xs leading-relaxed text-muted">{description}</p>
+      </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </header>
+  )
+}
+
+function ProviderEntry({
   provider,
+  startExpanded = false,
   onSave,
   onDelete,
 }: {
   provider: ProviderConfig
+  startExpanded?: boolean
   onSave: (next: ProviderConfig) => Promise<void>
   onDelete: () => Promise<void>
 }) {
   const [draft, setDraft] = useState(provider)
   const [errors, setErrors] = useState<ProviderValidationErrors>({})
   const [connection, setConnection] = useState<ConnectionState>({ status: 'idle' })
-  const [modelsText, setModelsText] = useState(provider.models.join('\n'))
+  const [expanded, setExpanded] = useState(startExpanded)
+  const [saving, setSaving] = useState(false)
 
   const patch = (next: Partial<ProviderConfig>) => setDraft((prev) => ({ ...prev, ...next }))
 
-  const commitModels = () => {
-    const models = modelsText
-      .split(/[\n,]/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(0, MAX_MODELS_PER_PROVIDER)
-    patch({ models })
-  }
-
   const save = async () => {
-    const next = { ...draft, models: draft.models }
-    const found = validateProvider(next)
+    setErrors({})
+    const found = validateProvider(draft)
     setErrors(found)
     if (Object.keys(found).length > 0) return
-    await onSave(next)
+    setSaving(true)
+    try {
+      await onSave(draft)
+      setConnection({ status: 'idle' })
+    } finally {
+      setSaving(false)
+    }
   }
 
   const testConnection = async () => {
@@ -71,86 +96,135 @@ function ProviderCard({
     }
   }
 
+  const host = (() => {
+    try {
+      return new URL(draft.baseURL).host
+    } catch {
+      return draft.baseURL || 'not set'
+    }
+  })()
+
   return (
-    <article className="mb-4 rounded border border-[var(--border)] p-4 text-left">
-      <div className="grid gap-3">
-        <label className="grid gap-1 text-xs">
-          Label
-          <input
-            value={draft.label}
-            onChange={(event) => patch({ label: event.target.value })}
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
-          />
-          {errors.label ? <span className="text-red-500">{errors.label}</span> : null}
-        </label>
-        <label className="grid gap-1 text-xs">
-          Base URL
-          <input
-            value={draft.baseURL}
-            onChange={(event) => patch({ baseURL: event.target.value })}
-            placeholder="https://api.example.com/v1"
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 font-mono text-sm"
-          />
-          {errors.baseURL ? <span className="text-red-500">{errors.baseURL}</span> : null}
-        </label>
-        <div className="grid gap-1 text-xs">
-          API key
-          <SecretField
-            name={`provider-${draft.id}-apiKey`}
-            storedValue={draft.apiKey}
-            onChange={(value) => patch({ apiKey: value })}
-          />
-          {errors.apiKey ? <span className="text-red-500">{errors.apiKey}</span> : null}
+    <article className="border-t border-rule">
+      <div className="flex items-center justify-between gap-2 py-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-medium text-ink">{draft.label || 'Untitled provider'}</h3>
+          <p className="truncate font-mono text-xs text-faint">{host}</p>
         </div>
-        <label className="grid gap-1 text-xs">
-          Models (one per line, max {MAX_MODELS_PER_PROVIDER})
-          <textarea
-            value={modelsText}
-            onChange={(event) => setModelsText(event.target.value)}
-            onBlur={commitModels}
-            rows={3}
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 font-mono text-sm"
-          />
-          {errors.models ? <span className="text-red-500">{errors.models}</span> : null}
-        </label>
-        <label className="grid gap-1 text-xs">
-          Default model
-          <select
-            value={draft.defaultModel}
-            onChange={(event) => patch({ defaultModel: event.target.value })}
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="quiet"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((prev) => !prev)}
+            icon={
+              <ChevronDown
+                size={14}
+                strokeWidth={1.75}
+                aria-hidden="true"
+                className={`transition-transform duration-200 ease-out-quart ${expanded ? 'rotate-180' : ''}`}
+              />
+            }
           >
-            <option value="">Select a model…</option>
-            {draft.models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-          {errors.defaultModel ? <span className="text-red-500">{errors.defaultModel}</span> : null}
-        </label>
+            {expanded ? 'Hide' : 'Edit'}
+          </Button>
+        </div>
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" onClick={() => void save()} className="rounded bg-[var(--accent)] px-3 py-1 text-sm text-white">
-          Save provider
-        </button>
-        <button type="button" onClick={() => void testConnection()} className="rounded border border-[var(--border)] px-3 py-1 text-sm">
-          {connection.status === 'testing' ? 'Testing…' : 'Test connection'}
-        </button>
-        <button type="button" onClick={() => void onDelete()} className="rounded border border-[var(--border)] px-3 py-1 text-sm">
-          Delete
-        </button>
-        {connection.message ? (
-          <span className={connection.status === 'ok' ? 'text-sm text-green-600' : 'text-sm text-red-500'}>
-            {connection.message}
-          </span>
-        ) : null}
-      </div>
+
+      {expanded ? (
+        <div className="pb-3 motion-safe:animate-[panel-in_200ms_var(--ease-out-quart)]">
+          <Row label="Label" hint="Shown in provider lists." error={errors.label}>
+            <Input
+              size="sm"
+              value={draft.label}
+              placeholder="Local llama.cpp"
+              onChange={(event) => patch({ label: event.target.value })}
+            />
+          </Row>
+          <Row label="Endpoint" hint="OpenAI-compatible base URL." error={errors.baseURL}>
+            <Input
+              size="sm"
+              value={draft.baseURL}
+              placeholder="https://api.example.com/v1"
+              spellCheck={false}
+              className="font-mono"
+              onChange={(event) => patch({ baseURL: event.target.value })}
+            />
+          </Row>
+          <Row label="Credential" hint="Stored encrypted, never shown in full." error={errors.apiKey}>
+            <SecretField
+              name={`provider-${draft.id}-apiKey`}
+              storedValue={draft.apiKey}
+              onChange={(value) => patch({ apiKey: value })}
+            />
+          </Row>
+          <Row label="Models" hint="Fetched from the provider, or added by hand."
+            error={errors.models ?? errors.defaultModel}
+          >
+            <ModelManager
+              provider={draft}
+              models={draft.models}
+              defaultModel={draft.defaultModel}
+              onModelsChange={(models) => patch({ models })}
+              onDefaultModelChange={(defaultModel) => patch({ defaultModel })}
+            />
+          </Row>
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-rule pt-3">
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              onClick={() => void save()}
+              disabled={saving}
+              icon={saving ? <Spinner /> : undefined}
+            >
+              {saving ? 'Saving' : 'Save provider'}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => void testConnection()}
+              disabled={connection.status === 'testing'}
+              icon={connection.status === 'testing' ? <Spinner /> : undefined}
+            >
+              {connection.status === 'testing' ? 'Testing' : 'Test connection'}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="danger"
+              onClick={() => void onDelete()}
+              icon={<Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />}
+            >
+              Delete
+            </Button>
+          </div>
+
+          {connection.message ? (
+            <p
+              role="status"
+              className={`mt-2 flex items-start gap-1.5 font-mono text-xs ${
+                connection.status === 'ok' ? 'text-positive' : 'text-danger'
+              }`}
+            >
+              {connection.status === 'ok' ? (
+                <CircleCheck size={14} strokeWidth={1.75} aria-hidden="true" className="mt-0.5 shrink-0" />
+              ) : (
+                <CircleX size={14} strokeWidth={1.75} aria-hidden="true" className="mt-0.5 shrink-0" />
+              )}
+              {connection.message}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   )
 }
 
-function TypeSafeForm({ settings }: { settings: Settings }) {
+function TypeSafeSection({ settings }: { settings: Settings }) {
   const update = useVaultStore((s) => s.update)
   const [draft, setDraft] = useState(settings.typesafe)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -173,34 +247,39 @@ function TypeSafeForm({ settings }: { settings: Settings }) {
   }
 
   return (
-    <section className="mb-6 rounded border border-[var(--border)] p-4 text-left">
-      <h2 className="mb-3 text-lg">TypeSafe</h2>
-      <div className="grid gap-3">
-        <div className="grid gap-1 text-xs">
-          API key
+    <section className="mt-3 border-t border-rule pt-3">
+      <SectionHeader
+        title="TypeSafe"
+        description="Common-sense judgments are requested from TypeSafe. The key is encrypted at rest with everything else."
+      />
+      <div className="mt-1">
+        <Row label="Credential" hint="Encrypted, revealed only on request.">
           <SecretField
             name="typesafe-apiKey"
             storedValue={draft.apiKey}
             onChange={(value) => patch({ apiKey: value })}
           />
-        </div>
-        <label className="grid gap-1 text-xs">
-          Model
-          <input
+        </Row>
+        <Row label="Model" hint="TypeSafe model identifier.">
+          <Input
+            size="sm"
             value={draft.model}
+            spellCheck={false}
+            placeholder="system-one"
+            className="font-mono"
             onChange={(event) => patch({ model: event.target.value })}
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
           />
-        </label>
-        <label className="grid gap-1 text-xs">
-          Base URL override (optional)
-          <input
+        </Row>
+        <Row label="Endpoint override" hint="Leave empty to use the hosted default.">
+          <Input
+            size="sm"
             value={draft.baseURL ?? ''}
-            onChange={(event) => patch({ baseURL: event.target.value })}
+            spellCheck={false}
             placeholder="https://api.typesafe.ai"
-            className="rounded border border-[var(--border)] bg-transparent px-3 py-2 font-mono text-sm"
+            className="font-mono"
+            onChange={(event) => patch({ baseURL: event.target.value })}
           />
-        </label>
+        </Row>
       </div>
     </section>
   )
@@ -242,39 +321,62 @@ export function ProvidersPanel() {
   }
 
   return (
-    <section className="text-left">
-      <header className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg">LLM Providers</h2>
-        <button
-          type="button"
-          onClick={startAdd}
-          className="rounded border border-[var(--border)] px-3 py-1 text-sm"
-        >
-          {adding ? 'Cancel' : 'Add provider'}
-        </button>
-      </header>
-      {adding && newProvider ? (
-        <ProviderCard
-          provider={newProvider}
-          onSave={saveProvider}
-          onDelete={async () => {
-            setAdding(false)
-            setNewProvider(null)
-          }}
-        />
-      ) : null}
-      {providers.map((provider) => (
-        <ProviderCard
-          key={provider.id}
-          provider={provider}
-          onSave={saveProvider}
-          onDelete={() => deleteProvider(provider.id)}
-        />
-      ))}
-      {providers.length === 0 && !adding ? (
-        <p className="text-sm">No providers configured yet.</p>
-      ) : null}
-      <TypeSafeForm settings={settings} />
+    <section className="flex flex-col px-3 py-3">
+      <SectionHeader
+        title="LLM providers"
+        description="OpenAI-compatible endpoints this app may call. A request only leaves the device when you run a query or test a connection."
+        action={
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={startAdd}
+            disabled={providers.length >= MAX_PROVIDERS && !adding}
+            icon={
+              adding ? undefined : <Plus size={14} strokeWidth={1.75} aria-hidden="true" />
+            }
+          >
+            {adding ? 'Cancel' : 'Add provider'}
+          </Button>
+        }
+      />
+
+      <div className="mt-2">
+        {adding && newProvider ? (
+          <div className="mb-3 rounded-sm border border-accent-rule bg-surface px-2">
+            <ProviderEntry
+              provider={newProvider}
+              startExpanded
+              onSave={saveProvider}
+              onDelete={async () => {
+                setAdding(false)
+                setNewProvider(null)
+              }}
+            />
+          </div>
+        ) : null}
+
+        {providers.length > 0 ? (
+          <div>
+            {providers.map((provider) => (
+              <ProviderEntry
+                key={provider.id}
+                provider={provider}
+                onSave={saveProvider}
+                onDelete={() => deleteProvider(provider.id)}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {providers.length === 0 && !adding ? (
+          <p className="border-t border-rule py-6 text-xs text-muted">
+            No providers configured. Add one to send a query.
+          </p>
+        ) : null}
+      </div>
+
+      <TypeSafeSection settings={settings} />
     </section>
   )
 }

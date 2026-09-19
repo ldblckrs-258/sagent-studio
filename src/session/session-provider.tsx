@@ -1,0 +1,63 @@
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { createSession } from './session'
+import { SessionContext } from './session-context'
+import { useWorkspaceStore } from './workspace-state'
+
+function describe(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+/**
+ * Owns the app session for one vault unlock. Hydration and workspace restore
+ * are best-effort: a failure surfaces as a non-fatal banner rather than
+ * blocking the shell, so the thread still renders.
+ */
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const [session] = useState(createSession)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const failures: string[] = []
+      try {
+        await session.skillRegistry.hydrate()
+      } catch (error) {
+        failures.push(describe(error))
+      }
+      try {
+        await session.toolRegistry.hydrate()
+      } catch (error) {
+        failures.push(describe(error))
+      }
+      try {
+        await useWorkspaceStore.getState().restore()
+      } catch (error) {
+        failures.push(describe(error))
+      }
+      if (!cancelled && failures.length > 0) setSessionError(failures.join(' '))
+    })()
+
+    return () => {
+      cancelled = true
+      session.dispose()
+      void useWorkspaceStore.getState().clear()
+    }
+  }, [session])
+
+  return (
+    <SessionContext.Provider value={session}>
+      {sessionError ? (
+        <div
+          role="alert"
+          className="border-b border-danger-rule bg-danger-soft px-6 py-2 font-mono text-xs text-danger"
+        >
+          {sessionError}
+        </div>
+      ) : null}
+      {children}
+    </SessionContext.Provider>
+  )
+}

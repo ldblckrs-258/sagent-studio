@@ -6,7 +6,7 @@ import type { HttpToolDefinition, SandboxJsToolDefinition, ToolDefinition } from
 
 export const TOOL_ENVELOPE_VERSION = 1
 
-function assertHttpDefinition(definition: HttpToolDefinition): void {
+export function assertHttpDefinition(definition: HttpToolDefinition): void {
   const request = definition.request
   if (typeof request?.url !== 'string' || request.url.length === 0) {
     throw new ToolSchemaError(`The http tool "${definition.name}" needs a request URL.`)

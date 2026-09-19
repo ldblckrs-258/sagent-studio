@@ -4,6 +4,7 @@ import type { CodeRunner, RunOptions } from '../../sandbox/types'
 import { ToolRegistry } from '../registry'
 import { ToolNotFoundError } from '../types'
 import { createCodeToolProvider } from './code'
+import type { CodeToolRunners } from './code'
 
 const CALL = { toolCallId: 'call-1', messages: [], context: {} }
 
@@ -12,6 +13,26 @@ function recordingRunner(label: string, calls: Array<{ source: string; options: 
     run: async (source, options) => {
       calls.push({ source, options })
       return { stdout: `${label}:${source}`, stderr: '', result: null }
+    },
+  }
+}
+
+function runners(calls: Array<{ source: string; options: RunOptions }>): CodeToolRunners {
+  return { js: recordingRunner('js', calls), python: recordingRunner('py', calls) }
+}
+
+/** A mutable source whose current runners and enabled flag can be swapped. */
+function source(initial: CodeToolRunners) {
+  let current = initial
+  let enabled = true
+  return {
+    getRunners: () => current,
+    isEnabled: () => enabled,
+    setRunners: (next: CodeToolRunners) => {
+      current = next
+    },
+    setEnabled: (next: boolean) => {
+      enabled = next
     },
   }
 }
@@ -25,10 +46,7 @@ function executor(toolSet: ToolSet, name: string) {
 describe('createCodeToolProvider', () => {
   it('exposes run_js and run_python', () => {
     const calls: Array<{ source: string; options: RunOptions }> = []
-    const provider = createCodeToolProvider({
-      js: recordingRunner('js', calls),
-      python: recordingRunner('py', calls),
-    })
+    const provider = createCodeToolProvider(source(runners(calls)))
     const registry = new ToolRegistry()
     registry.registerProvider(provider)
     expect(Object.keys(registry.buildToolSet(undefined, {}))).toEqual(['run_js', 'run_python'])
@@ -36,10 +54,7 @@ describe('createCodeToolProvider', () => {
 
   it('runs JavaScript through the js runner', async () => {
     const calls: Array<{ source: string; options: RunOptions }> = []
-    const provider = createCodeToolProvider({
-      js: recordingRunner('js', calls),
-      python: recordingRunner('py', calls),
-    })
+    const provider = createCodeToolProvider(source(runners(calls)))
     const registry = new ToolRegistry()
     registry.registerProvider(provider)
     const set = registry.buildToolSet(['run_js'], {})
@@ -51,10 +66,7 @@ describe('createCodeToolProvider', () => {
 
   it('runs Python through the python runner', async () => {
     const calls: Array<{ source: string; options: RunOptions }> = []
-    const provider = createCodeToolProvider({
-      js: recordingRunner('js', calls),
-      python: recordingRunner('py', calls),
-    })
+    const provider = createCodeToolProvider(source(runners(calls)))
     const registry = new ToolRegistry()
     registry.registerProvider(provider)
     const set = registry.buildToolSet(['run_python'], {})
@@ -65,10 +77,36 @@ describe('createCodeToolProvider', () => {
 
   it('rejects an unknown tool name', () => {
     const calls: Array<{ source: string; options: RunOptions }> = []
-    const provider = createCodeToolProvider({
-      js: recordingRunner('js', calls),
-      python: recordingRunner('py', calls),
-    })
+    const provider = createCodeToolProvider(source(runners(calls)))
     expect(() => provider.create('nope', {})).toThrow(ToolNotFoundError)
+  })
+
+  it('removes the code tools from the available pool when disabled', () => {
+    const calls: Array<{ source: string; options: RunOptions }> = []
+    const live = source(runners(calls))
+    const provider = createCodeToolProvider(live)
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider)
+
+    expect(registry.availableNames({})).toEqual(['run_js', 'run_python'])
+    live.setEnabled(false)
+    expect(registry.availableNames({})).toEqual([])
+    live.setEnabled(true)
+    expect(registry.availableNames({})).toEqual(['run_js', 'run_python'])
+  })
+
+  it('uses a swapped runner on the next call without re-registering', async () => {
+    const calls: Array<{ source: string; options: RunOptions }> = []
+    const live = source(runners(calls))
+    const provider = createCodeToolProvider(live)
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider)
+    const set = registry.buildToolSet(['run_js'], {})
+
+    live.setRunners({ js: recordingRunner('swapped', calls), python: recordingRunner('py', calls) })
+
+    await expect(executor(set, 'run_js')({ source: 'x' }, CALL)).resolves.toMatchObject({
+      stdout: 'swapped:x',
+    })
   })
 })

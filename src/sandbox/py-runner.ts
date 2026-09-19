@@ -42,6 +42,11 @@ export class PyRunner implements CodeRunner {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_PY_TIMEOUT_MS
   }
 
+  /** Terminates the warm worker and closes its port. No respawn. */
+  dispose(): void {
+    this.terminateAndRespawn()
+  }
+
   // The Python worker keeps per-run state in module scope, so runs are
   // serialized: a second run starts only after the first settles.
   run(source: string, options: RunOptions = {}): Promise<RunResult> {

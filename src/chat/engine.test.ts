@@ -11,7 +11,7 @@ import type { Settings } from '../vault/settings'
 import { useVaultStore } from '../vault/store'
 import { createEngine } from './engine'
 import type { EngineDeps } from './engine'
-import { useChatStore } from './store'
+import { abortersCount, useChatStore } from './store'
 import { defaultThreadConfig } from './types'
 import type { ChatThread } from './types'
 
@@ -134,7 +134,7 @@ function slowProvider(): ToolProvider {
 interface MemoryStore {
   loadThread(id: string): Promise<ChatThread | null>
   saveThread(thread: ChatThread): Promise<void>
-  listThreads(): Promise<Array<{ id: string; updatedAt: number }>>
+  listThreads(): Promise<Array<{ id: string; title: string; workspaceName?: string; updatedAt: number }>>
   deleteThread(id: string): Promise<void>
   get(id: string): ChatThread | undefined
 }
@@ -147,7 +147,11 @@ function memoryStore(initial: ChatThread[] = []): MemoryStore {
       threads.set(thread.id, thread)
     },
     listThreads: async () =>
-      [...threads.values()].map((thread) => ({ id: thread.id, updatedAt: thread.updatedAt })),
+      [...threads.values()].map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        updatedAt: thread.updatedAt,
+      })),
     deleteThread: async (id) => {
       threads.delete(id)
     },
@@ -453,6 +457,55 @@ describe('chat engine', () => {
       'assistant',
     ])
     expect(textOf(messages[3])).toBe('ok')
+  })
+
+  it('dispose unregisters its abort callback and aborts an in-flight run', async () => {
+    const registry = new ToolRegistry()
+    registry.registerProvider(slowProvider())
+    const model = makeModel([{ stream: streamOf(toolStep('c1', 'slow_tool', '{}')) }])
+    const { engine } = setup({ model, toolRegistry: registry })
+    seed('th1', [])
+    useVaultStore.setState({ status: 'unlocked' })
+
+    const registered = abortersCount()
+    const run = engine.sendTurn('th1', 'go')
+    await vi.waitFor(() => expect(model.doStreamCalls.length).toBe(1))
+
+    engine.dispose()
+    await run
+
+    expect(abortersCount()).toBe(registered - 1)
+    expect(useChatStore.getState().activeRuns).toBe(0)
+    expect(useChatStore.getState().status).toBe('idle')
+  })
+
+  it('keeps streaming when one of two concurrent runs ends', async () => {
+    const registry = new ToolRegistry()
+    registry.registerProvider(slowProvider())
+    const model = makeModel([
+      { stream: streamOf(toolStep('c1', 'slow_tool', '{}')) },
+      { stream: streamOf(toolStep('c2', 'slow_tool', '{}')) },
+    ])
+    const { engine } = setup({ model, toolRegistry: registry })
+    seed('th1', [])
+    seed('th2', [])
+
+    const first = engine.sendTurn('th1', 'go')
+    await vi.waitFor(() => expect(model.doStreamCalls.length).toBe(1))
+    const second = engine.sendTurn('th2', 'go')
+    await vi.waitFor(() => expect(model.doStreamCalls.length).toBe(2))
+    expect(useChatStore.getState().activeRuns).toBe(2)
+
+    await engine.cancel('th1')
+    await first
+    // th2 is still running: status must not flip to idle.
+    expect(useChatStore.getState().activeRuns).toBe(1)
+    expect(useChatStore.getState().status).toBe('streaming')
+
+    await engine.cancel('th2')
+    await second
+    expect(useChatStore.getState().activeRuns).toBe(0)
+    expect(useChatStore.getState().status).toBe('idle')
   })
 
   it('aborts and clears on vault lock without an unhandled rejection', async () => {

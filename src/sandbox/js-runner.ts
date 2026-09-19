@@ -21,6 +21,7 @@ export class JsRunner implements CodeRunner {
   private readonly workerFactory: WorkerFactory
   private readonly workspace?: WorkspaceApi
   private readonly defaultTimeoutMs: number
+  private readonly activeWorkers = new Set<Worker>()
   private runCounter = 0
 
   constructor(options: SandboxRunnerOptions = {}) {
@@ -33,10 +34,17 @@ export class JsRunner implements CodeRunner {
     return this.runOnce(source, options.timeoutMs ?? this.defaultTimeoutMs)
   }
 
+  /** Terminates every in-flight worker. Called when the manager rebuilds. */
+  dispose(): void {
+    for (const worker of this.activeWorkers) worker.terminate()
+    this.activeWorkers.clear()
+  }
+
   private runOnce(source: string, timeoutMs: number): Promise<RunResult> {
     return new Promise<RunResult>((resolve, reject) => {
       const runId = `js-${(this.runCounter += 1)}`
       const worker = this.workerFactory()
+      this.activeWorkers.add(worker)
       const pendingFs = new Set<PendingFs>()
       const state: { timer: ReturnType<typeof setTimeout> | undefined } = { timer: undefined }
       let disposed = false
@@ -53,6 +61,7 @@ export class JsRunner implements CodeRunner {
         disposed = true
         worker.removeEventListener('message', onMessage)
         worker.terminate()
+        this.activeWorkers.delete(worker)
         outcome()
       }
 

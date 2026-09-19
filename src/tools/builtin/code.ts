@@ -26,10 +26,20 @@ export interface CodeToolRunners {
   python: CodeRunner
 }
 
-export function createCodeToolProvider(runners: CodeToolRunners): ToolProvider {
+/**
+ * A live source for the sandbox runners. The provider reads it on every
+ * availability check and every tool call, so a settings-driven runner swap or
+ * enable toggle takes effect without re-registering the provider.
+ */
+export interface CodeRunnerSource {
+  getRunners(): CodeToolRunners
+  isEnabled(): boolean
+}
+
+export function createCodeToolProvider(source: CodeRunnerSource): ToolProvider {
   return {
     names: NAMES,
-    isAvailable: () => true,
+    isAvailable: () => source.isEnabled(),
     create(name) {
       switch (name) {
         case 'run_js':
@@ -37,14 +47,14 @@ export function createCodeToolProvider(runners: CodeToolRunners): ToolProvider {
             description:
               'Run JavaScript in an isolated worker and return its stdout, stderr, and result.',
             inputSchema: jsonSchema<{ source: string }>(sourceSchema()),
-            execute: async (input) => runners.js.run(readSource(input), {}),
+            execute: async (input) => source.getRunners().js.run(readSource(input), {}),
           })
         case 'run_python':
           return tool({
             description:
               'Run Python in an isolated worker and return its stdout, stderr, and result.',
             inputSchema: jsonSchema<{ source: string }>(sourceSchema()),
-            execute: async (input) => runners.python.run(readSource(input), {}),
+            execute: async (input) => source.getRunners().python.run(readSource(input), {}),
           })
         default:
           throw new ToolNotFoundError(name)

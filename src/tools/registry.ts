@@ -37,7 +37,12 @@ export class ToolRegistry {
   }
 
   async hydrate(): Promise<void> {
-    for (const definition of await this.store.list()) this.registerUserTool(definition)
+    // Skip-existing rather than throwing: a second unlock in the same module
+    // session re-hydrates over the already-registered tools.
+    for (const definition of await this.store.list()) {
+      if (this.providers.has(definition.name) || this.userTools.has(definition.name)) continue
+      this.registerUserTool(definition)
+    }
   }
 
   registerProvider(provider: ToolProvider): void {
@@ -66,6 +71,11 @@ export class ToolRegistry {
     const existing = this.userTools.get(name)
     if (!existing) throw new ToolNotFoundError(name)
     this.userTools.set(name, { ...existing, enabled })
+  }
+
+  removeUserTool(name: string): void {
+    if (!this.userTools.has(name)) throw new ToolNotFoundError(name)
+    this.userTools.delete(name)
   }
 
   list(): ToolDefinition[] {

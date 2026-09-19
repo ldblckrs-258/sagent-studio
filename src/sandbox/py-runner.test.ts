@@ -136,6 +136,21 @@ describe('PyRunner', () => {
     await expect(second).resolves.toMatchObject({ stdout: 'ok' })
   })
 
+  it('dispose terminates the warm worker without respawning', async () => {
+    const { factory, workers } = makeFactory()
+    const runner = new PyRunner({ workerFactory: factory })
+    const pending = runner.run('x', {})
+    await tick()
+    expect(workers).toHaveLength(1)
+
+    runner.dispose()
+    expect(workers[0].terminated).toBe(true)
+    await expect(pending).rejects.toBeInstanceOf(SandboxTimeoutError)
+
+    // No new worker is created by dispose.
+    expect(workers).toHaveLength(1)
+  })
+
   it('ignores an inbound message with a mismatched runId', async () => {
     const { factory, workers } = makeFactory()
     const runner = new PyRunner({ workerFactory: factory })

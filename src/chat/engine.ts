@@ -48,6 +48,8 @@ export interface ChatEngine {
   rerun(threadId: string, messageId: string): Promise<void>
   undo(threadId: string): Promise<void>
   cancel(threadId: string): Promise<void>
+  /** Unregisters the global abort callback and aborts any in-flight runs. */
+  dispose(): void
 }
 
 export interface BuiltRun {
@@ -142,12 +144,20 @@ class DefaultEngine implements ChatEngine {
   private readonly deps: EngineDeps
   private readonly controllers = new Map<string, AbortController>()
   private readonly runs = new Map<string, Promise<void>>()
+  private readonly unregisterAbort: () => void
 
   constructor(deps: EngineDeps) {
     this.deps = deps
-    registerAbortAll(() => {
+    this.unregisterAbort = registerAbortAll(() => {
       for (const controller of this.controllers.values()) controller.abort()
     })
+  }
+
+  dispose(): void {
+    this.unregisterAbort()
+    for (const controller of this.controllers.values()) controller.abort()
+    this.controllers.clear()
+    this.runs.clear()
   }
 
   async sendTurn(threadId: string, text: string): Promise<void> {
@@ -223,8 +233,9 @@ class DefaultEngine implements ChatEngine {
       await this.deps.threadStore.saveThread(next)
     } catch (error) {
       if (error instanceof VaultLockedError) {
+        // The lock subscription in store.ts clears the chat state; do not touch
+        // the global status here or a concurrent thread's run loses its flag.
         useChatStore.getState().removeThread(threadId)
-        useChatStore.getState().setStatus('idle')
         return
       }
       throw error
@@ -239,7 +250,7 @@ class DefaultEngine implements ChatEngine {
     const thread = await this.requireThread(threadId)
     const controller = new AbortController()
     this.controllers.set(threadId, controller)
-    useChatStore.getState().setStatus('streaming')
+    useChatStore.getState().beginRun(threadId)
     useChatStore.getState().setError(null)
 
     const assistantId = createMessageId()
@@ -262,7 +273,7 @@ class DefaultEngine implements ChatEngine {
         }
       } finally {
         if (this.controllers.get(threadId) === controller) this.controllers.delete(threadId)
-        if (this.controllers.size === 0) useChatStore.getState().setStatus('idle')
+        useChatStore.getState().endRun(threadId)
       }
     })()
 

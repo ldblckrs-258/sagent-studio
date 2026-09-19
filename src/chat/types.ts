@@ -30,6 +30,8 @@ export interface ChatThread {
   config: ThreadConfig
   createdAt: number
   updatedAt: number
+  /** Snapshot of the workspace folder name at creation, for list grouping. */
+  workspaceName?: string
 }
 
 export const DEFAULT_MAX_STEPS = 6

@@ -1,113 +1,263 @@
 @import "tailwindcss";
+@import "tw-shimmer";
+@import "tw-animate-css";
 
-:root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+/*
+  Design tokens.
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  Theme is a cool paper white tinted toward cobalt, not a warm cream: the surface
+  is a technical spec sheet, and warmth would fight the mono keys and endpoints.
+  Dark mode is a real theme, not an inversion, and stays in the same hue family.
+  Every color, size and gap in the app resolves to a token below.
+*/
+/*
+  Palette: "Parchment & Teal"
+  Neutrals sit on a warm hue (~70-85) so paper reads as aged stock rather than
+  cold grey. The accent is pulled to the opposite side of the wheel (teal, ~202)
+  so links, focus rings and primary buttons never blend into the surface.
+*/
+@theme {
+  --font-display: "Archivo Variable", "Archivo", "Helvetica Neue", sans-serif;
+  --font-sans: "Archivo Variable", "Archivo", "Helvetica Neue", sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --color-paper: oklch(0.985 0.005 85);
+  --color-paper-sunk: oklch(0.962 0.011 82);
+  --color-surface: oklch(0.997 0.003 85);
+  --color-ink: oklch(0.24 0.018 62);
+  --color-muted: oklch(0.51 0.021 68);
+  --color-faint: oklch(0.56 0.017 72);
+  --color-rule: oklch(0.894 0.012 78);
+  --color-rule-strong: oklch(0.655 0.015 76);
+  --color-accent: oklch(0.5 0.105 202);
+  --color-accent-hover: oklch(0.43 0.098 202);
+  --color-accent-soft: oklch(0.959 0.024 202);
+  --color-accent-rule: oklch(0.858 0.055 202);
+  --color-danger: oklch(0.5 0.183 27);
+  --color-danger-soft: oklch(0.966 0.019 27);
+  --color-danger-rule: oklch(0.877 0.056 27);
+  --color-caution: oklch(0.46 0.096 62);
+  --color-caution-soft: oklch(0.969 0.03 72);
+  --color-caution-rule: oklch(0.872 0.062 72);
+  --color-positive: oklch(0.48 0.1 152);
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  --radius-sm: 2px;
+  --radius-md: 3px;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.833rem;
+  --text-base: 1rem;
+  --text-lg: 1.2rem;
+  --text-xl: 1.44rem;
+  --text-2xl: 1.728rem;
+  --text-3xl: 2.074rem;
+  --text-4xl: 2.52rem;
+}
+
+/*
+  assistant-ui semantic tokens.
+
+  The copied assistant-ui elements are authored against shadcn's semantic names
+  (background, foreground, border, ...). They are mapped onto the house palette
+  above so the chat surface inherits the paper/ink/accent system and follows it
+  into dark mode, instead of carrying a second, unrelated theme.
+
+  `accent` and `muted` are deliberately absent: this app already owns both names
+  with a different meaning (accent is the brand teal, muted is faint text). The
+  copied elements were remapped to `accent-soft` / `paper-sunk` wherever shadcn
+  meant a neutral hover surface or a subdued fill.
+*/
+@theme inline {
+  --color-background: var(--color-paper);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-ink);
+  --color-popover: var(--color-surface);
+  --color-popover-foreground: var(--color-ink);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-surface);
+  --color-secondary: var(--color-paper-sunk);
+  --color-secondary-foreground: var(--color-ink);
+  --color-muted-foreground: var(--color-muted);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: var(--color-surface);
+  --color-border: var(--color-rule);
+  --color-input: var(--color-rule-strong);
+  --color-ring: var(--color-accent);
+
+  --radius-lg: 4px;
+  --radius-xl: 6px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-}
-
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+    --color-paper: oklch(0.198 0.012 70);
+    --color-paper-sunk: oklch(0.172 0.012 70);
+    --color-surface: oklch(0.236 0.013 72);
+    --color-ink: oklch(0.945 0.009 85);
+    --color-muted: oklch(0.725 0.015 80);
+    --color-faint: oklch(0.665 0.015 78);
+    --color-rule: oklch(0.328 0.013 72);
+    --color-rule-strong: oklch(0.568 0.014 74);
+    --color-accent: oklch(0.78 0.105 200);
+    --color-accent-hover: oklch(0.85 0.088 198);
+    --color-accent-soft: oklch(0.278 0.04 202);
+    --color-accent-rule: oklch(0.428 0.068 202);
+    --color-danger: oklch(0.725 0.152 27);
+    --color-danger-soft: oklch(0.262 0.05 27);
+    --color-danger-rule: oklch(0.422 0.088 27);
+    --color-caution: oklch(0.822 0.1 78);
+    --color-caution-soft: oklch(0.272 0.042 72);
+    --color-caution-rule: oklch(0.44 0.062 72);
+    --color-positive: oklch(0.765 0.115 152);
   }
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
+
+@layer base {
+  html {
+    color-scheme: light dark;
+  }
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    color: var(--color-ink);
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  p {
+    margin: 0;
+    text-wrap: pretty;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  input,
+  textarea,
+  select {
+    font-size: var(--text-base);
+  }
+
+  code,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-surface);
   }
 }
-p {
-  margin: 0;
+
+@layer utilities {
+  .label-micro {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-faint);
+  }
+
+  .rule-top {
+    border-top: 1px solid var(--color-rule);
+  }
+
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+/* State-conveying motion only: a short settle, never an entrance sequence. */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+  ---break---
+*/
+
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+
+/*
+  ---break---
+*/
+
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
+
+/*
+  ---break---
+*/
+
+@theme inline {
+  @keyframes collapsible-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(
+        --radix-collapsible-content-height,
+        var(--collapsible-panel-height, auto)
+      );
+    }
+  }
+  @keyframes collapsible-up {
+    from {
+      height: var(
+        --radix-collapsible-content-height,
+        var(--collapsible-panel-height, auto)
+      );
+    }
+    to {
+      height: 0;
+    }
+  }
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 
 interface SecretFieldProps {
   name: string
@@ -16,7 +17,7 @@ export function SecretField({ name, storedValue, onChange, placeholder }: Secret
   const visibleValue = revealed ? storedValue : ''
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="relative">
       <input
         name={name}
         type={revealed ? 'text' : 'password'}
@@ -26,15 +27,21 @@ export function SecretField({ name, storedValue, onChange, placeholder }: Secret
         value={visibleValue}
         placeholder={hasStored && !revealed ? MASK : (placeholder ?? 'Paste your key')}
         onChange={(event) => onChange(event.target.value)}
-        className="flex-1 rounded border border-[var(--border)] bg-transparent px-3 py-2 font-mono text-sm"
+        className="min-h-8 w-full rounded-sm border border-rule-strong bg-surface py-1 pl-2 pr-10 font-mono text-sm transition-colors duration-150 ease-out-quart placeholder:tracking-widest placeholder:text-faint hover:border-muted focus:border-accent"
       />
       <button
         type="button"
         aria-pressed={revealed}
+        aria-label={revealed ? 'Hide API key' : 'Reveal API key'}
+        title={revealed ? 'Hide API key' : 'Reveal API key'}
         onClick={() => setRevealed((prev) => !prev)}
-        className="rounded border border-[var(--border)] px-3 py-2 text-xs"
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-faint transition-colors duration-150 ease-out-quart hover:text-ink"
       >
-        {revealed ? 'Hide' : 'Reveal'}
+        {revealed ? (
+          <EyeOff size={15} strokeWidth={1.75} aria-hidden="true" />
+        ) : (
+          <Eye size={15} strokeWidth={1.75} aria-hidden="true" />
+        )}
       </button>
     </div>
   )
