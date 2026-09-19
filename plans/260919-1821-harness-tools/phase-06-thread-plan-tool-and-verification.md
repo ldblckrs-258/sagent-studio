@@ -46,8 +46,9 @@ dependencies: [1, 2, 3, 4, 5]
 
 Give the model a place to write down what it is doing, and give the user a place to
 see it. The plan is thread-scoped, persists with the thread, needs no new table, and
-renders next to the conversation. Then verify the whole bundle end to end: nine goals,
+renders next to the conversation. Then verify the whole bundle end to end: ten goals,
 one integrated turn, and a green `pnpm test`, `pnpm lint`, `pnpm build`.
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 ## Requirements
 
@@ -99,10 +100,11 @@ one integrated turn, and a green `pnpm test`, `pnpm lint`, `pnpm build`.
 - `ToolRuntimePorts` gains an optional
   `plan?: ThreadPlanPort` with
   `get(): ReadonlyArray<PlanItem>` and `set(items: readonly PlanItem[]): Promise<void>`.
-- `update_plan` declares no `code-runner`, `filesystem-write`, or `network`
-  capability, so the Phase 4 capability gate does not gate it; it writes only the
+- `update_plan` is not in the named destructive list and is not a user
+  `sandbox-js`/`http` tool, so the Phase 4 gate does not gate it; it writes only the
   current thread's own record.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 
 **Persistence.**
 
@@ -135,6 +137,11 @@ one integrated turn, and a green `pnpm test`, `pnpm lint`, `pnpm build`.
 
 - One end-to-end acceptance test drives a single multi-tool turn through the real
   engine and asserts the bundle works together.
+- The permission mode round-trips with the whole suite: `mode` on `ChatThread`
+  defaults to `editing`, survives reload, and survives a Config-panel save; the
+  composer toggle and `change_mode` both write that same thread-level field, and the
+  mode ceiling holds across the same run path the other phases exercise.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - `pnpm test`, `pnpm lint`, and `pnpm build` are green.
 - `plan.md` is updated: the phase table statuses, the success-criteria checklist,
   and an implementation log entry recording the evidence and any gate that remains
@@ -224,11 +231,15 @@ Modify:
   Config-panel save path must preserve it. Add a regression test that saving a config
   leaves an existing `thread.plan` intact.
   <!-- Updated: Red Team Session 1 - plan lives on ChatThread, not ThreadConfig -->
-- `src/session/session.ts` — register `createPlanToolProvider`. `builtinProviders()`
-  builds a fixed ports object with no thread context, so either make it config-aware
-  or drop the claim that `update_plan` appears as available in the Tools panel; do not
-  weaken per-thread gating.
+- `src/session/session.ts` — register `createPlanToolProvider`, and build the
+  optional `plan` member in the config-aware `builtinProviders(config?)` (added in
+  Phase 5) so `update_plan` availability in the Tools panel matches the active
+  thread. The per-run `plan` port in `buildRunStream` remains the only write path;
+  the panel's member is availability-only.
   <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
+- `src/session/session.test.ts` — the config-aware `update_plan` availability case.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - `src/ui/shell.tsx` — mount `PlanPanel`.
 - `plan.md` — phase table, success criteria, implementation log.
 
@@ -278,6 +289,13 @@ Integration — `src/chat/engine.test.ts`
 - A vault-locked save drops the thread from the store without an unhandled
   rejection, matching the existing lock test at `:511`.
 
+Integration — `src/session/session.test.ts`
+
+- `builtinProviders({ config })` reports `update_plan` available when a thread
+  config is supplied, and `builtinProviders()` without a config still compiles and
+  reports the per-run-gated tools as unavailable.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
+
 End-to-end — `src/chat/harness-e2e.test.ts` (reduced to the cross-feature assertion)
 
 - The five-step turn above completes; every tool part carries an `ok` envelope.
@@ -290,6 +308,10 @@ End-to-end — `src/chat/harness-e2e.test.ts` (reduced to the cross-feature asse
 Whole suite
 
 - `pnpm test` green (new suites included, existing suites unmodified in intent).
+- The mode round-trip is covered: default `editing`, an absent `mode` reading
+  `editing`, survival across reload and a Config-panel save, and the composer toggle
+  and `change_mode` writing the same thread-level field.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - `pnpm lint` green.
 - `pnpm build` green (`tsc -b` plus `vite build`).
 - Every manual gate recorded under
@@ -315,10 +337,13 @@ Whole suite
    `buildRunStream` call sites (`src/chat/engine.ts:292`, `src/chat/transport.ts:14`)
    inherit it. Add the engine tests.
    <!-- Updated: Red Team Session 1 - per-run ports on PipelineDeps -->
-6. Register the provider in `src/session/session.ts`. Either make
-   `builtinProviders()` config-aware or drop the claim that `update_plan` appears as
-   available in the Tools panel; the per-thread port gate is the real constraint.
+6. Register the provider in `src/session/session.ts` and add the optional `plan`
+   member to the config-aware `builtinProviders(config?)` so `update_plan` is
+   reported available when a thread config is supplied. The per-run port gate stays
+   the real constraint; the panel member is availability-only. Add the
+   `session.test.ts` case.
    <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+   <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 7. Build `src/ui/plan-panel.tsx` and mount it in `src/ui/shell.tsx` above the
    runtime provider.
 8. Write `src/chat/harness-e2e.test.ts` as the reduced cross-feature assertion and
@@ -348,9 +373,11 @@ Whole suite
 - [ ] Per-run plan port delivered through `PipelineDeps` and merged at
       `src/chat/engine.ts:102`, covering both `buildRunStream` call sites
       <!-- Updated: Red Team Session 1 - per-run ports on PipelineDeps -->
-- [ ] Provider registered in `src/session/session.ts`; `builtinProviders()` either
-      config-aware or the Tools-panel-availability claim dropped
+- [ ] Provider registered in `src/session/session.ts`; `builtinProviders(config?)`
+      reports `update_plan` availability for the active thread, with the per-run
+      port as the only write path
       <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+      <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - [ ] `src/ui/plan-panel.tsx` mounted in `src/ui/shell.tsx`, reading the thread-level
       `plan`
 - [ ] `src/chat/harness-e2e.test.ts` green (reduced cross-feature assertion)
@@ -373,11 +400,20 @@ Whole suite
 - [ ] Plan caps and forbidden-key rules are enforced in one module, called by both
       `validateThread` and the tool, proven by tests on each path.
       <!-- Updated: Red Team Session 1 - single plan validation source -->
+- [ ] The Tools panel's `update_plan` availability matches the active thread because
+      `builtinProviders(config?)` builds the `plan` member; the per-run port remains
+      the only write path.
+      <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - [ ] The multi-tool acceptance turn passes: `search` → `read_file` → `edit_file`
       → `update_plan` → text, with every tool result an `ok` envelope and the file
       actually changed.
-- [ ] All nine plan goals are demonstrated by at least one test each, and the
+- [ ] The mode round-trip holds: `mode` on `ChatThread` defaults to `editing`,
+      survives reload and a Config-panel save, and the composer toggle and
+      `change_mode` write the same field.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] All ten plan goals are demonstrated by at least one test each, and the
       goal-to-test mapping is recorded in the implementation log.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
 - [ ] `pnpm test`, `pnpm lint`, and `pnpm build` pass.
 - [ ] Any gate that could not be verified automatically is named in `plan.md` with
       the reason, and is not claimed as met.
@@ -413,10 +449,11 @@ revertible.
   records.
 - `update_plan` cannot address another thread: the port is bound to the running
   thread's id at build time.
-- The tool has no path, code, or network input, and declares no `code-runner`,
-  `filesystem-write`, or `network` capability, so it adds no execution surface and the
-  Phase 4 capability gate does not gate it.
+- The tool has no path, code, or network input, is not in the named destructive
+  list, and is not a user `sandbox-js`/`http` tool, so it adds no execution surface
+  and the Phase 4 gate does not gate it.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 
 ## Next Steps
 

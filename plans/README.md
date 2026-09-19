@@ -12,6 +12,7 @@ factories, and the chat interface builds on the chat engine.
 | 2 | [RAG + TypeSafe pipeline](./260918-1210-rag-typesafe-pipeline/plan.md) | blocked | Plan 1 | Query returns grounded answer with gating, injection filter, citation check |
 | 3 | [Core chat engine](./260919-0828-core-chat-engine/plan.md) | implemented (two manual gates pending) | Plan 1 | Streaming tool-using engine with editable history, skills, workspace tools, sandboxed runners |
 | 4 | [Chat interface](./260919-1437-chat-interface/plan.md) | implemented (browser gates pending) | Plan 3 | Three-column assistant-ui shell: workspace-grouped conversations, streaming thread with edit/rerun, workspace/file/chat-config/skills/tools/sandbox panels |
+| 5 | [Harness tools — autonomous core](./260919-1821-harness-tools/plan.md) | pending | Plan 3 (additive) | Result envelopes, surgical edit, bounded search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, thread plan tool, permission modes |
 
 ## Sequencing
 
@@ -41,6 +42,13 @@ recorded as pending in
 [`journals/2026-09-19-implemented-chat-interface.md`](./journals/2026-09-19-implemented-chat-interface.md).
 Its accepted contract, red-team findings, and validation decisions are in
 [`260919-1437-chat-interface/plan.md`](./260919-1437-chat-interface/plan.md).
+
+Plan 5 is additive to Plan 3: it widens the built-in tool surface (result
+envelopes, surgical edit, bounded search, offset reads, stat/move/copy,
+persistent sandbox sessions, approval gates, progressive skill disclosure, a
+thread-scoped plan tool, and conversation permission modes). Its contract,
+red-team review, and two validation sessions are in
+[`260919-1821-harness-tools/plan.md`](./260919-1821-harness-tools/plan.md).
 
 ## Source of truth
 

@@ -1,9 +1,9 @@
 ---
 title: "Harness Tools — Autonomous Core"
-description: "Nine-item built-in tool bundle that makes the harness safe for long-horizon autonomous work: uniform result envelopes, surgical edit, bounded workspace search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, and a thread-scoped plan tool."
+description: "Ten-goal harness bundle that makes the harness safe for long-horizon autonomous work: uniform result envelopes, surgical edit, bounded workspace search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, a thread-scoped plan tool, and conversation permission modes."
 status: pending
 priority: P1
-effort: 44h
+effort: 48h
 branch: main
 tags: [feature, ai, tools, frontend, security]
 created: 2026-09-19
@@ -21,9 +21,12 @@ call arrives at the model as an opaque thrown error with no recovery hint.
 Sandbox runs pay a cold start on every call. Destructive writes happen without a
 consent step. Every enabled skill body is inlined into the system prompt, so the
 prompt grows with the skill library. The model has nowhere to record a plan for a
-multi-step task.
+multi-step task. Nothing caps how much autonomy a single conversation grants: every
+enabled tool is equally reachable, and the only brake is a per-tool policy the user
+edits in a panel.
 
-This plan closes those nine gaps without redesigning the frozen architecture.
+This plan closes those ten gaps without redesigning the frozen architecture.
+<!-- Updated: Scope Addendum 1 - permission modes -->
 All work is additive to `ToolProvider` / `ToolRegistry` / `ToolRuntimePorts`
 (`src/tools/types.ts:58`), to `WorkspaceApi` (`src/tools/types.ts:19`), to
 `WorkspaceFs` (`src/workspace/fs.ts:73`), and to `SandboxSettings`
@@ -42,10 +45,11 @@ and [AI SDK v7 approvals + assistant-ui tool primitives](./research/researcher-0
 | 3 | `read_file` gains line-based `offset`/`limit` with `truncated` and total-line metadata; `list_dir` gains `recursive` and glob filtering | P1 |
 | 4 | `stat` is bound as a tool; `move` (rename) and `copy` are added | P1 |
 | 5 | JS and Python sandboxes share one persistent session lifecycle with a warm worker, explicit reset, and an idle-reap timer | P1 |
-| 6 | Tools that execute code, mutate the workspace, or reach the network are gated by capability rather than by a fixed name list: any tool backed by a `CodeRunner` (including user `sandbox-js` tools), any filesystem-mutating tool, and any `http`-kind tool are gated, and any unknown or user tool defaults to `ask`. The policy is persisted in the encrypted vault and answered in the assistant-ui thread | P1 | <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+| 6 | Tools that execute model-authored code or reach the network are gated by a fixed named set plus user-tool kind: `write_file`, `remove`, `edit_file`, `move`, `run_js`, `run_python`, and any user-defined tool whose kind is `sandbox-js` or `http` are gated; `make_dir`, `copy`, `list_dir`, `read_file`, `stat`, `search`, `load_skill`, `update_plan`, and `reset_sandbox` are not. The policy is persisted in the encrypted vault and answered in the assistant-ui thread | P1 | <!-- Updated: Red Team Session 1 - capability-based approval gating --> <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 | 7 | The system prompt lists skill names and descriptions only; a `load_skill` tool returns a body on demand | P1 |
 | 8 | `update_plan` reads and writes a thread-scoped todo list that renders in the chat UI | P1 |
 | 9 | One helper produces consistent success/failure envelopes (`code`, `message`, `hint`, `truncated`) so expected failures reach the model with a retry hint | P1 |
+| 10 | Three conversation-scoped permission modes (`read_only`, `editing`, `god`) cap tool autonomy over the Phase 4 decision engine (`decision = max(modeCeiling, policy)`); a tool above the tier needs a per-call accept, the always-asking `change_mode` tool and a composer toggle switch modes, and the mode persists on `ChatThread` | P1 | <!-- Updated: Scope Addendum 1 - permission modes -->
 
 ## Contract
 
@@ -102,10 +106,12 @@ plan — and every expected failure returns a structured value the model can act
    returns `no_match` with a hint; on multiple matches without `replace_all` it
    returns `multiple_matches`, leaves the file byte-identical, and lists the match
    line numbers in the hint; with `replace_all` it replaces every occurrence.
-2. `search` returns at most `maxResults` hits shaped `path:line:text`, never reads
-   a file above the 2 MiB `DEFAULT_SIZE_CAP` (`src/workspace/fs.ts:24`), skips
-   binary files, rejects an invalid regex as `invalid_input`, and prunes a
-   subtree when its directory handle is unreadable instead of failing the call.
+2. `search` runs in a worker that is terminated on timeout, returns at most
+   `maxResults` hits shaped `path:line:text`, never materializes a file above the
+   2 MiB `DEFAULT_SIZE_CAP` (`src/workspace/fs.ts:24`) in the worker, skips binary
+   files, rejects an invalid regex as `invalid_input`, and prunes a subtree when its
+   directory handle is unreadable instead of failing the call.
+   <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout -->
 3. `read_file` with `offset`/`limit` returns the requested line window plus
    `totalLines` and `truncated`; `list_dir` with `recursive: true` returns a
    depth-first listing and with `glob` returns only matching paths. Both preserve
@@ -129,7 +135,18 @@ plan — and every expected failure returns a structured value the model can act
    returns a structured `invalid_input`.
 9. Every built-in workspace, code, and http tool returns the same envelope shape;
    a thrown error reaches the model only for a runtime-unavailable condition.
-10. `pnpm test` (including the new suites), `pnpm lint`, and `pnpm build` pass.
+10. Permission modes cap autonomy over the Phase 4 decision engine
+    (`decision = max(modeCeiling, policy)`): in `read_only` (`list_dir`, `read_file`,
+    `stat`, `search`, `load_skill`, `update_plan`, `change_mode`) a write or an exec
+    (`write_file`, `run_js`) requires a per-call accept; in `editing` (the default)
+    `remove` requires a per-call accept while the rest of the editing tier runs; in
+    `god` every gated tool is auto-approved and a persisted `deny` still blocks;
+    `change_mode` ALWAYS asks the user and is never auto-approved, including in
+    `god`; an above-tier accept authorizes the current call only and is not
+    persisted. The mode persists on `ChatThread`, survives reload, and survives a
+    Config-panel save that replaces `config`.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+11. `pnpm test` (including the new suites), `pnpm lint`, and `pnpm build` pass.
 
 ## Key Decisions
 
@@ -142,12 +159,18 @@ plan — and every expected failure returns a structured value the model can act
   into a `tool-error` part (`research/researcher-01-ai-sdk-approval.md`, §2), but
   the thrown error loses the retry hint and the error path bypasses `toModelOutput`
   (`node_modules/ai/dist/index.js:2046-2055`). Returning a value keeps the hint.
-- **Workspace reads stay on the main thread.** `read_file`, `list_dir`, and
-  `search` call `WorkspaceApi`, not the sandbox fs bridge. `executeFsCall`
-  (`src/sandbox/fs-bridge.ts:11`) returns `JSON.stringify(entries)` per call, so a
-  recursive scan through it would be chatty and allocation-heavy
-  (`research/researcher-02-sandbox-persistence.md`, §4). `WorkspaceApi` and
-  `WorkspaceFs` are extended additively; the 2 MiB `DEFAULT_SIZE_CAP` is kept.
+- **`read_file`/`list_dir` stay on the main thread; `search` runs in a worker.**
+  `read_file` and `list_dir` call `WorkspaceApi` on the main thread.
+  `FileWorkspaceFs.search` delegates to a dedicated search worker that walks the
+  tree by posting `list`/`read` calls over the existing fs bridge
+  (`src/sandbox/fs-bridge.ts:11`) and matches in-worker; only path strings and
+  decoded file text cross the bridge, and the workspace handle never enters the
+  worker. The one-`list`-per-directory, one-`read`-per-file RPC traffic is accepted
+  because it buys terminate-on-timeout: a catastrophic regex kills the worker
+  instead of stalling the tab. `maxResults`/`maxFilesScanned`/`maxDepth` remain as
+  secondary guards. `WorkspaceApi` and `WorkspaceFs` are extended additively; the
+  2 MiB `DEFAULT_SIZE_CAP` is kept for text reads and writes.
+  <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout -->
 - **`edit_file` is read-verify-write.** It reads the file through
   `workspace.readFile`, counts exact occurrences of `old_string`, and writes only
   on a unique match (or on `replace_all`). This is a deliberate non-atomic
@@ -185,15 +208,36 @@ plan — and every expected failure returns a structured value the model can act
   native pause/resume is not workable, the recorded fallback is a policy pre-check
   inside `execute` returning a structured `approval_required` result, a one-shot
   per-thread grant, and a rerun.
-- **Approval gating is capability-based, never a hardcoded name list.** A tool is
-  gated when it is backed by a `CodeRunner` (including a user-defined `sandbox-js`
-  tool), when it mutates the filesystem, or when it is an `http`-kind tool; an
-  unknown tool, or a user tool whose capability cannot be classified, defaults to
-  `ask`. Hardcoding only the six built-in destructive names would leave a user
-  `sandbox-js` tool, a newly added tool, or an `http` tool ungated. The gate is
-  derived from the tool's registered kind and provider (`src/tools/registry.ts`),
-  so a new destructive tool is gated by construction.
+- **Approval gating is a named destructive set plus user code/network kinds.**
+  `isGatedTool` classifies a tool by (a) a built-in destructive name list —
+  `write_file`, `remove`, `edit_file`, `move`, `run_js`, `run_python` — and (b) a
+  user-defined tool whose registered kind is `sandbox-js` or `http`, which is
+  model-authored code or network access. `make_dir`, `copy`, `list_dir`,
+  `read_file`, `stat`, `search`, `load_skill`, `update_plan`, and `reset_sandbox`
+  are not gated. A pure capability rule would also gate benign mutators
+  (`make_dir`, `copy`) and read tools, which is rejected scope; a pure name list
+  would leave a user `sandbox-js`/`http` tool ungated, which is the real hole, so
+  both clauses are required. The user-tool kind comes from the registered
+  definition (`src/tools/registry.ts`).
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- **Permission modes are a ceiling over the Phase 4 policy, stored on `ChatThread`.**
+  Three conversation-scoped modes — `read_only`, `editing` (the default), and `god`
+  — set the maximum autonomy for a thread. The gate computes
+  `decision = max(modeCeiling, policy)`: a tool above the mode's tier escalates to a
+  per-call user accept (never persisted), `god` auto-approves every gated tool, and a
+  persisted `deny` always wins over both. `remove` sits above the `editing` tier, so
+  it always needs an accept there. The mode lives on `ChatThread` beside
+  `workspaceName` (`src/chat/types.ts:34`), NOT on `ThreadConfig`, because the Config
+  panel rebuilds `config` from `threadConfigPatch` (`src/chat/config.ts:52-77`) and
+  would drop it; `validateThread` (`src/chat/persistence.ts:25`) reads an absent or
+  unrecognized `mode` as `editing`. `change_mode` is exempt from the ceiling and
+  ALWAYS asks, even in `god`, so the model can never raise its own ceiling silently.
+  The composer toggle writes the same thread-level field with no tool and no
+  approval. Rationale: the Phase 4 policy is per-tool and long-lived, while the mode
+  is per-conversation and quick to change; layering a ceiling over the same decision
+  engine reuses one authorization path instead of adding a second.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - **Per-run ports are assembled inside `buildRunStream`, not at each call site.**
   `buildRunStream` has two production call sites — `src/chat/engine.ts:292`
   (`executeRun`) and `src/chat/transport.ts:14` (`sendMessages`), with
@@ -227,7 +271,9 @@ plan — and every expected failure returns a structured value the model can act
 - **Reuse over new abstractions.** One shared `WorkerSession` instead of two
   divergent runners. One result helper instead of per-tool error shapes. One
   `list` method with an options argument instead of a parallel `listTree`. One
-  `search` implementation on `WorkspaceFs` instead of a scanner in the tool layer.
+  `search` implementation in a dedicated worker that reuses the existing sandbox
+  fs bridge, instead of a scanner in the tool layer.
+  <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout -->
 
 ## Phases
 
@@ -261,7 +307,11 @@ Known existing consumers that must be re-verified when a signature changes:
   the inline fakes in `src/sandbox/manager.test.ts:146`,
   `src/sandbox/js-runner.test.ts:139`, `src/sandbox/py-runner.test.ts:64`.
 - `ToolRuntimePorts` producers: `src/chat/engine.ts:102` (`buildRunStream`) and
-  `src/session/session.ts:174` (`builtinProviders`).
+  `src/session/session.ts:174` (`builtinProviders`). `builtinProviders` gains an
+  optional active-thread config argument so per-run `isAvailable` is accurate in
+  the Tools panel, and its only caller, `src/ui/panels/tools.tsx:190`, is updated
+  to pass it.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - `buildRunStream` call sites: `src/chat/engine.ts:292` (`executeRun`) and
   `src/chat/transport.ts:14` (`sendMessages`); `src/chat/transport.test.ts`
   exercises the second path. Any port or signature change must cover both.
@@ -287,11 +337,22 @@ import rather than reimplement; Phase 3 owns `src/sandbox/session.ts`, which
 Phase 4's spike exercises; Phase 4 owns `src/chat/sanitize.ts` and the approval
 seam. `src/chat/convert.ts` and `src/chat/convert.test.ts` are touched by Phase 1
 (isError derivation from the envelope) and then Phase 4 (approval pass-through),
-strictly in that order. `src/tools/types.ts` and `src/chat/engine.ts` are touched
-by more than one phase, but always by one phase at a time, in the order listed
-(Phases 2, 3, 5, and 6 for `types.ts`; Phases 3, 4, 5, and 6 for `engine.ts`), and
-each edit is additive.
+strictly in that order. `src/tools/types.ts`, `src/chat/types.ts`,
+`src/chat/persistence.ts`, and `src/chat/engine.ts` are touched by more than one
+phase, but always by one phase at a time, in the order listed (`src/tools/types.ts`
+by Phases 2, 3, 4, 5, and 6; `src/chat/types.ts` by Phases 4 and 6;
+`src/chat/persistence.ts` by Phase 4 then Phase 6; `src/chat/engine.ts` by Phases 3,
+4, 5, and 6), and each edit is additive. `src/chat/threads.ts` and
+`src/ui/composer-controls.tsx` are owned by Phase 4. Phase 2 additionally creates the
+search worker, protocol,
+and runner (`src/workspace/search-protocol.ts`, `src/workspace/search-worker.ts`,
+`src/workspace/search-runner.ts`); they consume the fs bridge and must not modify
+any `src/sandbox/**` file. `src/session/session.ts` and
+`src/session/session.test.ts` are touched by Phases 3, 5, and 6, always by one
+phase at a time in that order, and each edit is additive.
 <!-- Updated: Red Team Session 1 - port phases listed; Phase 4 added to engine.ts owners -->
+<!-- Updated: Validation Session 1 - search worker owned by Phase 2; session.ts shared by Phases 3/5/6 -->
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 <!-- Updated: Red Team Session 1 - convert.ts shared by Phase 1 then Phase 4; port phases listed -->
 
@@ -306,9 +367,9 @@ each edit is additive.
 | Warm JS worker leaks user `globalThis` state across runs | High × Medium | Documented behavior change plus a test asserting the session reuses one worker; `reset_sandbox` is the escape hatch. |
 | Warm worker holds unbounded WASM/V8 memory (no published Pyodide RAM figure) | Medium × Medium | `idleTimeoutMs` reap and explicit reset are both in Phase 3; no RAM figure is claimed anywhere. |
 | `edit_file` read-modify-write race with an external editor | Medium × Medium | Accepted, documented limitation (no compare-and-swap in the API); the tool reports the byte delta so a stale write is visible in the transcript. |
-| `search` regex causes catastrophic backtracking on a large tree | Low × High | Results, files scanned, and depth are all hard-capped; per-file scan is byte-capped; a regex safety heuristic rejects catastrophic patterns (nested quantifiers, backreferences) before compiling. The `pattern` is documented as untrusted and the residual risk, now bounded by those guards, is recorded. <!-- Updated: Red Team Session 1 - search hard caps + regex heuristic --> |
-| Recursive `list`/`search` walks a very large tree and stalls the main thread | Medium × Medium | `FileSystemDirectoryHandle.values()` iteration is async and yields; `getFile()` reads are batched with a fixed concurrency cap; `search` is bounded by `maxResults`, `maxFilesScanned`, and `maxDepth`, each reported through `truncated`. <!-- Updated: Red Team Session 1 - search hard caps --> |
-| A destructive tool bypasses the approval gate because it is not in a hardcoded name list | Medium × High | Gating is capability-based: any `CodeRunner`-backed tool (including a user `sandbox-js` tool), any filesystem-mutating tool, and any `http`-kind tool is gated, and an unknown/user tool defaults to `ask`. Phase 4 tests that a user `sandbox-js` tool is gated. <!-- Updated: Red Team Session 1 - capability-based approval gating --> |
+| `search` regex causes catastrophic backtracking on a large tree | Low × High | `search` runs in a dedicated worker under terminate-on-timeout, so a catastrophic pattern kills the worker instead of stalling the tab; `maxResults`/`maxFilesScanned`/`maxDepth` and the per-file text cap remain as secondary guards. A cheap regex pre-check may reject an obviously catastrophic pattern early, but it is not the mitigation of record. The `pattern` is documented as untrusted and the residual risk is recorded. <!-- Updated: Red Team Session 1 - search hard caps + regex heuristic --> <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout --> |
+| Recursive `list`/`search` walks a very large tree and stalls the main thread | Medium × Medium | Recursive `list` stays on the main thread but `FileSystemDirectoryHandle.values()` iteration is async and yields; `search` walks off the main thread in a worker that issues one `list`/`read` RPC at a time through the fs bridge, bounded by `maxResults`, `maxFilesScanned`, and `maxDepth`, each reported through `truncated`. <!-- Updated: Red Team Session 1 - search hard caps --> <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout --> |
+| A user `sandbox-js`/`http` tool, or a named destructive built-in, bypasses the approval gate | Medium × High | `isGatedTool` gates the named destructive built-ins (`write_file`, `remove`, `edit_file`, `move`, `run_js`, `run_python`) and any user-defined tool whose kind is `sandbox-js` or `http`. Phase 4 tests that a user `sandbox-js` tool is gated and that `make_dir`/`copy` are not. <!-- Updated: Red Team Session 1 - capability-based approval gating --> <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) --> |
 | An unrecognized error, including a rethrown `DOMException`, rejects the tool promise instead of returning a failure envelope | Medium × Medium | Phase 1's `wrapToolExecute` maps any error that is not a runtime-unavailable condition to a structured `runtime_error` envelope; only `ToolRuntimeUnavailableError` may reject the tool promise. <!-- Updated: Red Team Session 1 - failure-envelope catch-all --> |
 | A failure envelope renders as a successful tool call in the UI | Medium × Medium | Phase 1 derives `isError` in `convertToolPart` from `envelope.ok === false` for `output-available` results, with a `convert.test.ts` case. <!-- Updated: Red Team Session 1 - isError from envelope.ok --> |
 | `load_skill` union breaks skill `allowedTools` narrowing | Medium × Low | Explicit union rule with a registry/engine test: `load_skill` is present exactly when at least one skill is enabled, never widening any other tool. |
@@ -318,14 +379,21 @@ each edit is additive.
 
 ## Success Criteria
 
-- [ ] All nine goals are implemented and each has an automated test naming the
+- [ ] All ten goals are implemented and each has an automated test naming the
       behavior it protects.
-- [ ] Acceptance criteria 1-9 are evidenced by `pnpm test`; criterion 10 is
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Acceptance criteria 1-10 are evidenced by `pnpm test`; criterion 11 is
       evidenced by a green `pnpm test`, `pnpm lint`, and `pnpm build`.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Each mode's ceiling is enforced, an above-tier accept authorizes one call
+      only, `change_mode` asks in every mode including `god`, and a persisted `deny`
+      still blocks in `god`; the mode survives reload and a Config-panel save.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
 - [ ] Browser-only checks (approval round-trip in a live thread, warm-session
-      reuse in a real worker, folder-handle re-grant) are recorded with date,
-      command, and observed result in a named artifact under
-      `plans/260919-1821-harness-tools/reports/`.
+      reuse in a real worker, a search over a real Worker, folder-handle re-grant)
+      are recorded with date, command, and observed result in a named artifact
+      under `plans/260919-1821-harness-tools/reports/`.
+      <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout -->
 - [ ] The vault `CryptoKey` is provably unreachable from a worker: no new message
       kind, port, or structured-clone path carries it.
 - [ ] Path validation and per-operation permission checks are unchanged: every new
@@ -384,3 +452,34 @@ spike report file before any Phase 4 body work is accepted.
 - Decision deltas checked: plan location moved to ChatThread; capability-based gating; PipelineDeps carries per-run ports; js-worker port protocol; search caps; stale-approval expiry
 - Reconciled stale references: 0
 - Unresolved contradictions: 0
+
+## Validation Log
+
+### Validation Session 1 — 2026-09-19
+Questions asked: 5 (approval scope, search safety, large-file ops, tool availability, user-tool gating)
+
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Approval gating breadth | Narrow to the named destructive built-ins plus user code/network tools; do not gate `make_dir`, `copy`, or read tools. |
+| 2 | Gating of user sandbox-js/http tools | Gate them: model-authored code/network tools are at least as dangerous as `run_js`. |
+| 3 | Search ReDoS + unbounded walk | Run search in a worker under terminate-on-timeout; caps are secondary. |
+| 4 | move/copy >2 MiB and empty directories | Add a byte-stream copy path; no text size ceiling, recreate empty directories. |
+| 5 | load_skill/update_plan panel availability | Make `builtinProviders()` config-aware. |
+
+Propagation: Phase 2 (search worker, byte-stream copy), Phase 4 (scoped gating), Phases 5/6 (config-aware providers). plan.md Goal 6 and risk rows updated.
+
+### Whole-Plan Consistency Sweep
+- Files reread: plan.md, all six phase files
+- Decision deltas checked: 4 (gating scope, search execution model, copy path, provider availability)
+- Reconciled stale references: 0
+- Unresolved contradictions: 0
+
+### Validation Session 2 — 2026-09-19 (scope addendum)
+Questions asked: 2 (default mode, editing-tier membership)
+
+| # | Question | Decision |
+|---|----------|----------|
+| 1 | Default mode | `editing`; absent field on old threads reads as `editing`. |
+| 2 | Editing tier | Writes + execution + user code/network allowed; `remove` stays above the tier and requires a per-call accept. `god` auto-approves all gated tools but never auto-approves `change_mode`; a persisted `deny` still wins. |
+
+Propagation: Goal 10 and a new acceptance criterion in plan.md; mode requirements, files, steps, and criteria in Phase 4; mode round-trip in Phase 6 verification.

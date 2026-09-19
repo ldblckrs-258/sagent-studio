@@ -1,9 +1,9 @@
-import { fileURLToPath } from 'node:url'
-import react, { reactCompilerPreset } from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import babel from '@rolldown/plugin-babel'
-import { defineConfig } from 'vite'
-import type { Plugin } from 'vite'
+import babel from "@rolldown/plugin-babel";
+import tailwindcss from "@tailwindcss/vite";
+import react, { reactCompilerPreset } from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+import type { Plugin } from "vite";
+import { defineConfig } from "vite";
 
 /**
  * Injects the strict Content-Security-Policy meta tag into the production build only.
@@ -41,18 +41,18 @@ function cspPlugin(): Plugin {
     "base-uri 'none'",
     "form-action 'self'",
     "object-src 'none'",
-  ].join('; ')
+  ].join("; ");
 
   return {
-    name: 'inject-csp-meta',
-    apply: 'build',
+    name: "inject-csp-meta",
+    apply: "build",
     transformIndexHtml(html) {
       return html.replace(
-        '<head>',
+        "<head>",
         `<head>\n    <meta http-equiv="Content-Security-Policy" content="${policy}" />`,
-      )
+      );
     },
-  }
+  };
 }
 
 // https://vite.dev/config/
@@ -63,12 +63,17 @@ export default defineConfig({
     babel({ presets: [reactCompilerPreset()] }),
     cspPlugin(),
   ],
+  server: {
+    watch: {
+      ignored: ["**/plans/**"],
+    },
+  },
   worker: {
-    format: 'es',
+    format: "es",
   },
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
-})
+});

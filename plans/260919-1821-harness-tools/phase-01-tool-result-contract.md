@@ -12,7 +12,9 @@ dependencies: []
 ## Context Links
 
 - Plan: [`plan.md`](./plan.md) — goals 3, 4 (stat), 9; Key Decisions "Result
-  contract first" and "Workspace reads stay on the main thread".
+  contract first" and "`read_file`/`list_dir` stay on the main thread; `search` runs
+  in a worker".
+  <!-- Updated: Validation Session 1 - search runs in a worker under terminate-on-timeout -->
 - Existing tool contracts: `src/tools/types.ts:1` (`WorkspaceEntry`,
   `WorkspaceStat`), `:19` (`WorkspaceApi`), `:58` (`ToolRuntimePorts`), `:70`
   (`ToolError` hierarchy), `:84` (`ToolRuntimeUnavailableError`).

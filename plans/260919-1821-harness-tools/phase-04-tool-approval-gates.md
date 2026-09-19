@@ -11,9 +11,11 @@ dependencies: [1, 2, 3]
 
 ## Context Links
 
-- Plan: [`plan.md`](./plan.md) — goal 6; Key Decision "Native approval seam, gated
-  by a blocking spike"; risk rows for the native pause/resume and the
-  `ignoreIncompleteToolCalls` interaction.
+- Plan: [`plan.md`](./plan.md) — goals 6 and 10; Key Decisions "Native approval
+  seam, gated by a blocking spike" and "Permission modes are a ceiling over the
+  Phase 4 policy, stored on `ChatThread`"; risk rows for the native pause/resume and
+  the `ignoreIncompleteToolCalls` interaction.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - Research: `research/researcher-01-ai-sdk-approval.md` §1 (call-level
   `toolApproval`; `needsApproval` deprecated), §2 (a thrown `execute` error is
   caught and becomes a `tool-error` part; `toModelOutput` is bypassed on error), §3
@@ -51,14 +53,21 @@ dependencies: [1, 2, 3]
 
 ## Goal
 
-Put a consent step in front of every action that can destroy, write, or execute:
-writing, removing, patching, creating, moving, copying, and running code, plus any
-tool that reaches the network. The gate is capability-based, so a user-defined
-`sandbox-js` tool or an `http` tool is covered without being named. The policy is the
-user's, it persists in the encrypted vault, it defaults to asking, and the answer
-happens in the assistant-ui thread where the tool call is already rendered. A denial
-must reach the model as a structured result it can respond to, not as a crash.
+Put a consent step in front of the actions that can destroy, execute, or reach the
+network: `write_file`, `remove`, `edit_file`, `move`, `run_js`, `run_python`, and
+any user-defined tool whose kind is `sandbox-js` or `http`. `make_dir`, `copy`, and
+the read-only tools are deliberately not gated. The policy is the user's, it
+persists in the encrypted vault, it defaults to asking, and the answer happens in
+the assistant-ui thread where the tool call is already rendered. A denial must
+reach the model as a structured result it can respond to, not as a crash.
+
+Three conversation-scoped permission modes (`read_only`, `editing`, `god`) layer a
+ceiling over that same decision, so a thread can be constrained below the persisted
+policy or, in `god`, auto-approved above it — while a persisted `deny` and the
+always-asking `change_mode` tool remain the user's hard stops.
 <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+<!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 ## Requirements
 
@@ -93,22 +102,21 @@ must reach the model as a structured result it can respond to, not as a crash.
   `DEFAULT_APPROVAL_DECISION = 'ask'`. `defaultSettings()` sets `{ tools: {} }`.
   `SETTINGS_VERSION` is not bumped; an existing vault reads the default through
   `deepMerge` (`src/vault/settings.ts:137`).
-- Gating is capability-based, not a hardcoded name list. `src/tools/approval.ts`
-  exports `isGatedTool(descriptor)` where the descriptor is produced by the registry
-  and carries the tool's backing capability:
-  - `'code-runner'` — any tool backed by a `CodeRunner`, which includes the built-in
-    `run_js` / `run_python` (`src/tools/builtin/code.ts:39`) and any user
-    `sandbox-js` tool (`src/tools/registry.ts:121`). Gated.
-  - `'filesystem-write'` — the built-in tools that mutate the workspace
-    (`write_file`, `remove`, `edit_file`, `move`, `copy`, `make_dir`). Gated.
-  - `'network'` — any `http`-kind tool (`src/tools/types.ts:45`). Gated.
-  - anything else, including an unknown name or a user tool whose capability cannot
-    be classified — defaults to `ask`. The default is `ask`, never `allow`.
-  A literal name array is NOT the gate: the curated names are only the initial set of
-  filesystem mutators the workspace provider tags as `'filesystem-write'`. A tool that
-  does not declare a capability is gated by default, so a newly added tool cannot
-  silently bypass approval.
+- Gating is a fixed named set plus the user-tool kind. `src/tools/approval.ts`
+  exports `isGatedTool(tool)`, which classifies by two clauses:
+  - (a) the built-in destructive name list — `write_file`, `remove`, `edit_file`,
+    `move`, `run_js`, `run_python` (`src/tools/builtin/workspace.ts`,
+    `src/tools/builtin/code.ts:39`); and
+  - (b) a user-defined tool whose registered kind is `sandbox-js` or `http`
+    (`src/tools/registry.ts:121`, `src/tools/types.ts:45`), because such a tool runs
+    model-authored code or reaches the network.
+  `make_dir`, `copy`, `list_dir`, `read_file`, `stat`, `search`, `load_skill`,
+  `update_plan`, and `reset_sandbox` are NOT gated. A pure capability rule would
+  also gate benign mutators (`make_dir`, `copy`) and read tools, which is rejected
+  scope; a pure name list would leave a user `sandbox-js`/`http` tool ungated, which
+  is the real hole. Both clauses are required.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - An unknown tool name in the persisted record is ignored, not an error. An unknown
   decision value is coerced to `DEFAULT_APPROVAL_DECISION` on read.
 - `src/tools/approval.ts` also exports `decisionFor(settings, toolName)` and
@@ -116,8 +124,46 @@ must reach the model as a structured result it can respond to, not as a crash.
   `src/vault/settings`, matching the existing import direction in
   `src/tools/store.ts:1-3`.
 - Policy edits are persisted with `useVaultStore.getState().update({ approvals: {
-  tools: { [name]: decision } } })` (`src/vault/store.ts:309`), so they are
+  tools: { [name]: decision } })` (`src/vault/store.ts:309`), so they are
   encrypted at rest and serialized through the vault write queue.
+
+**Permission modes (scope addendum).**
+
+- A thread has one `mode: 'read_only' | 'editing' | 'god'`, defaulting to `editing`.
+  It is a ceiling over the Phase 4 policy, not a replacement:
+  `decision = max(modeCeiling, policy)`, where a tool at or below the ceiling is
+  decided by the policy and a tool above the ceiling escalates to a per-call user
+  accept.
+- Tier membership is exact:
+  - `read_only` — only read-only tools plus `change_mode`: `list_dir`, `read_file`,
+    `stat`, `search`, `load_skill`, `update_plan`, `change_mode`. Every gated tool
+    is therefore above this tier and asks.
+  - `editing` (default) — the `read_only` set plus `write_file`, `edit_file`,
+    `make_dir`, `copy`, `move`, `run_js`, `run_python`, and user tools of kind
+    `sandbox-js` or `http`. `remove` is ABOVE this tier, so it asks.
+  - `god` — every gated tool is auto-approved.
+- A tool above the current mode's tier triggers a per-call user accept. The accept
+  is NOT persisted: it authorizes that one call only, and the next call asks again.
+- `god` auto-approves the accept step for every gated tool. It explicitly CANNOT
+  auto-approve `change_mode`, which always asks.
+- A persisted `deny` always wins, including in `god`: `deny` blocks without any
+  prompt.
+- `src/tools/approval.ts` gains the tier classification (`modeCeiling` / `tierFor`)
+  beside `isGatedTool`, so the ceiling and the gate read one table.
+- `change_mode` (`src/tools/builtin/mode.ts`) is model-callable and is NOT gated by
+  the mode: it may run in every mode and ALWAYS asks the user. On accept it sets the
+  thread's mode, in either direction. It can never be auto-approved, including in
+  `god`.
+- The composer toggle (`src/ui/composer-controls.tsx`, `ComposerControls`) sets the
+  active thread's mode directly, with no tool call and no approval. Both paths write
+  the same thread-level field through the patch helper in `src/chat/threads.ts`.
+- The mode lives on `ChatThread` (`src/chat/types.ts:26`) as a sibling of
+  `workspaceName` (`:34`), NOT on `ThreadConfig`, because the Config panel rebuilds
+  `config` from `threadConfigPatch` (`src/chat/config.ts:52-77`) and would drop it.
+  `validateThread` (`src/chat/persistence.ts:25-59`) is additive and tolerant: an
+  absent or unrecognized `mode` reads as `editing`, and new threads default to
+  `editing`.
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 **Native path (primary).**
 
@@ -184,13 +230,15 @@ must reach the model as a structured result it can respond to, not as a crash.
 
 **UI.**
 
-- A new `src/ui/panels/approvals.tsx` lists the gated tool names derived from the
-  registry's capability classification — the same source `isGatedTool` uses, not a
-  literal array — with a three-state control (`Allow` / `Ask` / `Deny`), defaulting
-  to `Ask`, persisted on change. It is registered in `src/ui/shell.tsx` by adding
-  the id to the `RailPanelId` union and to `RAIL_IDS`, importing the component, and
-  adding an entry to the `panels` array next to `tools` and `sandbox`.
+- A new `src/ui/panels/approvals.tsx` lists the gated tool names by running
+  `isGatedTool` over the built-in names and the registered user tools — the same
+  predicate the gate uses, not a duplicated literal array — with a three-state
+  control (`Allow` / `Ask` / `Deny`), defaulting to `Ask`, persisted on change. It is
+  registered in `src/ui/shell.tsx` by adding the id to the `RailPanelId` union and to
+  `RAIL_IDS`, importing the component, and adding an entry to the `panels` array
+  next to `tools` and `sandbox`.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - No new approval card is built: `ToolFallbackApproval`
   (`src/components/assistant-ui/elements/tool-fallback.aui.tsx:361`) already
   renders `approval`, including `approval.options`, and calls `respondToApproval`.
@@ -271,12 +319,17 @@ rather than forcing both.
 
 Create (native path):
 
-- `src/tools/approval.ts`, `src/tools/approval.test.ts`
+- `src/tools/approval.ts`, `src/tools/approval.test.ts` — gate classification plus
+  the mode tier and `decision = max(modeCeiling, policy)`
 - `src/chat/approval.ts`, `src/chat/approval.test.ts`
 - `src/chat/approval-roundtrip.test.ts` — the automated half of the spike
 - `src/ui/panels/approvals.tsx`
+- `src/tools/builtin/mode.ts`, `src/tools/builtin/mode.test.ts` — the `change_mode`
+  tool provider (always asks, never gated by the mode, never auto-approved)
+- `src/chat/types.test.ts` — the `ChatMode` union and the `ChatThread.mode` default
 - `plans/260919-1821-harness-tools/reports/spike-approval-roundtrip.md` — blocking
   manual artifact and decision record
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 Create (fallback only, if the spike fails):
 
@@ -286,12 +339,15 @@ Create (fallback only, if the spike fails):
 Modify:
 
 - `src/vault/settings.ts` — `ApprovalSettings`, `DEFAULT_APPROVAL_DECISION`,
-  `Settings.approvals`, `defaultSettings()`. No `APPROVAL_GATED_TOOL_NAMES` array:
-  the gated set is capability-derived.
+  `Settings.approvals`, `defaultSettings()`. The gated set itself lives in
+  `isGatedTool`: the named destructive built-ins plus user-tool kind. No separate
+  `APPROVAL_GATED_TOOL_NAMES` array is introduced.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
-- `src/tools/registry.ts` — expose the capability descriptor used by `isGatedTool`
-  for a tool name (provenance: built-in provider vs user definition `kind`).
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- `src/tools/registry.ts` — expose a user-defined tool's `kind` so `isGatedTool` can
+  apply clause (b) (`sandbox-js`/`http`).
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - `src/chat/convert.ts` — approval pass-through, paused states, denied reason, and
   the synthesized `approval.options`.
   <!-- Updated: Red Team Session 1 - allow-always via synthesized approval.options -->
@@ -301,13 +357,40 @@ Modify:
 - `src/chat/engine.ts` — `toolApproval`, `respondToApproval` (with the stale-approval
   rejection and `optionId` handling), the `startRun` resume option that updates the
   existing assistant message in place, and an `approvalSettings` read from
-  `getSettings()`.
+  `getSettings()`. It also reads the thread's `mode` and passes it into the per-run
+  approval object, keeping `change_mode` at `'user-approval'` in every mode.
   <!-- Updated: Red Team Session 1 - resume replaces/merges the assistant message -->
+  <!-- Updated: Scope Addendum 1 - permission modes -->
+- `src/chat/types.ts` — `ChatMode` union and the optional `mode` on `ChatThread`
+  (`:26`), as a sibling of `workspaceName` (`:34`); NOT on `ThreadConfig`.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
+- `src/chat/persistence.ts` — tolerant `mode` read in `validateThread` (`:25-59`);
+  an absent or unrecognized value reads as `editing`.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
+- `src/chat/threads.ts` — a thread-level patch helper beside `patchThreadConfig`
+  (`:60`) for fields like `mode`, used by both `change_mode` and the composer toggle;
+  new threads default to `editing`.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
+- `src/tools/types.ts` — optional `mode?: ThreadModePort` on `ToolRuntimePorts`
+  (`:58`), following the `ThreadPlanPort` pattern, so `change_mode` writes the active
+  thread's mode and cannot address another thread.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
+- `src/ui/composer-controls.tsx` — the mode toggle in `ComposerControls` (`:196`),
+  writing the active thread's mode through the thread-level patch helper with no tool
+  call and no approval.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - `src/chat/use-chat-runtime.ts` — `onRespondToToolApproval` forwards `optionId`.
 - `src/ui/shell.tsx` — register the Approvals panel (`RailPanelId`, `RAIL_IDS`,
   import, `panels` entry).
 - `src/chat/convert.test.ts`, `src/chat/sanitize.test.ts`,
   `src/chat/engine.test.ts` — new cases.
+- `src/chat/persistence.test.ts`, `src/chat/threads.test.ts` — the tolerant `mode`
+  read, the mode round-trip after reload, the Config-panel-save regression, and the
+  thread-level patch helper. No `.test.tsx` convention exists in this repository
+  (verified: zero `*.test.tsx` under `src/`), so the composer toggle's assertions live
+  in `src/chat/threads.test.ts` (the helper the toggle calls) rather than a new
+  component test file.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 - `src/chat/transport.test.ts` — regression: the shared `buildRunStream` still
   behaves for the transport call site.
   <!-- Updated: Red Team Session 1 - both buildRunStream call sites -->
@@ -338,14 +421,17 @@ Automated — `src/chat/approval-roundtrip.test.ts` (the spike, in CI)
 
 Unit — `src/tools/approval.test.ts`
 
-- `isGatedTool` returns gated for a `'code-runner'` descriptor (built-in `run_js`,
-  and a user `sandbox-js` tool), a `'filesystem-write'` descriptor, and a `'network'`
-  descriptor; and returns gated for an unknown/unclassified descriptor, so the
-  default is `ask`, never `allow`.
+- `isGatedTool` returns gated for each named built-in: `write_file`, `remove`,
+  `edit_file`, `move`, `run_js`, `run_python`.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
-- `isGatedTool` is not gated for a read-only tool such as `read_file`, `list_dir`,
-  `search`, `stat`, `load_skill`, `update_plan`, or `reset_sandbox`.
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- `isGatedTool` returns gated for a user-defined `sandbox-js` tool and a user-defined
+  `http` tool.
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- `isGatedTool` is not gated for `make_dir`, `copy`, `list_dir`, `read_file`,
+  `stat`, `search`, `load_skill`, `update_plan`, or `reset_sandbox`.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - A user `sandbox-js` tool is gated even though its name is not in any built-in list.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
 - `decisionFor` returns `ask` for an absent tool, the persisted value when present,
@@ -407,6 +493,34 @@ Unit — `src/chat/engine.test.ts`
   and absent-equivalent when the policy allows everything (asserted through the mock
   model's recorded call, following the existing `toolNamesOf` pattern at `:196`).
 
+Unit — mode ceiling and `change_mode` (scope addendum)
+
+- `modeCeiling('read_only')` permits exactly `list_dir`, `read_file`, `stat`,
+  `search`, `load_skill`, `update_plan`, `change_mode`; a gated tool outside that set
+  (`write_file`, `edit_file`, `make_dir`, `copy`, `move`, `run_js`, `run_python`, a
+  user `sandbox-js`/`http` tool) escalates to a per-call accept.
+- `modeCeiling('editing')` adds the `write_file`, `edit_file`, `make_dir`, `copy`,
+  `move`, `run_js`, `run_python`, and user `sandbox-js`/`http` set above the
+  `read_only` set, and leaves `remove` above the tier, so `remove` escalates.
+- `modeCeiling('god')` leaves every gated tool auto-approved; `decision = max` still
+  returns `deny` when the persisted policy denies.
+- `change_mode` is not gated by the mode, maps to `'user-approval'` in every mode,
+  and is never auto-approved in `god`.
+- An above-tier accept is per-call: the same tool on the next call asks again, and no
+  policy write occurs.
+- `buildRunStream` passes `thread.mode` into the per-run approval object, asserted
+  through the mock model's recorded call.
+- `src/chat/types.test.ts`: the three-value `ChatMode` union and the `mode` default.
+- `src/chat/persistence.test.ts`: a thread saved with a mode reloads with it; an
+  absent or unrecognized `mode` reads `editing`; a Config-panel-style save
+  (`threadConfigPatch` → `{ ...thread, config }`) leaves `thread.mode` intact.
+- `src/chat/threads.test.ts`: the thread-level patch helper sets `mode` and stamps
+  `updatedAt` (the composer toggle's write path).
+- `src/tools/builtin/mode.test.ts`: `change_mode` accepts `{ mode }`, rejects an
+  unknown value as `invalid_input`, is available without a gated-tool decision, and
+  calls the mode port with the requested mode on accept.
+<!-- Updated: Scope Addendum 1 - permission modes -->
+
 Settings and persistence
 
 - `defaultSettings().approvals` is `{ tools: {} }`.
@@ -440,10 +554,11 @@ Manual — `reports/spike-approval-roundtrip.md`
    native-vs-fallback decision. Do not proceed past this step on a failed native
    path without recording the fallback decision.
 2. Add `ApprovalSettings` and `DEFAULT_APPROVAL_DECISION` to
-   `src/vault/settings.ts`. Expose the registry capability descriptor and write
-   `src/tools/approval.ts` with capability-based `isGatedTool`, and its test. Run the
-   settings tests.
+   `src/vault/settings.ts`. Expose a user tool's `kind` from the registry and write
+   `src/tools/approval.ts` with `isGatedTool` (named destructive built-ins plus user
+   `sandbox-js`/`http` kind), and its test. Run the settings tests.
    <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+   <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 3. Add `src/chat/approval.ts` (`createToolApproval`) and its test. Verify the
    object shape against `ToolApprovalConfiguration` (`ai/dist/index.d.ts:3111`) with
    `pnpm build`.
@@ -467,11 +582,56 @@ Manual — `reports/spike-approval-roundtrip.md`
    (`src/chat/engine.ts:45`).
    <!-- Updated: Red Team Session 1 - allow-always via synthesized approval.options -->
 8. Build `src/ui/panels/approvals.tsx` and register it in `src/ui/shell.tsx`
-   (`RailPanelId`, `panels`). Render the gated names from the registry capability
-   classification. Persist through `useVaultStore.getState().update`.
+   (`RailPanelId`, `panels`). List the gated names by running `isGatedTool` over the
+   built-in names and registered user tools. Persist through
+   `useVaultStore.getState().update`.
    <!-- Updated: Red Team Session 1 - capability-based approval gating -->
-9. Run `pnpm test`, then `pnpm lint` and `pnpm build`.
-10. Only if the spike failed: replace steps 3, 5, and 7 with the fallback files and
+   <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+9. Add `ChatMode` and the optional `mode` field to `ChatThread` in
+   `src/chat/types.ts:26`, and the tolerant read in `validateThread`
+   (`src/chat/persistence.ts:25-59`): an absent or unrecognized `mode` reads as
+   `editing`, and new threads are created with `mode: 'editing'`. Add the
+   thread-level patch helper to `src/chat/threads.ts` beside `patchThreadConfig`
+   (`:60`) as the only writer of thread-level fields like `mode`. Write
+   `src/chat/types.test.ts` and the persistence/threads cases.
+   <!-- Updated: Scope Addendum 1 - permission modes -->
+10. Add the tier classification to `src/tools/approval.ts`: `modeCeiling(mode)` maps
+    each mode to the exact tool set it permits, and the decision is
+    `max(modeCeiling, policy)` so a tool above the ceiling escalates to an accept and
+    a persisted `deny` still wins. Cover both tier boundaries in `approval.test.ts`.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+11. Wire `thread.mode` into the decision inside `buildRunStream`
+    (`src/chat/engine.ts:92`): the per-run approval object is computed from the
+    thread's mode and `getSettings()?.approvals`. A tool above the ceiling maps to
+    `'user-approval'`; `god` maps every gated tool to `'approved'` and
+    `change_mode` to `'user-approval'`.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+12. Implement the escalation accept flow: an accept for a tool above the mode's tier
+    authorizes exactly one call and is not persisted, and a `deny` still blocks. Add
+    the engine tests, including that the next call asks again.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+13. Add `ThreadModePort` and the optional `mode` member to `ToolRuntimePorts`
+    (`src/tools/types.ts:58`), then write `src/tools/builtin/mode.ts` with
+    `createModeToolProvider()` and `NAMES = ['change_mode']`. `change_mode` accepts
+    `{ mode }`, is not gated by the mode ceiling, and ALWAYS asks the user; on accept
+    it sets the thread's mode through the thread-level patch helper. It is excluded
+    from `god` auto-approval by construction, because the approval object maps it to
+    `'user-approval'` in every mode. Write `src/tools/builtin/mode.test.ts`.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+14. Add the mode toggle to `src/ui/composer-controls.tsx` (`ComposerControls`,
+    `:196`), setting the active thread's mode through the same patch helper, with no
+    tool call and no approval.
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+15. Persistence round-trip and regression: a thread saved with a mode reloads with
+    the same mode; an old thread without `mode` reads `editing`; a Config-panel-style
+    save (`threadConfigPatch` → `{ ...thread, config }`,
+    `src/ui/panels/chat-config.tsx:75`) leaves `thread.mode` intact. Add the mode
+    cases to `src/chat/persistence.test.ts` and `src/chat/threads.test.ts` (there is
+    no `.test.tsx` convention in this repository, so the composer toggle's assertions
+    live in the helper's test).
+    <!-- Updated: Scope Addendum 1 - permission modes -->
+16. Run `pnpm test`, then `pnpm lint` and `pnpm build`.
+17. Only if the spike failed: replace steps 3, 5, and 7 with the fallback files and
     the `data-approval` rendering path. Key the grant on tool name plus canonical
     input (not `toolCallId`), define `deny` as a `denied` envelope with no execution,
     record which second-pass shape is used, and record the change in the spike report.
@@ -483,12 +643,15 @@ Manual — `reports/spike-approval-roundtrip.md`
 - [ ] Browser-only round-trip recorded in `reports/spike-approval-roundtrip.md`
       with the native-vs-fallback decision
 - [ ] `ApprovalSettings` + defaults + migration read in `src/vault/settings.ts`,
-      with no hardcoded gated-name array
+      with the gated set defined once in `isGatedTool`
       <!-- Updated: Red Team Session 1 - capability-based approval gating -->
-- [ ] Registry capability descriptor + `src/tools/approval.ts` with capability-based
-      `isGatedTool`, `decisionFor`, `normalizeApprovalSettings` + tests, including a
-      gated user `sandbox-js` tool
+      <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- [ ] Registry user-tool `kind` exposure + `src/tools/approval.ts` with `isGatedTool`
+      (named destructives + user `sandbox-js`/`http`), `decisionFor`,
+      `normalizeApprovalSettings` + tests, including a gated user `sandbox-js` tool
+      and ungated `make_dir`/`copy`
       <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+      <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - [ ] `src/chat/approval.ts` `createToolApproval` + tests
 - [ ] `convert.ts` carries `approval`, both paused states, and the synthesized
       `approval.options`, both directions
@@ -501,8 +664,29 @@ Manual — `reports/spike-approval-roundtrip.md`
       assistant message and rejecting a non-latest approval
       <!-- Updated: Red Team Session 1 - resume replaces/merges the assistant message -->
 - [ ] `onRespondToToolApproval` in `use-chat-runtime.ts`, forwarding `optionId`
-- [ ] Approvals policy panel registered in `src/ui/shell.tsx`, rendering the
-      capability-derived gated names
+- [ ] Approvals policy panel registered in `src/ui/shell.tsx`, listing the gated
+      names from `isGatedTool`
+      <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+- [ ] `ChatMode` + `ChatThread.mode` (sibling of `workspaceName`); absent reads
+      `editing`; new threads default to `editing`
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Thread-level patch helper in `src/chat/threads.ts` beside `patchThreadConfig`
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Tier classification and `decision = max(modeCeiling, policy)` in
+      `src/tools/approval.ts`, with the exact `read_only`/`editing`/`god` tier lists
+      tested
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Engine reads `thread.mode` for the decision; the escalation accept is per-call
+      and not persisted; `god` auto-approves every gated tool
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] `src/tools/builtin/mode.ts` `change_mode`: always asks, never gated by mode,
+      never auto-approved in `god`, sets the thread mode on accept
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] Composer toggle in `src/ui/composer-controls.tsx` writing the thread mode with
+      no tool call
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] `mode` persistence round-trip and Config-panel-save regression
+      <!-- Updated: Scope Addendum 1 - permission modes -->
 - [ ] Settings tests: default, migration, bogus decision, no plaintext policy
 - [ ] Fallback (if needed): grant keyed on tool name + canonical input, `deny`
       defined, second-pass shape recorded
@@ -523,10 +707,11 @@ Manual — `reports/spike-approval-roundtrip.md`
       <!-- Updated: Red Team Session 1 - resume replaces/merges the assistant message -->
 - [ ] `allow` skips the gate entirely; `deny` blocks with no user interaction;
       `ask` is the default for a tool with no persisted decision.
-- [ ] Gating is capability-based: a user `sandbox-js` tool, an `http` tool, and a
-      filesystem-mutating tool are gated even though they are not in a built-in name
-      list; an unknown/unclassified tool defaults to `ask`.
+- [ ] Gating covers the named destructives (`write_file`, `remove`, `edit_file`,
+      `move`, `run_js`, `run_python`) plus user `sandbox-js`/`http` tools, while
+      `make_dir`, `copy`, and the read-only tools stay ungated.
       <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+      <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - [ ] `allow-always` is reachable from the native card and persists the decision;
       `allow-once` grants only the current call.
       <!-- Updated: Red Team Session 1 - allow-always via synthesized approval.options -->
@@ -540,6 +725,19 @@ Manual — `reports/spike-approval-roundtrip.md`
 - [ ] An existing thread persisted with a pending approval rehydrates without
       poisoning the next request (the paused part is expired, and the next
       conversion succeeds).
+- [ ] Each mode's ceiling is enforced: `read_only` escalates `write_file` and
+      `run_js` to a per-call accept, `editing` escalates `remove`, and `god` does not
+      ask for any gated tool.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] An above-tier accept authorizes one call only and is not persisted; the next
+      call asks again.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] `change_mode` always asks the user in every mode, including `god`, and a
+      persisted `deny` still blocks even in `god`.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
+- [ ] `mode` persists on `ChatThread`, survives reload, and survives a Config-panel
+      save; an absent `mode` reads `editing`.
+      <!-- Updated: Scope Addendum 1 - permission modes -->
 - [ ] `pnpm test`, `pnpm lint`, and `pnpm build` pass.
 
 ## Risk Assessment
@@ -550,19 +748,26 @@ Manual — `reports/spike-approval-roundtrip.md`
 | A second stream starts while the part is still `approval-requested`, silently dropping the tool call | Medium × High | The engine records the response and flips the state before `startRun`; a test asserts the drop behavior directly so the ordering cannot regress silently. |
 | Resuming appends a second assistant message and confuses the provider | Medium × High | `startRun` updates the existing assistant message in place and passes the responded message explicitly into `buildRunStream`, so `convertToModelMessages` sees the `approval-responded` part and `originalMessages` merges the continuation; a test asserts a single assistant message per id after resume. <!-- Updated: Red Team Session 1 - resume replaces/merges the assistant message --> |
 | A late answer to a stale approval truncates the turns that happened after it | High × Medium | Pending approvals expire in-session when a newer run starts or a newer message follows the paused part (`resolution: 'expired'`), and `respondToApproval` rejects a non-latest approval. A test covers the late answer. <!-- Updated: Red Team Session 1 - stale approval expiry --> |
-| A user `sandbox-js` or `http` tool executes without approval because it is not in the named list | Critical × High | Gating is capability-based; any `CodeRunner`-backed, filesystem-mutating, or `network` tool is gated and an unclassified tool defaults to `ask`. A test gates a user `sandbox-js` tool. <!-- Updated: Red Team Session 1 - capability-based approval gating --> |
+| A user `sandbox-js` or `http` tool executes without approval because it is not in the named list | Critical × High | `isGatedTool`'s clause (b) gates any user-defined tool whose kind is `sandbox-js` or `http`, so model-authored code and network tools are covered even though they are not named. A test gates a user `sandbox-js` tool and a user `http` tool. <!-- Updated: Red Team Session 1 - capability-based approval gating --> <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) --> |
 | `allow-always` is unreachable, so the card can only answer once | Medium × Medium | `convertToolPart` synthesizes `approval.options` with `allow-once`/`allow-always`, and `respondToApproval` handles `optionId`; a test asserts the option writes the policy. <!-- Updated: Red Team Session 1 - allow-always via synthesized approval.options --> |
 | The sanitizer rewrites a legitimately pending approval into an error at the end of a run | High × Medium | `PAUSED_TOOL_STATES` is added before any UI wiring, with tests for both the live and rehydrate variants. |
 | A persisted pending approval poisons the next request after reload | Medium × High | `rehydrateThread` expires paused parts and the next conversion is asserted to succeed, mirroring the existing poisoned-thread test at `src/chat/engine.test.ts:423`. |
 | Approval responses are forgeable by anyone with the page | Low × Low | Browser-only, single-user, no server of record; `experimental_toolApprovalSecret` (HMAC) exists (`research/researcher-01-ai-sdk-approval.md` §1) but is not added because there is no remote caller to forge against. Recorded as an accepted limitation. |
 | `ai@7` / `@assistant-ui` pre-1.0 field churn breaks the converter | Medium × Medium | `src/chat/convert.ts` stays the single adapter boundary; the round-trip test pins the behavior, and both packages are version-pinned in `package.json`. |
-| The Approvals panel silently drifts from the gated tool list | Medium × Low | The panel renders the capability-derived gated names from the same registry classification `isGatedTool` uses, so there is one source; a test asserts a user `sandbox-js` tool is gated. <!-- Updated: Red Team Session 1 - capability-based approval gating --> |
+| The Approvals panel silently drifts from the gated tool list | Medium × Low | The panel runs the same `isGatedTool` predicate over the built-in names and registered user tools, so there is one source; a test asserts a user `sandbox-js` tool is gated and `make_dir`/`copy` are not. <!-- Updated: Red Team Session 1 - capability-based approval gating --> <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) --> |
 | Denying a tool breaks a multi-step run that assumed success | Medium × Low | A denial is a normal structured result (`execution-denied`); the model sees it on the next step and can adapt, which is the point of the gate. |
+| Mode confusion: the user believes `read_only` is active while a broader mode is set, or the converse | Medium × High | The mode is a visible composer control that reflects the active thread's persisted `mode`, and every mode change is either an explicit toggle or an accepted `change_mode` prompt, so a change is never silent. A test asserts the control reflects the thread's stored mode. <!-- Updated: Scope Addendum 1 - permission modes --> |
+| `god` combined with a broad `allow` policy removes the consent step entirely | Medium × High | `god` auto-approves only the accept step: a persisted `deny` still blocks, and `change_mode` still asks. The mode is per-thread, user-visible, and `god` never writes a policy change, so leaving the mode restores asking. <!-- Updated: Scope Addendum 1 - permission modes --> |
+| The model social-engineers a mode escalation through `change_mode` | Medium × High | `change_mode` always asks the user, names the requested target mode in the prompt, is never gated away and never auto-approved even in `god`, so the tool cannot raise its own ceiling; only an explicit user choice changes the mode. <!-- Updated: Scope Addendum 1 - permission modes --> |
 
 **Rollback.** Set every gated tool's persisted decision to `allow` (a data change,
 no deploy) or revert this phase's files. Reverting restores the ungated behavior and
 leaves an `approvals` field in the vault that the old code ignores through
-`deepMerge`; no thread format changes. The spike report stays as a record.
+`deepMerge`; no thread format changes. Reverting the mode work removes the field with
+no data migration, and any persisted thread containing a `mode` still loads because
+the validator for that field reverts with the code (an old reader simply ignores it).
+The spike report stays as a record.
+<!-- Updated: Scope Addendum 1 - permission modes -->
 
 ## Security Considerations
 
@@ -571,9 +776,11 @@ leaves an `approvals` field in the vault that the old code ignores through
   decision is written anywhere, proven by a byte-scan test.
 - Gating `run_js` and `run_python` is a real control: it is the only barrier between
   a model-authored script and page-equivalent worker privileges. The default `ask`
-  is deliberate. Because gating is capability-based, a user `sandbox-js` tool and an
-  `http` tool are covered by the same barrier.
+  is deliberate. Because clause (b) keys on the user-tool kind, a user `sandbox-js`
+  tool and an `http` tool are covered by the same barrier even though they are not
+  named.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - `expireApprovals` and the in-session stale-approval rejection together prevent an
   old approval from being answered and resumed against a stream or a turn sequence
   that no longer exists.
@@ -585,11 +792,22 @@ leaves an `approvals` field in the vault that the old code ignores through
   the model already produced is what is re-sent to the provider.
 - No new worker message kind is introduced, so the `CryptoKey` boundary is
   unchanged.
+- Permission modes narrow or widen consent but never bypass it: a persisted `deny`
+  beats `god`, and `change_mode` always asks, so the model cannot raise its own
+  ceiling without an explicit user action. The mode is stored on the encrypted thread
+  record, not in plaintext.
+  <!-- Updated: Scope Addendum 1 - permission modes -->
 
 ## Next Steps
 
 Phase 5 changes only the system prompt and adds a `load_skill` tool. It must not
 change the tool count in a way that re-triggers approval behavior accidentally;
-`load_skill` is not a gated tool because it declares no `code-runner`,
-`filesystem-write`, or `network` capability.
+`load_skill` is not gated because it is not in the named destructive list and is not
+a user `sandbox-js`/`http` tool.
 <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+<!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
+
+The mode ceiling does not change Phase 5 or Phase 6: `load_skill` and `update_plan`
+are inside the `read_only` set, so they are permitted in every mode. Phase 6 carries
+the mode round-trip into its whole-suite verification alongside the plan round-trip.
+<!-- Updated: Scope Addendum 1 - permission modes -->

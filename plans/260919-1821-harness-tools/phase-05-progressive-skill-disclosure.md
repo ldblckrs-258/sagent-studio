@@ -88,19 +88,24 @@ existing `allowed-tools` narrowing keeps working.
   pool and would otherwise exclude the very tool the index depends on.
 - `toolNamesFor` keeps its current narrowing semantics; this phase does not widen
   any other tool.
-- `load_skill` declares no `code-runner`, `filesystem-write`, or `network`
-  capability, so the Phase 4 capability gate does not gate it.
+- `load_skill` is not in the named destructive list and is not a user
+  `sandbox-js`/`http` tool, so the Phase 4 gate does not gate it.
   <!-- Updated: Red Team Session 1 - capability-based approval gating -->
+  <!-- Updated: Validation Session 1 - scoped approval gating (named destructive built-ins + user sandbox-js/http) -->
 - The engine's `## Tools` notice (`src/chat/context.ts:40`) still lists the tool
   names actually built, so `load_skill` appears there too.
-- `load_skill` visibility in the Tools panel must not be claimed through
-  `builtinProviders()`: `builtinProviders()` (`src/session/session.ts:173-183`) builds
-  a fixed `{ workspace, codeRunner }` ports object with no thread context, so a
-  per-run `isAvailable` that needs `ports.skills` is permanently false there. Either
-  make `builtinProviders()` config-aware, or drop the requirement that `load_skill`
-  appears as available in the Tools panel. Per-thread gating is not weakened either
-  way: the engine union remains the only path that makes `load_skill` callable.
+- `load_skill` availability in the Tools panel is accurate because
+  `builtinProviders()` becomes config-aware: it accepts an optional active-thread
+  config (`AppSession.builtinProviders` at `src/session/session.ts:38`, `:173`),
+  resolves `skillRegistry.resolve(config.enabledSkills)`, and builds the `skills`
+  port, so `isAvailable` matches what a run will see. `src/ui/panels/tools.tsx:190`
+  passes the active thread's config read from `useChatStore`
+  (`src/chat/store.ts:8` — `threads` + `activeThreadId`); with no active thread the
+  port-gated tools report unavailable rather than falsely available. `buildRunStream`
+  (`src/chat/engine.ts:102`) remains the execution source of truth: the panel is
+  display only and cannot make `load_skill` callable.
   <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 
 ## Architecture
 
@@ -186,15 +191,21 @@ Modify:
   only an index.
 - `src/tools/types.ts` — `SkillLoadPort` and the optional `skills` member on
   `ToolRuntimePorts`.
-- `src/session/session.ts` — register `createSkillToolProvider`. Do NOT rely on
-  `builtinProviders()` reporting `load_skill` as available; it builds a fixed
-  `{ workspace, codeRunner }` ports object, so the per-run `isAvailable` is false
-  there. Either make `builtinProviders()` config-aware or drop the Tools-panel claim.
+- `src/session/session.ts` — register `createSkillToolProvider`, and make
+  `builtinProviders(config?)` (`:38`, `:173`) build the `skills` port from
+  `skillRegistry.resolve(config.enabledSkills)` so the Tools panel's `load_skill`
+  availability matches the run.
   <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
+- `src/ui/panels/tools.tsx` — pass the active thread's config to
+  `builtinProviders(config)` at `:190`; no other panel change.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
+- `src/session/session.test.ts` — the config-aware `load_skill` availability cases.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 
 Do not modify: `src/skills/registry.ts` (the contract point is used, not changed),
 `src/skills/parser.ts`, `src/vault/**`, `src/sandbox/**`, `src/workspace/**`,
-`src/ui/**`.
+and `src/ui/**` except `src/ui/panels/tools.tsx`.
 
 ## Test Plan
 
@@ -244,6 +255,13 @@ Integration — `src/chat/engine.test.ts`
   now asserts the description).
 - The `tool-` parts still render; the tool loop still works end to end.
 
+Integration — `src/session/session.test.ts`
+
+- `builtinProviders({ config })` reports `load_skill` available when the config
+  enables at least one skill, unavailable when it enables none, and unavailable when
+  no config is supplied.
+  <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
+
 Regression
 
 - `src/skills/registry.test.ts` passes unchanged, including the "narrow but never
@@ -275,13 +293,14 @@ Regression
    applies and the port gate already removes `load_skill`.
 6. Add the engine tests. Assert on the mock model's recorded tool list using the
    existing `toolNamesOf` helper (`src/chat/engine.test.ts:196`).
-7. Register the provider in `src/session/session.ts`. Do NOT rely on
-   `builtinProviders()` to report `load_skill` as available: it builds a fixed
-   `{ workspace, codeRunner }` ports object with no skills, so the per-run
-   `isAvailable` is false there. Either make `builtinProviders()` config-aware or
-   drop the Tools-panel-availability claim; the engine union remains the only path
-   that makes `load_skill` callable per thread.
+7. Register the provider in `src/session/session.ts` and make
+   `builtinProviders(config?)` build the `skills` port from
+   `skillRegistry.resolve(config.enabledSkills)`; update its caller
+   `src/ui/panels/tools.tsx:190` to pass the active thread's config. Add the
+   `session.test.ts` availability cases. `buildRunStream` remains the only path that
+   makes `load_skill` callable per thread.
    <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+   <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 8. Run `pnpm test`, then `pnpm lint` and `pnpm build`.
 
 ## Todo
@@ -299,9 +318,11 @@ Regression
 - [ ] Engine unions `load_skill` when a skill is enabled, without widening other
       tools
 - [ ] Engine tests for the union and for the index-only prompt
-- [ ] Provider registered in `src/session/session.ts`; `builtinProviders()` either
-      made config-aware or the Tools-panel-availability claim dropped
+- [ ] Provider registered in `src/session/session.ts`; `builtinProviders(config?)`
+      builds the `skills` port, and `src/ui/panels/tools.tsx` passes the active
+      thread config
       <!-- Updated: Red Team Session 1 - builtinProviders cannot express per-run isAvailable -->
+      <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - [ ] `src/skills/registry.ts` unchanged and its suite still green
 - [ ] `pnpm test`, `pnpm lint`, `pnpm build` green
 
@@ -321,6 +342,11 @@ Regression
 - [ ] A skill with `allowedTools: ['test_tool']` still produces a tool set that
       contains `load_skill`; no other tool is added or removed by the union.
 - [ ] `load_skill` is absent when no skill is enabled.
+- [ ] The Tools panel's `load_skill` availability matches the run because
+      `builtinProviders(config?)` receives the active thread config and builds the
+      same `skills` port; the per-run engine union remains the only path that makes
+      the tool callable.
+      <!-- Updated: Validation Session 1 - config-aware builtinProviders -->
 - [ ] `src/skills/registry.ts` is byte-identical to before this phase.
 - [ ] `pnpm test`, `pnpm lint`, and `pnpm build` pass.
 
@@ -335,6 +361,7 @@ Regression
 | A disabled skill is loadable by guessing its id | Medium × High | The port is built per run from `SkillRegistry.resolve`, which filters on enablement (`:82`); a test asserts a disabled id returns `not_found`. |
 | The prompt rewrite breaks the untrusted-separation test's intent | Medium × Low | `UNTRUSTED_NOTICE` and both heading strings are preserved byte-identical. The body assertions at `src/chat/context.test.ts:60-71`, which assert that skill bodies ARE present, MUST be rewritten to assert descriptions present / bodies absent; they cannot be merely extended. Order and determinism tests are preserved. <!-- Updated: Red Team Session 1 - context.test.ts rewrite required --> |
 | Removing bodies from the prompt changes existing prompt-shape expectations elsewhere | Low × Low | `composeSystemPrompt` has exactly two call sites (`src/chat/engine.ts:107` and its test file), both covered here. |
+| The Tools panel and a run disagree about `load_skill` availability | Medium × Low | `builtinProviders(config?)` builds the same `skills` port the run does from the same `skillRegistry.resolve`; `buildRunStream` remains the execution source of truth, so a stale panel can never make the tool callable. A `session.test.ts` case covers an enabled-skill config and a no-config call. <!-- Updated: Validation Session 1 - config-aware builtinProviders --> |
 
 **Rollback.** Revert this phase's files. `composeSystemPrompt` returns to inlining
 bodies and `load_skill` stops being registered; the registry and vault are
