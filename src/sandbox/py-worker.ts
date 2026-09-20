@@ -7,10 +7,12 @@ interface WorkerCtx {
 }
 
 interface PyodideLike {
+  version: string
   runPythonAsync(code: string): Promise<unknown>
   registerJsModule(name: string, module: unknown): void
   setStdout(options: { batched: (text: string) => void }): void
   setStderr(options: { batched: (text: string) => void }): void
+  loadPackage(packages: string | string[]): Promise<unknown>
 }
 
 const ctx = self as unknown as WorkerCtx
@@ -34,6 +36,14 @@ function pyodideIndexUrl(): string {
   return new URL(`${withSlash}pyodide/`, self.location.origin).href
 }
 
+function resolvePackageBaseUrl(version: string): string {
+  const configured: unknown = import.meta.env.VITE_PYODIDE_PACKAGE_BASE
+  if (typeof configured === 'string' && configured !== '') {
+    return configured.endsWith('/') ? configured : `${configured}/`
+  }
+  return `https://cdn.jsdelivr.net/pyodide/v${version}/full/`
+}
+
 async function loadPyodideOnce(): Promise<PyodideLike> {
   if (!pyodidePromise) {
     pyodidePromise = (async () => {
@@ -43,9 +53,30 @@ async function loadPyodideOnce(): Promise<PyodideLike> {
       // "/" and routes the public asset through the dev transform middleware.
       const moduleUrl = `${indexURL}pyodide.mjs`
       const mod = (await import(/* @vite-ignore */ moduleUrl)) as {
-        loadPyodide(options: { indexURL: string }): Promise<PyodideLike>
+        version: string
+        loadPyodide(options: { indexURL: string; packageBaseUrl: string }): Promise<PyodideLike>
       }
-      return mod.loadPyodide({ indexURL })
+      // Core loads from `indexURL`, but wheels are deliberately not vendored:
+      // copy-pyodide.mjs ships only pyodide.mjs, pyodide.asm.mjs,
+      // pyodide.asm.wasm, python_stdlib.zip and pyodide-lock.json, so the
+      // default package base — the directory holding pyodide-lock.json — has no
+      // .whl in it. Every loadPackage() would request `/pyodide/<name>.whl`,
+      // which the dev server answers with index.html (200, text/html) and a
+      // static host answers with 404.
+      //
+      // Pyodide resolves a wheel as `resolve(file_name, config.packageBaseUrl)`,
+      // and its PackageManager captures that value while loadPyodide() builds
+      // the API. Shadowing `pyodide.lockfileBaseUrl` afterwards therefore does
+      // nothing for package loading — that getter exists for consumers and is
+      // never read by the loader. The option has to be passed in here.
+      //
+      // The CDN directory is the one this vendored core was cut from: the local
+      // and remote lock files agree on info (abi 2026_0, emscripten_5_0_3,
+      // python 3.14.2) and on every package sha256, so checkIntegrity passes.
+      return mod.loadPyodide({
+        indexURL,
+        packageBaseUrl: resolvePackageBaseUrl(mod.version),
+      })
     })().catch((error: unknown) => {
       pyodidePromise = null
       throw error
