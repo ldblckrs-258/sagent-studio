@@ -5,6 +5,7 @@ import {
   resolveLocalRef,
 } from '../../workspace/diagnostics'
 import { WorkspaceNotFoundError } from '../../workspace/errors'
+import { withPathLock } from '../../workspace/lock'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError, ToolRuntimeUnavailableError } from '../types'
 import type { ToolProvider } from '../types'
@@ -44,7 +45,7 @@ export function createCheckToolProvider(): ToolProvider {
               if (path.length === 0) {
                 return toolFail('invalid_input', 'path must be a non-empty workspace path.')
               }
-              const content = await workspace.readFile(path)
+              const content = await withPathLock(path, () => workspace.readFile(path))
               const result = diagnoseContent(path, content)
               const errors = [...result.errors]
               if (result.kind === 'html') {

@@ -1,27 +1,13 @@
 import { jsonSchema, tool } from 'ai'
-import { WorkspaceLimitError, WorkspaceNotFoundError } from '../../workspace/errors'
 import { workspaceJournal } from '../../workspace/journal'
 import type { WorkspaceJournal } from '../../workspace/journal'
+import { readForJournal } from '../../workspace/journal-io'
+import { withPathLock, withWorkspaceLock } from '../../workspace/lock'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError, ToolRuntimeUnavailableError } from '../types'
-import type { ToolProvider, ToolRuntimePorts } from '../types'
+import type { ToolProvider } from '../types'
 
 const NAMES = ['checkpoint', 'restore', 'diff', 'history'] as const
-
-type Workspace = NonNullable<ToolRuntimePorts['workspace']>
-
-async function readOptional(
-  workspace: Workspace,
-  path: string,
-): Promise<{ known: boolean; content: string | null }> {
-  try {
-    return { known: true, content: await workspace.readFile(path) }
-  } catch (error) {
-    if (error instanceof WorkspaceNotFoundError) return { known: true, content: null }
-    if (error instanceof WorkspaceLimitError) return { known: false, content: null }
-    throw error
-  }
-}
 
 function readString(input: unknown, key: string): string | undefined {
   if (typeof input !== 'object' || input === null) return undefined
@@ -82,8 +68,8 @@ export function createHistoryToolProvider(
               if (id.length === 0) return toolFail('invalid_input', 'id must be a checkpoint id.')
               const plan = journal.planRestore(id)
               if (!plan) {
-                return toolFail('not_found', `No checkpoint is named "${id}".`, {
-                  hint: 'Call checkpoint to create one.',
+                return toolFail('not_found', `No checkpoint has id "${id}".`, {
+                  hint: 'Pass the id returned by checkpoint, not its label. Checkpoints are process-local, so ids from before an app reload no longer resolve; call checkpoint again.',
                 })
               }
               if (plan.expired) {
@@ -96,27 +82,29 @@ export function createHistoryToolProvider(
               const restored: string[] = []
               const removed: string[] = []
               const skipped: string[] = []
-              for (const change of plan.changes) {
-                const current = await readOptional(workspace, change.path)
-                if (!current.known) {
-                  skipped.push(change.path)
-                  continue
+              await withWorkspaceLock(async () => {
+                for (const change of plan.changes) {
+                  const current = await readForJournal(workspace, change.path)
+                  if (!current.known) {
+                    skipped.push(change.path)
+                    continue
+                  }
+                  if (current.content === change.content) continue
+                  if (change.content === null) {
+                    await workspace.remove(change.path)
+                    removed.push(change.path)
+                  } else {
+                    await workspace.writeFile(change.path, change.content)
+                    restored.push(change.path)
+                  }
+                  journal.record({
+                    kind: 'restore',
+                    path: change.path,
+                    before: current.content,
+                    after: change.content,
+                  })
                 }
-                if (current.content === change.content) continue
-                if (change.content === null) {
-                  await workspace.remove(change.path)
-                  removed.push(change.path)
-                } else {
-                  await workspace.writeFile(change.path, change.content)
-                  restored.push(change.path)
-                }
-                journal.record({
-                  kind: 'restore',
-                  path: change.path,
-                  before: current.content,
-                  after: change.content,
-                })
-              }
+              })
               return toolOk({
                 checkpoint: plan.checkpoint,
                 restored,
@@ -146,10 +134,13 @@ export function createHistoryToolProvider(
                   'not_found',
                   since === undefined
                     ? `No journaled change exists for "${path}".`
-                    : `No checkpoint is named "${since}".`,
+                    : `No checkpoint has id "${since}".`,
+                  since === undefined
+                    ? {}
+                    : { hint: 'Pass the id returned by checkpoint, not its label.' },
                 )
               }
-              const current = await readOptional(workspace, path)
+              const current = await withPathLock(path, () => readForJournal(workspace, path))
               if (!current.known) {
                 return toolFail('limit_exceeded', `"${path}" is too large to diff.`)
               }

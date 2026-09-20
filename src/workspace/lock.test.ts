@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeLockPath, withPathLock } from './lock'
+import { normalizeLockPath, resetPathLocks, withPathLock, withWorkspaceLock } from './lock'
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve: () => void = () => {}
@@ -52,6 +52,40 @@ describe('withPathLock', () => {
       }),
     ).rejects.toThrow('boom')
     await expect(withPathLock('a.txt', async () => 'ok')).resolves.toBe('ok')
+  })
+
+  it('holds a path task behind a workspace-wide task claimed first', async () => {
+    resetPathLocks()
+    const order: string[] = []
+    const gate = deferred()
+    const wide = withWorkspaceLock(async () => {
+      order.push('wide:start')
+      await gate.promise
+      order.push('wide:end')
+    })
+    const scoped = withPathLock('a.txt', async () => {
+      order.push('scoped')
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    gate.resolve()
+    await Promise.all([wide, scoped])
+    expect(order).toEqual(['wide:start', 'wide:end', 'scoped'])
+  })
+
+  it('waits for an in-flight path task before running a workspace-wide task', async () => {
+    resetPathLocks()
+    const order: string[] = []
+    const gate = deferred()
+    const scoped = withPathLock('a.txt', async () => {
+      await gate.promise
+      order.push('scoped')
+    })
+    const wide = withWorkspaceLock(async () => {
+      order.push('wide')
+    })
+    gate.resolve()
+    await Promise.all([scoped, wide])
+    expect(order).toEqual(['scoped', 'wide'])
   })
 
   it('canonicalizes equivalent path spellings to one lane', () => {

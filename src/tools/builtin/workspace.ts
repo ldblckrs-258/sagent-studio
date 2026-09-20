@@ -1,9 +1,9 @@
 import { jsonSchema, tool } from 'ai'
-import { WorkspaceLimitError, WorkspaceNotFoundError } from '../../workspace/errors'
+import { WorkspaceLimitError } from '../../workspace/errors'
 import { DEFAULT_RECURSIVE_MAX_ENTRIES } from '../../workspace/fs'
-import { workspaceJournal } from '../../workspace/journal'
+import { readForJournal, recordMutation } from '../../workspace/journal-io'
 import { countLines, sliceLines, splitLines } from '../../workspace/lines'
-import { withPathLock } from '../../workspace/lock'
+import { withPathLock, withWorkspaceLock } from '../../workspace/lock'
 import { planPatchMulti } from '../../workspace/patch'
 import type { PatchEdit } from '../../workspace/patch'
 import { contentHash } from '../../workspace/revision'
@@ -122,37 +122,6 @@ function nonEmptyLineCount(text: string): number {
   return splitLines(text).filter((line) => line.trim().length > 0).length
 }
 
-/**
- * Reads a path for journaling. Returns unknown when the content cannot be
- * captured (size cap, binary), so the caller skips the journal entry instead of
- * recording a bogus "absent" state that a restore would trust.
- */
-async function readForJournal(
-  workspace: NonNullable<ToolRuntimePorts['workspace']>,
-  path: string,
-): Promise<{ known: boolean; content: string | null }> {
-  try {
-    return { known: true, content: await workspace.readFile(path) }
-  } catch (error) {
-    if (error instanceof WorkspaceNotFoundError) return { known: true, content: null }
-    if (error instanceof WorkspaceLimitError) return { known: false, content: null }
-    throw error
-  }
-}
-
-function recordMutation(
-  kind: 'write' | 'edit' | 'remove',
-  path: string,
-  before: string | null,
-  after: string | null,
-): void {
-  try {
-    workspaceJournal.record({ kind, path, before, after })
-  } catch {
-    // Journaling is best-effort: a failed record must never fail the mutation.
-  }
-}
-
 async function fileMetadata(
   workspace: NonNullable<ToolRuntimePorts['workspace']>,
   path: string,
@@ -194,6 +163,34 @@ async function fileMetadata(
   }
 }
 
+/**
+ * Reads the source of a transfer so `move` and `copy` can be journaled. A
+ * directory, or a file past the read cap, has no capturable content: the
+ * transfer is still recorded, but marked partial so a later restore reports it
+ * as unrestorable instead of pretending nothing moved.
+ */
+async function readTransferSource(
+  workspace: NonNullable<ToolRuntimePorts['workspace']>,
+  from: string,
+): Promise<{ known: boolean; content: string | null }> {
+  const info = await workspace.stat(from)
+  if (info.kind !== 'file') return { known: false, content: null }
+  return readForJournal(workspace, from)
+}
+
+function recordTransfer(
+  kind: 'move' | 'copy',
+  from: string,
+  to: string,
+  source: { known: boolean; content: string | null },
+): void {
+  const partial = !source.known
+  if (kind === 'move') {
+    recordMutation('remove', from, source.content, null, { partial })
+  }
+  recordMutation('write', to, null, source.content, { partial })
+}
+
 export const workspaceToolProvider: ToolProvider = {
   names: NAMES,
   isAvailable: (ports: ToolRuntimePorts) => ports.workspace !== undefined,
@@ -231,7 +228,7 @@ export const workspaceToolProvider: ToolProvider = {
               ...(glob === undefined ? {} : { glob }),
               ...(maxEntries === undefined ? {} : { maxEntries }),
             }
-            const entries = await workspace.list(path, options)
+            const entries = await withPathLock(path, () => workspace.list(path, options))
             return toolOk({
               path,
               entries: entries.map((entry) => ({
@@ -267,7 +264,7 @@ export const workspaceToolProvider: ToolProvider = {
             const offset = inputNumber(input, 'offset')
             const limit = inputNumber(input, 'limit')
             const numbered = inputBoolean(input, 'line_numbers') === true
-            const full = await workspace.readFile(path)
+            const full = await withPathLock(path, () => workspace.readFile(path))
             const window = sliceLines(full, {
               ...(offset === undefined ? {} : { offset }),
               ...(limit === undefined ? {} : { limit }),
@@ -345,7 +342,8 @@ export const workspaceToolProvider: ToolProvider = {
           description: 'Return the kind and size of a file or directory in the workspace folder.',
           inputSchema: jsonSchema<{ path: string }>(pathSchema(true)),
           execute: wrapToolExecute(async (input) => {
-            const info = await workspace.stat(inputPath(input))
+            const path = inputPath(input)
+            const info = await withPathLock(path, () => workspace.stat(path))
             return { path: info.path, kind: info.kind, size: info.size }
           }),
         })
@@ -354,7 +352,10 @@ export const workspaceToolProvider: ToolProvider = {
           description:
             'Report metadata for a workspace file or directory: byte size, line and character counts, extension, and last-modified time.',
           inputSchema: jsonSchema<{ path: string }>(pathSchema(true)),
-          execute: wrapToolExecute(async (input) => fileMetadata(workspace, inputPath(input))),
+          execute: wrapToolExecute(async (input) => {
+            const path = inputPath(input)
+            return withPathLock(path, () => fileMetadata(workspace, path))
+          }),
         })
       case 'edit_file':
         return tool({
@@ -536,12 +537,15 @@ export const workspaceToolProvider: ToolProvider = {
               return toolFail('invalid_input', 'pattern must be a non-empty regular expression.')
             }
             if (workspace.findLines) {
+              const findLines = workspace.findLines.bind(workspace)
               try {
-                const result = await workspace.findLines(path, {
-                  pattern,
-                  ...(ignoreCase ? { ignoreCase: true } : {}),
-                  ...(maxResults === undefined ? {} : { maxResults }),
-                })
+                const result = await withPathLock(path, () =>
+                  findLines(path, {
+                    pattern,
+                    ...(ignoreCase ? { ignoreCase: true } : {}),
+                    ...(maxResults === undefined ? {} : { maxResults }),
+                  }),
+                )
                 return toolOk(result)
               } catch (error) {
                 if (error instanceof SearchRequestError) {
@@ -552,7 +556,7 @@ export const workspaceToolProvider: ToolProvider = {
                 throw error
               }
             }
-            const full = await workspace.readFile(path)
+            const full = await withPathLock(path, () => workspace.readFile(path))
             const matcher = new RegExp(pattern, ignoreCase ? 'i' : '')
             const hits: Array<{ path: string; line: number; text: string }> = []
             const lines = splitLines(full)
@@ -576,11 +580,19 @@ export const workspaceToolProvider: ToolProvider = {
             'Move or rename a file or directory in the workspace. Fails if the destination already exists.',
           inputSchema: jsonSchema<{ from: string; to: string }>(transferSchema()),
           execute: wrapToolExecute(async (input) => {
-            const result = await workspace.move(
-              inputString(input, 'from') ?? '',
-              inputString(input, 'to') ?? '',
-            )
-            return toolOk({ from: result.from, to: result.to, kind: result.kind, size: result.size })
+            const from = inputString(input, 'from') ?? ''
+            const to = inputString(input, 'to') ?? ''
+            return withWorkspaceLock(async () => {
+              const source = await readTransferSource(workspace, from)
+              const result = await workspace.move(from, to)
+              recordTransfer('move', from, to, source)
+              return toolOk({
+                from: result.from,
+                to: result.to,
+                kind: result.kind,
+                size: result.size,
+              })
+            })
           }),
         })
       case 'copy':
@@ -589,11 +601,19 @@ export const workspaceToolProvider: ToolProvider = {
             'Copy a file or directory in the workspace, leaving the source in place. Fails if the destination already exists.',
           inputSchema: jsonSchema<{ from: string; to: string }>(transferSchema()),
           execute: wrapToolExecute(async (input) => {
-            const result = await workspace.copy(
-              inputString(input, 'from') ?? '',
-              inputString(input, 'to') ?? '',
-            )
-            return toolOk({ from: result.from, to: result.to, kind: result.kind, size: result.size })
+            const from = inputString(input, 'from') ?? ''
+            const to = inputString(input, 'to') ?? ''
+            return withWorkspaceLock(async () => {
+              const source = await readTransferSource(workspace, from)
+              const result = await workspace.copy(from, to)
+              recordTransfer('copy', from, to, source)
+              return toolOk({
+                from: result.from,
+                to: result.to,
+                kind: result.kind,
+                size: result.size,
+              })
+            })
           }),
         })
       default:

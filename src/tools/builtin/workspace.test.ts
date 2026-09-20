@@ -451,6 +451,25 @@ describe("workspaceToolProvider", () => {
     });
   });
 
+  it("reads the post-edit content when both calls are issued in one step", async () => {
+    const { toolSet } = await build({ "a.txt": "EPSILON Y" });
+    const edit = executor(toolSet, "edit_file")(
+      { path: "a.txt", old_string: "EPSILON Y", new_string: "EPSILON W" },
+      CALL,
+    );
+    const read = executor(toolSet, "read_file")({ path: "a.txt" }, CALL);
+    const [, result] = await Promise.all([edit, read]);
+    expect(result).toMatchObject({ value: { content: "EPSILON W" } });
+  });
+
+  it("reads the destination of a move issued in the same step", async () => {
+    const { toolSet } = await build({ "a.txt": "alpha" });
+    const move = executor(toolSet, "move")({ from: "a.txt", to: "b.txt" }, CALL);
+    const read = executor(toolSet, "read_file")({ path: "b.txt" }, CALL);
+    const [, result] = await Promise.all([move, read]);
+    expect(result).toMatchObject({ ok: true, value: { content: "alpha" } });
+  });
+
   it("applies a batch of hunks atomically against one revision", async () => {
     const { toolSet } = await build({ "a.txt": "one two three four" });
     await expect(

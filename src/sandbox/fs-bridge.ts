@@ -1,3 +1,4 @@
+import { journaledWrite } from '../workspace/journal-io'
 import type { WorkspaceApi } from '../tools/types'
 import { SandboxError, assertSerializable } from './protocol'
 import type { FromWorker, ToWorker } from './protocol'
@@ -33,7 +34,7 @@ export function executeFsCall(
   }
   if (handle.op === 'read') return workspace.readFile(handle.path)
   if (handle.op === 'write') {
-    return workspace.writeFile(handle.path, handle.data ?? '').then(() => '')
+    return journaledWrite(workspace, handle.path, handle.data ?? '').then(() => '')
   }
   return workspace.list(handle.path).then((entries) => JSON.stringify(entries))
 }

@@ -8,8 +8,10 @@ import { contentHash } from './revision'
  * session, not a page reload.
  *
  * It records mutations made through the workspace tools (`write_file`,
- * `edit_file`, `remove`, and `restore`). Sandbox writes that bypass those tools
- * are not captured.
+ * `edit_file`, `remove`, `move`, `copy`, and `restore`) and through the sandbox
+ * `fs`/`workspace` bridge, which writes via the same journaled path. A
+ * directory transfer is recorded as a partial entry, so restore reports it as
+ * unrestorable instead of silently leaving it in place.
  */
 export type JournalKind = 'write' | 'edit' | 'remove' | 'restore' | 'checkpoint'
 
@@ -75,6 +77,8 @@ export interface WorkspaceJournal {
     before: string | null
     after: string | null
     label?: string
+    /** Marks a change whose content was never captured, so restore must skip it. */
+    partial?: boolean
   }): JournalEntry
   checkpoint(label?: string): JournalCheckpoint
   planRestore(id: string): RestorePlan | null
@@ -183,7 +187,9 @@ export function createWorkspaceJournal(): WorkspaceJournal {
         before: before.value,
         after: after.value,
         ...(input.label === undefined ? {} : { label: input.label }),
-        ...(before.partial || after.partial ? { partial: true } : {}),
+        ...(before.partial || after.partial || input.partial === true
+          ? { partial: true }
+          : {}),
       }
       push(entry)
       return entry

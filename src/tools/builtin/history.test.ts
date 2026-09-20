@@ -4,6 +4,8 @@ import { createFakeWorkspace } from '../../workspace/fake-handle'
 import type { WorkspaceFs } from '../../workspace/fs'
 import { createWorkspaceFs } from '../../workspace/fs'
 import { workspaceJournal } from '../../workspace/journal'
+import { resetPathLocks } from '../../workspace/lock'
+import { executeFsCall } from '../../sandbox/fs-bridge'
 import { ToolRegistry } from '../registry'
 import { createHistoryToolProvider } from './history'
 import { workspaceToolProvider } from './workspace'
@@ -22,16 +24,28 @@ function build(initial: Record<string, string> = {}) {
   const registry = new ToolRegistry()
   registry.registerProvider(workspaceToolProvider)
   registry.registerProvider(createHistoryToolProvider())
-  return registry.buildToolSet(undefined, { workspace })
+  return { workspace, toolSet: registry.buildToolSet(undefined, { workspace }) }
+}
+
+function sandboxWrite(workspace: WorkspaceFs, path: string, data: string) {
+  return executeFsCall(workspace, {
+    kind: 'fs.call',
+    runId: 'run-1',
+    requestId: 'req-1',
+    op: 'write',
+    path,
+    data,
+  })
 }
 
 describe('history tools', () => {
   beforeEach(() => {
     workspaceJournal.clear()
+    resetPathLocks()
   })
 
   it('checkpoints, diffs, and restores a file edit', async () => {
-    const toolSet = build()
+    const { toolSet } = build()
 
     await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'one\ntwo\nthree' }, CALL)
     const checkpoint = await executor(toolSet, 'checkpoint')({ label: 'before edit' }, CALL)
@@ -61,7 +75,7 @@ describe('history tools', () => {
   })
 
   it('removes a file that was created after the checkpoint', async () => {
-    const toolSet = build({ 'keep.txt': 'keep' })
+    const { toolSet } = build({ 'keep.txt': 'keep' })
     const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
     const id = (checkpoint as { value: { id: string } }).value.id
     await executor(toolSet, 'write_file')({ path: 'new.txt', content: 'fresh' }, CALL)
@@ -77,7 +91,7 @@ describe('history tools', () => {
   })
 
   it('reports history hashes without file contents', async () => {
-    const toolSet = build({ 'a.txt': 'x' })
+    const { toolSet } = build({ 'a.txt': 'x' })
     await executor(toolSet, 'edit_file')({ path: 'a.txt', old_string: 'x', new_string: 'y' }, CALL)
     const history = await executor(toolSet, 'history')({ path: 'a.txt' }, CALL)
     expect(history).toMatchObject({
@@ -86,11 +100,108 @@ describe('history tools', () => {
     })
   })
 
-  it('fails restore for an unknown checkpoint', async () => {
-    const toolSet = build({})
-    await expect(executor(toolSet, 'restore')({ id: 'cp-999' }, CALL)).resolves.toMatchObject({
-      ok: false,
-      code: 'not_found',
+  it('fails restore for an unknown checkpoint and points at the id, not the label', async () => {
+    const { toolSet } = build({})
+    await executor(toolSet, 'checkpoint')({ label: 'pre-write' }, CALL)
+    const result = (await executor(toolSet, 'restore')({ id: 'pre-write' }, CALL)) as {
+      ok: boolean
+      code: string
+      message: string
+      hint: string
+    }
+    expect(result).toMatchObject({ ok: false, code: 'not_found' })
+    expect(result.message).toContain('id "pre-write"')
+    expect(result.hint).toContain('not its label')
+  })
+
+  it('journals a sandbox bridge write so restore can undo it', async () => {
+    const { workspace, toolSet } = build({})
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+
+    await sandboxWrite(workspace, 'from-sandbox.txt', 'CREATED by SANDBOX')
+
+    await expect(executor(toolSet, 'history')({ path: 'from-sandbox.txt' }, CALL)).resolves.toMatchObject(
+      { value: { entries: [{ kind: 'write', path: 'from-sandbox.txt' }] } },
+    )
+    await expect(executor(toolSet, 'restore')({ id }, CALL)).resolves.toMatchObject({
+      ok: true,
+      value: { removed: ['from-sandbox.txt'] },
     })
+    await expect(workspace.readFile('from-sandbox.txt')).rejects.toThrow()
+  })
+
+  it('reverts a sandbox bridge overwrite of a journaled file', async () => {
+    const { workspace, toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+
+    await sandboxWrite(workspace, 'a.txt', 'SANDBOX OVERWRITE')
+
+    const history = await executor(toolSet, 'history')({ path: 'a.txt' }, CALL)
+    expect((history as { value: { entries: unknown[] } }).value.entries).toHaveLength(2)
+    const diff = await executor(toolSet, 'diff')({ path: 'a.txt', since: id }, CALL)
+    expect(diff).toMatchObject({ ok: true, value: { changed: true } })
+    await executor(toolSet, 'restore')({ id }, CALL)
+    await expect(workspace.readFile('a.txt')).resolves.toBe('original')
+  })
+
+  it('restores a file moved after the checkpoint', async () => {
+    const { workspace, toolSet } = build({ 'a.txt': 'original' })
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+
+    await executor(toolSet, 'move')({ from: 'a.txt', to: 'b.txt' }, CALL)
+
+    await expect(executor(toolSet, 'restore')({ id }, CALL)).resolves.toMatchObject({
+      ok: true,
+      value: { restored: ['a.txt'], removed: ['b.txt'] },
+    })
+    await expect(workspace.readFile('a.txt')).resolves.toBe('original')
+  })
+
+  it('removes a copy made after the checkpoint', async () => {
+    const { workspace, toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+
+    await executor(toolSet, 'copy')({ from: 'a.txt', to: 'b.txt' }, CALL)
+
+    await expect(executor(toolSet, 'restore')({ id }, CALL)).resolves.toMatchObject({
+      ok: true,
+      value: { removed: ['b.txt'] },
+    })
+    await expect(workspace.readFile('a.txt')).resolves.toBe('original')
+  })
+
+  it('reports a directory move as unrestorable instead of ignoring it', async () => {
+    const { toolSet } = build({ 'dir/f.txt': 'inside' })
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+
+    await executor(toolSet, 'move')({ from: 'dir', to: 'moved' }, CALL)
+
+    const result = (await executor(toolSet, 'restore')({ id }, CALL)) as {
+      ok: boolean
+      value: { unrestorable: string[] }
+    }
+    expect(result.ok).toBe(true)
+    expect(result.value.unrestorable).toEqual(expect.arrayContaining(['dir', 'moved']))
+  })
+
+  it('serializes a read issued in the same step as a restore', async () => {
+    const { toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'changed' }, CALL)
+
+    const restore = executor(toolSet, 'restore')({ id }, CALL)
+    const read = executor(toolSet, 'read_file')({ path: 'a.txt' }, CALL)
+    await restore
+    await expect(read).resolves.toMatchObject({ value: { content: 'original' } })
   })
 })
