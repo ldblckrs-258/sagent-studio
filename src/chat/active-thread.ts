@@ -1,7 +1,7 @@
 import type { AppSession } from '../session/session'
 import { useVaultStore } from '../vault/store'
 import { useChatStore } from './store'
-import { createConversation, defaultProviderFor } from './threads'
+import { createConversation, defaultProviderFor, withEnabledSkills } from './threads'
 import { defaultThreadConfig } from './types'
 
 /**
@@ -17,7 +17,10 @@ export async function ensureActiveThread(session: AppSession): Promise<string | 
   if (!provider) return null
   const workspace = session.getWorkspace()
   const thread = await createConversation({
-    config: defaultThreadConfig(provider.providerId, provider.modelId),
+    config: withEnabledSkills(
+      defaultThreadConfig(provider.providerId, provider.modelId),
+      session.skillRegistry.snapshotEnabled(),
+    ),
     workspaceName: workspace?.handle.name,
   })
   useChatStore.getState().setThread(thread)

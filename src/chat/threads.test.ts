@@ -14,6 +14,7 @@ import {
   normalizeTitle,
   patchThreadMode,
   renameConversation,
+  withEnabledSkills,
 } from './threads'
 import { defaultThreadConfig } from './types'
 import { saveThread } from './persistence'
@@ -83,6 +84,32 @@ describe('conversation helpers', () => {
     const created = await createConversation({ config: defaultThreadConfig('p1', 'm1') })
     await deleteConversation(created.id)
     await expect(listThreads()).resolves.toEqual([])
+  })
+
+  it('seeds a new conversation with the globally enabled skills', async () => {
+    const skills = [
+      { id: 's2', source: 'vault' as const },
+      { id: 's1', source: 'workspace' as const },
+    ]
+    const created = await createConversation({
+      config: withEnabledSkills(defaultThreadConfig('p1', 'm1'), skills),
+    })
+    expect(created.config.enabledSkills).toEqual(skills)
+    await expect(loadThread(created.id)).resolves.toMatchObject({
+      config: { enabledSkills: skills },
+    })
+  })
+
+  it('leaves the skill list empty when nothing is enabled globally', () => {
+    const config = defaultThreadConfig('p1', 'm1')
+    expect(withEnabledSkills(config, [])).toBe(config)
+  })
+
+  it('copies seeded skill refs so the caller cannot mutate the config', () => {
+    const ref = { id: 's1', source: 'vault' as const }
+    const seeded = withEnabledSkills(defaultThreadConfig('p1', 'm1'), [ref])
+    seeded.enabledSkills[0].id = 'changed'
+    expect(ref.id).toBe('s1')
   })
 
   it('normalizes an empty title to the default', () => {

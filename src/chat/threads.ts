@@ -1,7 +1,7 @@
 import type { Settings } from '../vault/settings'
 import { createThread, deleteThread, renameThread, setThreadWorkspaceLabel } from './persistence'
 import type { ThreadSummary } from './persistence'
-import type { ChatMode, ChatThread, ThreadConfig } from './types'
+import type { ChatMode, ChatThread, SkillRef, ThreadConfig } from './types'
 
 export const DEFAULT_CHAT_MODE: ChatMode = 'editing'
 
@@ -63,6 +63,22 @@ export async function createConversation(input: CreateConversationInput): Promis
 export function patchThreadConfig(thread: ChatThread, patch: Partial<ThreadConfig>): ChatThread {
   return { ...thread, config: { ...thread.config, ...patch }, updatedAt: Date.now() }
 }
+
+/**
+ * Seeds a new conversation with the globally enabled skills, so a fresh chat
+ * starts with the same toolbelt the user already turned on instead of empty.
+ * A conversation still owns its own list from that point on; later global
+ * changes do not rewrite it.
+ */
+export function withEnabledSkills(
+  config: ThreadConfig,
+  enabled: readonly SkillRef[],
+): ThreadConfig {
+  return enabled.length > 0
+    ? { ...config, enabledSkills: enabled.map((ref) => ({ ...ref })) }
+    : config
+}
+
 
 /** Sets a thread-level field like `mode`; the only writer of `ChatThread.mode`. */
 export function patchThreadMode(thread: ChatThread, mode: ChatMode): ChatThread {

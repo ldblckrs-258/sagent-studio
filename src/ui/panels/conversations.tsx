@@ -11,6 +11,7 @@ import {
   groupConversations,
   normalizeTitle,
   renameConversation,
+  withEnabledSkills,
 } from '../../chat/threads'
 import { defaultThreadConfig } from '../../chat/types'
 import { useSession } from '../../session/session-context'
@@ -98,7 +99,10 @@ export function Conversations({
     if (!provider) return
     const workspace = session.getWorkspace()
     const thread = await createConversation({
-      config: defaultThreadConfig(provider.providerId, provider.modelId),
+      config: withEnabledSkills(
+        defaultThreadConfig(provider.providerId, provider.modelId),
+        session.skillRegistry.snapshotEnabled(),
+      ),
       workspaceName: workspace?.handle.name,
     })
     useChatStore.getState().setThread(thread)
