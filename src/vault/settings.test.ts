@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_JS_TIMEOUT_MS } from '../sandbox/js-runner'
 import { DEFAULT_PY_TIMEOUT_MS } from '../sandbox/py-runner'
 import {
+  DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
   DEFAULT_SANDBOX_JS_TIMEOUT_MS,
   DEFAULT_SANDBOX_PY_TIMEOUT_MS,
   deepMerge,
@@ -52,6 +53,36 @@ describe('sandbox settings', () => {
     expect(migrated.version).toBe(1)
     expect(migrated.sandbox).toEqual(defaultSettings().sandbox)
     expect(migrated.idleLockMinutes).toBe(30)
+  })
+
+  it('defaults idleTimeoutMs to 300000', () => {
+    expect(defaultSettings().sandbox.idleTimeoutMs).toBe(300_000)
+    expect(DEFAULT_SANDBOX_IDLE_TIMEOUT_MS).toBe(300_000)
+  })
+
+  it('fills idleTimeoutMs for a sandbox record written without it', () => {
+    const migrated = migrate(1, {
+      sandbox: { enabled: true, jsTimeoutMs: 1000, pyTimeoutMs: 2000 },
+    })
+    expect(migrated.sandbox).toEqual({
+      enabled: true,
+      jsTimeoutMs: 1000,
+      pyTimeoutMs: 2000,
+      idleTimeoutMs: 300_000,
+    })
+  })
+})
+
+describe('approval settings', () => {
+  it('defaults to an empty policy and fills it on migrate', () => {
+    expect(defaultSettings().approvals).toEqual({ tools: {} })
+    const migrated = migrate(1, { sandbox: { enabled: true } })
+    expect(migrated.approvals).toEqual({ tools: {} })
+  })
+
+  it('preserves a persisted policy through migrate', () => {
+    const migrated = migrate(1, { approvals: { tools: { write_file: 'allow' } } })
+    expect(migrated.approvals).toEqual({ tools: { write_file: 'allow' } })
   })
 })
 

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { executeHttpTool, MAX_RESPONSE_BYTES } from './http'
-import { HttpToolError } from './types'
 import type { HttpRequestTemplate } from './types'
 
 function responseFetch(
@@ -37,53 +36,41 @@ describe('executeHttpTool', () => {
     )
 
     expect(seen).toBe('https://api.example.com/items/42?q=a%20b')
-    expect(result).toEqual({ status: 200, contentType: 'application/json', body: '{"ok":true}' })
+    expect(result).toEqual({
+      ok: true,
+      code: 'ok',
+      value: { status: 200, contentType: 'application/json', body: '{"ok":true}' },
+    })
   })
 
-  it('rejects an origin that is not on the allow-list', async () => {
+  it('returns an http_error envelope for an origin that is not on the allow-list', async () => {
     await expect(
-      executeHttpTool(
-        request({ allowedOrigins: ['https://other.example.com'] }),
-        {},
-        responseFetch('{}'),
-      ),
-    ).rejects.toBeInstanceOf(HttpToolError)
+      executeHttpTool(request({ allowedOrigins: ['https://other.example.com'] }), {}, responseFetch('{}')),
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects a templated authority', async () => {
+  it('returns an http_error envelope for a templated authority', async () => {
     await expect(
-      executeHttpTool(
-        request({ url: 'https://{{input.host}}/x' }),
-        { host: 'api.example.com' },
-        responseFetch('{}'),
-      ),
-    ).rejects.toBeInstanceOf(HttpToolError)
+      executeHttpTool(request({ url: 'https://{{input.host}}/x' }), { host: 'api.example.com' }, responseFetch('{}')),
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects a templated scheme', async () => {
+  it('returns an http_error envelope for a templated scheme', async () => {
     await expect(
-      executeHttpTool(
-        request({ url: '{{input.scheme}}://api.example.com/x' }),
-        { scheme: 'https' },
-        responseFetch('{}'),
-      ),
-    ).rejects.toBeInstanceOf(HttpToolError)
+      executeHttpTool(request({ url: '{{input.scheme}}://api.example.com/x' }), { scheme: 'https' }, responseFetch('{}')),
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects a relative URL', async () => {
+  it('returns an http_error envelope for a relative URL', async () => {
     await expect(
       executeHttpTool(request({ url: '/items' }), {}, responseFetch('{}')),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects a templated header name', async () => {
+  it('returns an http_error envelope for a templated header name', async () => {
     await expect(
-      executeHttpTool(
-        request({ headers: { '{{input.h}}': 'value' } }),
-        { h: 'Authorization' },
-        responseFetch('{}'),
-      ),
-    ).rejects.toBeInstanceOf(HttpToolError)
+      executeHttpTool(request({ headers: { '{{input.h}}': 'value' } }), { h: 'Authorization' }, responseFetch('{}')),
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
   it('substitutes input into header values and the body', async () => {
@@ -93,7 +80,7 @@ describe('executeHttpTool', () => {
       return new Response('{}', { status: 200 })
     }) as typeof fetch
 
-    await executeHttpTool(
+    const result = await executeHttpTool(
       request({
         method: 'POST',
         headers: { 'x-token': '{{input.token}}' },
@@ -103,24 +90,25 @@ describe('executeHttpTool', () => {
       fetchImpl,
     )
 
+    expect(result.ok).toBe(true)
     expect((init?.headers as Record<string, string>)['x-token']).toBe('abc')
     expect(init?.body).toBe('{"name":"bob"}')
   })
 
-  it('maps a non-2xx response to an error', async () => {
+  it('maps a non-2xx response to an http_error envelope', async () => {
     await expect(
       executeHttpTool(request(), {}, responseFetch('nope', { status: 500 })),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('caps the response body', async () => {
+  it('caps the response body with an http_error envelope', async () => {
     const huge = 'a'.repeat(MAX_RESPONSE_BYTES + 1)
     await expect(
       executeHttpTool(request(), {}, responseFetch(huge)),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('maps a timeout to an error', async () => {
+  it('maps a timeout to an http_error envelope', async () => {
     const timeoutFetch = ((_url: string | URL | Request, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
@@ -130,18 +118,18 @@ describe('executeHttpTool', () => {
 
     await expect(
       executeHttpTool(request({ timeoutMs: 5 }), {}, timeoutFetch),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects a missing input path', async () => {
+  it('returns an invalid_input style http_error envelope for a missing input path', async () => {
     await expect(
       executeHttpTool(request({ url: 'https://api.example.com/{{input.missing}}' }), {}, responseFetch('{}')),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
-  it('rejects an unsupported method', async () => {
+  it('returns an http_error envelope for an unsupported method', async () => {
     await expect(
       executeHttpTool(request({ method: 'TRACE' }), {}, responseFetch('{}')),
-    ).rejects.toBeInstanceOf(HttpToolError)
+    ).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 })

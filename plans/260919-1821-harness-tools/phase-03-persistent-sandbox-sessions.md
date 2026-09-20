@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Persistent Sandbox Sessions"
-status: pending
+status: implemented
 priority: P1
 effort: "8h"
 dependencies: [1, 2]

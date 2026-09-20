@@ -1,5 +1,6 @@
 import { jsonSchema, tool } from 'ai'
-import type { CodeRunner } from '../../sandbox/types'
+import type { CodeRunner, RunResult } from '../../sandbox/types'
+import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError } from '../types'
 import type { ToolProvider } from '../types'
 
@@ -36,6 +37,11 @@ export interface CodeRunnerSource {
   isEnabled(): boolean
 }
 
+function fromRunResult(result: RunResult) {
+  if (result.error !== undefined) return toolFail('runtime_error', result.error, { value: result })
+  return toolOk(result)
+}
+
 export function createCodeToolProvider(source: CodeRunnerSource): ToolProvider {
   return {
     names: NAMES,
@@ -47,14 +53,18 @@ export function createCodeToolProvider(source: CodeRunnerSource): ToolProvider {
             description:
               'Run JavaScript in an isolated worker and return its stdout, stderr, and result.',
             inputSchema: jsonSchema<{ source: string }>(sourceSchema()),
-            execute: async (input) => source.getRunners().js.run(readSource(input), {}),
+            execute: wrapToolExecute(async (input) =>
+              fromRunResult(await source.getRunners().js.run(readSource(input), {})),
+            ),
           })
         case 'run_python':
           return tool({
             description:
               'Run Python in an isolated worker and return its stdout, stderr, and result.',
             inputSchema: jsonSchema<{ source: string }>(sourceSchema()),
-            execute: async (input) => source.getRunners().python.run(readSource(input), {}),
+            execute: wrapToolExecute(async (input) =>
+              fromRunResult(await source.getRunners().python.run(readSource(input), {})),
+            ),
           })
         default:
           throw new ToolNotFoundError(name)

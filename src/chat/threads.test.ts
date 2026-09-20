@@ -12,6 +12,7 @@ import {
   deleteConversation,
   groupConversations,
   normalizeTitle,
+  patchThreadMode,
   renameConversation,
 } from './threads'
 import { defaultThreadConfig } from './types'
@@ -34,6 +35,14 @@ describe('conversation helpers', () => {
     await vaultInternals.reset()
     await db.threads.clear()
     keyring.install(await deriveKey('threads-password', KDF))
+  })
+
+  it('defaults a new conversation to editing and patches the mode', async () => {
+    const created = await createConversation({ config: defaultThreadConfig('p1', 'm1') })
+    expect(created.mode).toBe('editing')
+    const patched = patchThreadMode({ ...created, updatedAt: 1 }, 'god')
+    expect(patched.mode).toBe('god')
+    expect(patched.updatedAt).toBeGreaterThan(1)
   })
 
   it('creates a conversation and lists its title and workspace label', async () => {

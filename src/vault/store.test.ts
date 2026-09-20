@@ -142,6 +142,9 @@ describe('vault store', () => {
   it('byte-scans records and finds no seeded plaintext in any byte field', async () => {
     await useVaultStore.getState().setup('scan-password')
     await useVaultStore.getState().update({ typesafe: { apiKey: seededSecret() } })
+    await useVaultStore
+      .getState()
+      .update({ approvals: { tools: { write_file: 'allow', run_python: 'deny' } } })
 
     const chunks: Uint8Array[] = []
     const collect = (value: unknown): void => {
@@ -172,6 +175,8 @@ describe('vault store', () => {
     expect(chunks.length).toBeGreaterThan(0)
     expect(haystack).not.toContain(seededSecret())
     expect(haystack).not.toContain('scan-password')
+    expect(haystack).not.toContain('write_file')
+    expect(haystack).not.toContain('run_python')
   })
 
   it('does not persist the derived key', async () => {

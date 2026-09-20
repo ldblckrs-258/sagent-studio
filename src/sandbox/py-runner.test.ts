@@ -68,6 +68,9 @@ const hangingWorkspace: WorkspaceApi = {
   makeDir: async () => {},
   remove: async () => {},
   stat: async () => ({ path: '', kind: 'directory', size: 0 }),
+  move: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+  copy: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+  search: async () => ({ hits: [], truncated: false, filesScanned: 0, filesSkipped: 0 }),
 }
 
 describe('PyRunner', () => {
@@ -216,6 +219,21 @@ describe('PyRunner', () => {
       }
     })
     await expect(pending).resolves.toMatchObject({ stdout: 'content' })
+  })
+
+  it('honors idleTimeoutMs and reaps the warm worker', async () => {
+    const { factory, workers } = makeFactory()
+    const runner = new PyRunner({ workerFactory: factory, idleTimeoutMs: 20 })
+    const first = runner.run('x', {})
+    await tick()
+    workers[0].setHandler((message, worker) => {
+      if (kindOf(message) !== 'run') return
+      worker.emit({ kind: 'result', runId: runIdOf(message), stdout: '1', stderr: '', result: null })
+    })
+    await first
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(workers[0].terminated).toBe(true)
+    runner.dispose()
   })
 
   it('serializes concurrent runs on the shared worker', async () => {

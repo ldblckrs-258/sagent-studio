@@ -60,7 +60,9 @@ export const FIXTURE_SETTINGS: Settings = {
     enabled: true,
     jsTimeoutMs: 10_000,
     pyTimeoutMs: 30_000,
+    idleTimeoutMs: 300_000,
   },
+  approvals: { tools: {} },
   egressNoticeDismissed: false,
   idleLockMinutes: 15,
 }

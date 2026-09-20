@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolSet } from 'ai'
+import { SandboxTimeoutError } from '../../sandbox/protocol'
 import type { CodeRunner, RunOptions } from '../../sandbox/types'
 import { ToolRegistry } from '../registry'
 import { ToolNotFoundError } from '../types'
@@ -59,7 +60,9 @@ describe('createCodeToolProvider', () => {
     registry.registerProvider(provider)
     const set = registry.buildToolSet(['run_js'], {})
     await expect(executor(set, 'run_js')({ source: '1+1' }, CALL)).resolves.toMatchObject({
-      stdout: 'js:1+1',
+      ok: true,
+      code: 'ok',
+      value: { stdout: 'js:1+1' },
     })
     expect(calls).toEqual([{ source: '1+1', options: {} }])
   })
@@ -71,7 +74,41 @@ describe('createCodeToolProvider', () => {
     registry.registerProvider(provider)
     const set = registry.buildToolSet(['run_python'], {})
     await expect(executor(set, 'run_python')({ source: 'print(1)' }, CALL)).resolves.toMatchObject({
-      stdout: 'py:print(1)',
+      ok: true,
+      code: 'ok',
+      value: { stdout: 'py:print(1)' },
+    })
+  })
+
+  it('wraps a runner timeout in a timeout envelope', async () => {
+    const failing: CodeToolRunners = {
+      js: { run: async () => Promise.reject(new SandboxTimeoutError()) },
+      python: { run: async () => Promise.reject(new SandboxTimeoutError()) },
+    }
+    const provider = createCodeToolProvider(source(failing))
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider)
+    const set = registry.buildToolSet(['run_js'], {})
+    await expect(executor(set, 'run_js')({ source: 'while(true){}' }, CALL)).resolves.toMatchObject({
+      ok: false,
+      code: 'timeout',
+    })
+  })
+
+  it('wraps a RunResult error in a runtime_error envelope', async () => {
+    const errored: CodeToolRunners = {
+      js: { run: async () => ({ stdout: '', stderr: '', result: null, error: 'boom' }) },
+      python: { run: async () => ({ stdout: '', stderr: '', result: null, error: 'boom' }) },
+    }
+    const provider = createCodeToolProvider(source(errored))
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider)
+    const set = registry.buildToolSet(['run_js'], {})
+    await expect(executor(set, 'run_js')({ source: 'throw new Error()' }, CALL)).resolves.toMatchObject({
+      ok: false,
+      code: 'runtime_error',
+      message: 'boom',
+      value: { error: 'boom' },
     })
   })
 
@@ -106,7 +143,8 @@ describe('createCodeToolProvider', () => {
     live.setRunners({ js: recordingRunner('swapped', calls), python: recordingRunner('py', calls) })
 
     await expect(executor(set, 'run_js')({ source: 'x' }, CALL)).resolves.toMatchObject({
-      stdout: 'swapped:x',
+      ok: true,
+      value: { stdout: 'swapped:x' },
     })
   })
 })

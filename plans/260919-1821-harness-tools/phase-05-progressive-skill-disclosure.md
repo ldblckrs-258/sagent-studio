@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Progressive Skill Disclosure"
-status: pending
+status: implemented
 priority: P1
 effort: "5h"
 dependencies: [1, 2, 3, 4]

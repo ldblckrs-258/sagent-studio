@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Surgical Edit, Search, and File Operations"
-status: pending
+status: implemented
 priority: P1
 effort: "8h"
 dependencies: [1]

@@ -11,6 +11,7 @@ export type FromWorker =
       stderr: string
       result: string | null
       error?: string
+      fatal?: boolean
     }
   | {
       kind: 'fs.call'
@@ -20,6 +21,7 @@ export type FromWorker =
       path: string
       data?: string
     }
+  | { kind: 'fatal'; message: string }
 
 export class SandboxError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -105,6 +107,7 @@ export function parseInbound(raw: unknown): FromWorker | null {
     if (typeof raw.stdout !== 'string' || typeof raw.stderr !== 'string') return null
     if (raw.result !== null && typeof raw.result !== 'string') return null
     if (raw.error !== undefined && typeof raw.error !== 'string') return null
+    if (raw.fatal !== undefined && typeof raw.fatal !== 'boolean') return null
     return {
       kind: 'result',
       runId: raw.runId,
@@ -112,7 +115,13 @@ export function parseInbound(raw: unknown): FromWorker | null {
       stderr: raw.stderr,
       result: raw.result,
       ...(typeof raw.error === 'string' ? { error: raw.error } : {}),
+      ...(raw.fatal === true ? { fatal: true } : {}),
     }
+  }
+
+  if (raw.kind === 'fatal') {
+    if (typeof raw.message !== 'string') return null
+    return { kind: 'fatal', message: raw.message }
   }
 
   if (raw.kind === 'fs.call') {

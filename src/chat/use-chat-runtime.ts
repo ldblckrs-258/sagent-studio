@@ -92,6 +92,24 @@ export function useChatRuntime() {
     [session],
   )
 
+  const onRespondToToolApproval = useCallback(
+    async (response: {
+      approvalId: string
+      approved: boolean
+      optionId?: string
+      reason?: string
+    }) => {
+      const id = useChatStore.getState().activeThreadId
+      if (!id) return
+      try {
+        await session.engineFor(id).respondToApproval(id, response)
+      } catch (error) {
+        useChatStore.getState().setError(describe(error))
+      }
+    },
+    [session],
+  )
+
   const onCancel = useCallback(async () => {
     const id = useChatStore.getState().activeThreadId
     if (!id) return
@@ -136,6 +154,7 @@ export function useChatRuntime() {
     onEdit,
     onReload,
     onCancel,
+    onRespondToToolApproval,
     onDelete,
   })
 }

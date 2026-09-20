@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Play } from 'lucide-react'
+import { Play, RotateCcw } from 'lucide-react'
 import type { RunResult } from '../../sandbox/types'
 import type { SandboxLanguage } from '../../sandbox/manager'
 import { useSession } from '../../session/session-context'
@@ -100,6 +100,21 @@ export function SandboxPanel() {
           {availability.python ? 'available' : 'unavailable'}
           {availability.reason ? ` · ${availability.reason}` : ''}
         </span>
+      </Row>
+
+      <Row label="Session" hint="Terminates the warm scratchpad workers; the next run starts clean.">
+        <Button
+          size="sm"
+          disabled={running || !manager}
+          onClick={() => {
+            manager?.reset(undefined, 'console')
+            setResult(null)
+            setError(null)
+          }}
+          icon={<RotateCcw size={14} strokeWidth={1.75} />}
+        >
+          Reset session
+        </Button>
       </Row>
 
       <Row label="JS timeout (ms)">

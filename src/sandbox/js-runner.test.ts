@@ -6,24 +6,28 @@ import { JsRunner } from './js-runner'
 import { SandboxTimeoutError } from './protocol'
 import type { WorkerFactory } from './worker-factory'
 
-class FakeWorker {
-  private readonly listeners = new Map<string, Set<(event: MessageEvent) => void>>()
-  readonly posted: unknown[] = []
+class FakePortWorker {
   terminated = false
-  onPost: ((message: unknown, worker: FakeWorker) => void) | null = null
+  private port: MessagePort | null = null
+  private handler: ((data: unknown, worker: FakePortWorker) => void) | null = null
+  private buffered: unknown[] = []
 
-  postMessage(message: unknown): void {
-    this.posted.push(message)
-    this.onPost?.(message, this)
+  postMessage(message: unknown, transfer?: Transferable[]): void {
+    if ((message as { kind?: string }).kind !== 'init') return
+    const transferred = transfer?.[0]
+    if (!transferred) return
+    this.port = transferred as MessagePort
+    this.port.onmessage = (event) => {
+      if (this.handler) this.handler(event.data, this)
+      else this.buffered.push(event.data)
+    }
+    this.port.start()
   }
 
-  addEventListener(type: string, listener: (event: MessageEvent) => void): void {
-    if (!this.listeners.has(type)) this.listeners.set(type, new Set())
-    this.listeners.get(type)?.add(listener)
-  }
-
-  removeEventListener(type: string, listener: (event: MessageEvent) => void): void {
-    this.listeners.get(type)?.delete(listener)
+  setHandler(handler: (data: unknown, worker: FakePortWorker) => void): void {
+    this.handler = handler
+    for (const data of this.buffered) handler(data, this)
+    this.buffered = []
   }
 
   terminate(): void {
@@ -31,11 +35,7 @@ class FakeWorker {
   }
 
   emit(data: unknown): void {
-    for (const listener of this.listeners.get('message') ?? []) listener({ data } as MessageEvent)
-  }
-
-  listenerCount(): number {
-    return this.listeners.get('message')?.size ?? 0
+    this.port?.postMessage(data)
   }
 }
 
@@ -47,30 +47,55 @@ function runIdOf(message: unknown): string {
   return (message as { runId: string }).runId
 }
 
-describe('JsRunner', () => {
-  it('resolves a structured result and disposes the worker', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = (message, target) => {
-      if (kindOf(message) !== 'run') return
-      target.emit({ kind: 'result', runId: runIdOf(message), stdout: 'hi', stderr: '', result: '42' })
-    }
+function makeFactory(): { factory: WorkerFactory; workers: FakePortWorker[] } {
+  const workers: FakePortWorker[] = []
+  const factory: WorkerFactory = () => {
+    const worker = new FakePortWorker()
+    workers.push(worker)
+    return worker as unknown as Worker
+  }
+  return { factory, workers }
+}
 
-    await expect(runner.run('return 42', {})).resolves.toEqual({
-      stdout: 'hi',
-      stderr: '',
-      result: '42',
-    })
-    expect(worker.terminated).toBe(true)
-    expect(worker.listenerCount()).toBe(0)
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+function responder(worker: FakePortWorker, stdout: string, result: string | null = null): void {
+  worker.setHandler((message, target) => {
+    if (kindOf(message) !== 'run') return
+    target.emit({ kind: 'result', runId: runIdOf(message), stdout, stderr: '', result })
+  })
+}
+
+function runner(factory: WorkerFactory, extra: Record<string, unknown> = {}): JsRunner {
+  return new JsRunner({ workerFactory: factory, idleTimeoutMs: 0, ...extra })
+}
+
+describe('JsRunner', () => {
+  it('resolves a structured result and reuses the warm worker', async () => {
+    const { factory, workers } = makeFactory()
+    const active = runner(factory)
+
+    const first = active.run('return 42', {})
+    await tick()
+    responder(workers[0], 'hi', '42')
+    await expect(first).resolves.toEqual({ stdout: 'hi', stderr: '', result: '42' })
+    expect(workers).toHaveLength(1)
+
+    const second = active.run('return 7', {})
+    await expect(second).resolves.toEqual({ stdout: 'hi', stderr: '', result: '42' })
+    expect(workers).toHaveLength(1)
+    expect(workers[0].terminated).toBe(false)
+    active.dispose()
   })
 
   it('caps stdout and stderr at 64 KiB', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = (message, target) => {
+    const { factory, workers } = makeFactory()
+    const active = runner(factory)
+    const pending = active.run('x', {})
+    await tick()
+    workers[0].setHandler((message, target) => {
       if (kindOf(message) !== 'run') return
       target.emit({
         kind: 'result',
@@ -79,47 +104,47 @@ describe('JsRunner', () => {
         stderr: 'b'.repeat(70_000),
         result: null,
       })
-    }
+    })
 
-    const result = await runner.run('x', {})
+    const result = await pending
     expect(new TextEncoder().encode(result.stdout).byteLength).toBe(65_536)
     expect(new TextEncoder().encode(result.stderr).byteLength).toBe(65_536)
+    active.dispose()
   })
 
-  it('terminates the worker and rejects on timeout', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = () => {}
+  it('terminates the worker and rejects on timeout, then respawns', async () => {
+    const { factory, workers } = makeFactory()
+    const active = runner(factory)
+    const first = active.run('while(true){}', { timeoutMs: 20 })
+    await tick()
+    workers[0].setHandler(() => {})
 
-    await expect(runner.run('while(true){}', { timeoutMs: 50 })).rejects.toBeInstanceOf(
-      SandboxTimeoutError,
-    )
-    expect(worker.terminated).toBe(true)
-    expect(worker.listenerCount()).toBe(0)
+    await expect(first).rejects.toBeInstanceOf(SandboxTimeoutError)
+    expect(workers[0].terminated).toBe(true)
+
+    const second = active.run('ok', {})
+    await tick()
+    expect(workers).toHaveLength(2)
+    responder(workers[1], 'fine')
+    await expect(second).resolves.toMatchObject({ stdout: 'fine' })
+    active.dispose()
   })
 
   it('routes fs.call through the workspace', async () => {
     const fake = createFakeWorkspace({ 'a.txt': 'content' })
     const workspace = createWorkspaceFs(fake.handle)
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory, workspace })
+    const { factory, workers } = makeFactory()
+    const active = runner(factory, { workspace })
+    const pending = active.run('await fs.readFile("a.txt")', {})
+    await tick()
     let activeRunId = ''
-    worker.onPost = (message, target) => {
+    workers[0].setHandler((message, target) => {
       if (kindOf(message) === 'run') {
         activeRunId = runIdOf(message)
-        target.emit({
-          kind: 'fs.call',
-          runId: activeRunId,
-          requestId: 'q1',
-          op: 'read',
-          path: 'a.txt',
-        })
+        target.emit({ kind: 'fs.call', runId: activeRunId, requestId: 'q1', op: 'read', path: 'a.txt' })
         return
       }
       if (kindOf(message) === 'fs.result') {
-        expect((message as { requestId: string }).requestId).toBe('q1')
         target.emit({
           kind: 'result',
           runId: activeRunId,
@@ -128,11 +153,10 @@ describe('JsRunner', () => {
           result: null,
         })
       }
-    }
-
-    await expect(runner.run('await fs.readFile("a.txt")', {})).resolves.toMatchObject({
-      stdout: 'content',
     })
+
+    await expect(pending).resolves.toMatchObject({ stdout: 'content' })
+    active.dispose()
   })
 
   it('rejects every pending fs RPC when it times out', async () => {
@@ -143,67 +167,75 @@ describe('JsRunner', () => {
       makeDir: async () => {},
       remove: async () => {},
       stat: async () => ({ path: '', kind: 'directory', size: 0 }),
+      move: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+      copy: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+      search: async () => ({ hits: [], truncated: false, filesScanned: 0, filesSkipped: 0 }),
     }
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory, workspace: hanging })
-    worker.onPost = (message, target) => {
+    const { factory, workers } = makeFactory()
+    const active = runner(factory, { workspace: hanging })
+    const pending = active.run('await fs.readFile("hang.txt")', { timeoutMs: 20 })
+    await tick()
+    workers[0].setHandler((message, target) => {
       if (kindOf(message) === 'run') {
-        target.emit({
-          kind: 'fs.call',
-          runId: runIdOf(message),
-          requestId: 'q1',
-          op: 'read',
-          path: 'hang.txt',
-        })
+        target.emit({ kind: 'fs.call', runId: runIdOf(message), requestId: 'q1', op: 'read', path: 'hang.txt' })
       }
-    }
+    })
 
-    await expect(runner.run('await fs.readFile("hang.txt")', { timeoutMs: 50 })).rejects.toBeInstanceOf(
-      SandboxTimeoutError,
-    )
-    expect(worker.terminated).toBe(true)
+    await expect(pending).rejects.toBeInstanceOf(SandboxTimeoutError)
+    expect(workers[0].terminated).toBe(true)
+    active.dispose()
   })
 
   it('ignores inbound messages with a mismatched runId', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = (message, target) => {
+    const { factory, workers } = makeFactory()
+    const active = runner(factory)
+    const pending = active.run('x', {})
+    await tick()
+    workers[0].setHandler((message, target) => {
       if (kindOf(message) !== 'run') return
       target.emit({ kind: 'result', runId: 'other', stdout: 'bad', stderr: '', result: null })
       target.emit({ kind: 'result', runId: runIdOf(message), stdout: 'good', stderr: '', result: null })
-    }
+    })
 
-    await expect(runner.run('x', {})).resolves.toMatchObject({ stdout: 'good' })
+    await expect(pending).resolves.toMatchObject({ stdout: 'good' })
+    active.dispose()
   })
 
   it('dispose terminates an in-flight worker', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = () => {}
+    const { factory, workers } = makeFactory()
+    const active = runner(factory)
+    const pending = active.run('while(true){}', { timeoutMs: 30 })
+    await tick()
+    workers[0].setHandler(() => {})
 
-    const pending = runner.run('while(true){}', { timeoutMs: 30 })
-    expect(worker.terminated).toBe(false)
-    runner.dispose()
-    expect(worker.terminated).toBe(true)
+    active.dispose()
+    expect(workers[0].terminated).toBe(true)
     await expect(pending).rejects.toBeInstanceOf(SandboxTimeoutError)
   })
 
-  it('stops posting to the worker after it is disposed', async () => {
-    const worker = new FakeWorker()
-    const factory: WorkerFactory = () => worker as unknown as Worker
-    const runner = new JsRunner({ workerFactory: factory })
-    worker.onPost = (message, target) => {
-      if (kindOf(message) === 'run') {
-        target.emit({ kind: 'result', runId: runIdOf(message), stdout: '', stderr: '', result: null })
-      }
-    }
+  it('terminates the warm worker after the idle timeout when configured', async () => {
+    const { factory, workers } = makeFactory()
+    const active = new JsRunner({ workerFactory: factory, idleTimeoutMs: 20 })
+    const first = active.run('x', {})
+    await tick()
+    responder(workers[0], 'one')
+    await first
 
-    await runner.run('x', {})
-    const postsAfterSettle = worker.posted.length
-    worker.emit({ kind: 'result', runId: 'js-1', stdout: 'late', stderr: '', result: null })
-    expect(worker.posted.length).toBe(postsAfterSettle)
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(workers[0].terminated).toBe(true)
+    active.dispose()
+  })
+
+  it.runIf(typeof Worker !== 'undefined')('completes two warm runs over the real worker port protocol', async () => {
+    const active = new JsRunner({ idleTimeoutMs: 0 })
+    const first = await active.run('return { n: 1 }', {})
+    expect(first.error).toBeUndefined()
+    expect(first.result).toContain('"n":1')
+    const second = await active.run('JSON.stringify = () => "poisoned"; return { n: 2 }', {})
+    expect(second.error).toBeUndefined()
+    expect(second.result).toContain('"n":2')
+    const third = await active.run('return { n: 3 }', {})
+    expect(third.result).toContain('"n":3')
+    active.dispose()
   })
 })

@@ -5,6 +5,7 @@ import { useWorkspaceStore } from '../../session/workspace-state'
 import { parseSkillMarkdown } from '../../skills/parser'
 import type { SkillManifest } from '../../skills/schema'
 import { createWorkspaceSkillSource } from '../../skills/workspace-source'
+import { useRegistryVersion } from '../use-registry-version'
 import {
   Badge,
   Button,
@@ -40,7 +41,7 @@ interface EditState {
 export function SkillsPanel() {
   const session = useSession()
   const workspace = useWorkspaceStore((s) => s.fs)
-  const [version, setVersion] = useState(0)
+  const version = useRegistryVersion(session.skillRegistry)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<EditState | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
@@ -51,7 +52,6 @@ export function SkillsPanel() {
       if (!workspace) return
       try {
         await session.skillRegistry.loadWorkspaceSkills(createWorkspaceSkillSource(workspace))
-        if (!cancelled) setVersion((value) => value + 1)
       } catch (cause) {
         if (!cancelled) setError(messageOf(cause))
       }
@@ -78,7 +78,6 @@ export function SkillsPanel() {
     try {
       await session.skillRegistry.persistEnabled()
       setError(null)
-      setVersion((value) => value + 1)
     } catch (cause) {
       session.skillRegistry.setEnabled(ref, !enabled)
       setError(messageOf(cause))
@@ -113,7 +112,6 @@ export function SkillsPanel() {
       await session.skillRegistry.updateSkill(manifest)
       setEditing(null)
       setError(null)
-      setVersion((value) => value + 1)
     } catch (cause) {
       setError(messageOf(cause))
     }
@@ -124,7 +122,6 @@ export function SkillsPanel() {
     try {
       await session.skillRegistry.removeSkill({ id: manifest.id, source: manifest.source })
       setError(null)
-      setVersion((value) => value + 1)
     } catch (cause) {
       setError(messageOf(cause))
     }
@@ -144,7 +141,6 @@ export function SkillsPanel() {
       }
       await session.skillRegistry.importSkill(manifest)
       setError(null)
-      setVersion((value) => value + 1)
     } catch (cause) {
       setError(messageOf(cause))
     }

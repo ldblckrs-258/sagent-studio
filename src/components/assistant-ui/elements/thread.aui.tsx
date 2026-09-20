@@ -22,6 +22,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { ApprovalPrompt } from "@/ui/approval-prompt";
 import { ChatErrorBanner } from "@/ui/chat-error-banner";
 import { ComposerControls } from "@/ui/composer-controls";
 import {
@@ -229,6 +230,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             <ChatErrorBanner />
+            <ApprovalPrompt />
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />

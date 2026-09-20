@@ -21,6 +21,9 @@ function fakeFs(name: string, permission: PermissionState = 'granted'): Workspac
     makeDir: async () => {},
     remove: async () => {},
     stat: async () => ({ path: '', kind: 'directory', size: 0 }),
+    move: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+    copy: async (from, to) => ({ from, to, kind: 'file', size: 0 }),
+    search: async () => ({ hits: [], truncated: false, filesScanned: 0, filesSkipped: 0 }),
   }
 }
 

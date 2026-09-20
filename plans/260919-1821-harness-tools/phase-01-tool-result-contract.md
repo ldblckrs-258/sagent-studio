@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Tool Result Contract and Workspace Read Primitives"
-status: pending
+status: implemented
 priority: P1
 effort: "6h"
 dependencies: []

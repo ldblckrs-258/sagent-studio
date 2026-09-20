@@ -4,8 +4,9 @@ import { Popover as PopoverPrimitive } from 'radix-ui'
 import { cn } from '@/lib/utils'
 import { ensureActiveThread } from '../chat/active-thread'
 import { useChatStore } from '../chat/store'
-import { defaultProviderFor, patchThreadConfig } from '../chat/threads'
-import type { SkillRef, ThreadConfig } from '../chat/types'
+import { defaultProviderFor, patchThreadConfig, patchThreadMode } from '../chat/threads'
+import { DEFAULT_CHAT_MODE } from '../chat/threads'
+import type { ChatMode, SkillRef, ThreadConfig } from '../chat/types'
 import { useSession } from '../session/session-context'
 import type { ProviderConfig } from '../vault/settings'
 import { useVaultStore } from '../vault/store'
@@ -200,6 +201,9 @@ export function ComposerControls() {
   const config = useChatStore((s) =>
     s.activeThreadId ? s.threads[s.activeThreadId]?.config : undefined,
   )
+  const mode =
+    useChatStore((s) => (s.activeThreadId ? s.threads[s.activeThreadId]?.mode : undefined)) ??
+    DEFAULT_CHAT_MODE
   const [modelOpen, setModelOpen] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -234,8 +238,42 @@ export function ComposerControls() {
     }
   }
 
+  const applyMode = async (next: ChatMode) => {
+    setSaving(true)
+    try {
+      const id = await ensureActiveThread(session)
+      if (!id) return
+      const thread = useChatStore.getState().threads[id]
+      if (!thread) return
+      const updated = patchThreadMode(thread, next)
+      useChatStore.getState().setThread(updated)
+      await session.threadStore.saveThread(updated)
+      useChatStore.getState().setError(null)
+    } catch (cause) {
+      useChatStore
+        .getState()
+        .setError(cause instanceof Error ? cause.message : 'The change could not be saved.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="flex items-center gap-1" data-composer-controls>
+      <label className={TRIGGER} title="Permission mode for this conversation">
+        <span className="sr-only">Permission mode</span>
+        <select
+          aria-label="Permission mode"
+          className="min-w-0 bg-transparent font-mono outline-none"
+          value={mode}
+          disabled={saving}
+          onChange={(event) => void applyMode(event.target.value as ChatMode)}
+        >
+          <option value="read_only">read only</option>
+          <option value="editing">editing</option>
+          <option value="god">god</option>
+        </select>
+      </label>
       <PopoverPrimitive.Root open={modelOpen} onOpenChange={setModelOpen}>
         <PopoverPrimitive.Trigger
           type="button"

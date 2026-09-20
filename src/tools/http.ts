@@ -1,3 +1,5 @@
+import { toolOk, toToolResult } from './result'
+import type { ToolResult } from './result'
 import { HttpToolError } from './types'
 import type { HttpRequestTemplate } from './types'
 
@@ -114,47 +116,51 @@ export async function executeHttpTool(
   request: HttpRequestTemplate,
   input: unknown,
   fetchImpl: typeof fetch = fetch,
-): Promise<HttpToolResult> {
-  const url = resolveToolUrl(request.url, input, request.allowedOrigins)
-
-  const method = (request.method ?? 'GET').toUpperCase()
-  if (!ALLOWED_METHODS.has(method)) {
-    throw new HttpToolError(`Unsupported HTTP method "${method}".`)
-  }
-
-  const headers: Record<string, string> = {}
-  for (const [name, value] of Object.entries(request.headers ?? {})) {
-    if (name.includes('{{')) {
-      throw new HttpToolError('Header names cannot be templated.')
-    }
-    headers[name] = interpolate(value, input)
-  }
-
-  const body = request.body === undefined ? undefined : interpolate(request.body, input)
-  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS
-
-  let response: Response
+): Promise<ToolResult<HttpToolResult>> {
   try {
-    response = await fetchImpl(url.toString(), {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-  } catch (cause) {
-    if (cause instanceof DOMException && cause.name === 'TimeoutError') {
-      throw new HttpToolError(`The request timed out after ${timeoutMs}ms.`, { cause })
+    const url = resolveToolUrl(request.url, input, request.allowedOrigins)
+
+    const method = (request.method ?? 'GET').toUpperCase()
+    if (!ALLOWED_METHODS.has(method)) {
+      throw new HttpToolError(`Unsupported HTTP method "${method}".`)
     }
-    throw new HttpToolError('The request failed before a response was received.', { cause })
-  }
 
-  if (!response.ok) {
-    throw new HttpToolError(`The request failed with status ${response.status}.`)
-  }
+    const headers: Record<string, string> = {}
+    for (const [name, value] of Object.entries(request.headers ?? {})) {
+      if (name.includes('{{')) {
+        throw new HttpToolError('Header names cannot be templated.')
+      }
+      headers[name] = interpolate(value, input)
+    }
 
-  return {
-    status: response.status,
-    contentType: response.headers.get('content-type'),
-    body: await readCapped(response, MAX_RESPONSE_BYTES),
+    const body = request.body === undefined ? undefined : interpolate(request.body, input)
+    const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+    let response: Response
+    try {
+      response = await fetchImpl(url.toString(), {
+        method,
+        headers,
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'TimeoutError') {
+        throw new HttpToolError(`The request timed out after ${timeoutMs}ms.`, { cause })
+      }
+      throw new HttpToolError('The request failed before a response was received.', { cause })
+    }
+
+    if (!response.ok) {
+      throw new HttpToolError(`The request failed with status ${response.status}.`)
+    }
+
+    return toolOk({
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      body: await readCapped(response, MAX_RESPONSE_BYTES),
+    })
+  } catch (error) {
+    return toToolResult(error) as ToolResult<HttpToolResult>
   }
 }

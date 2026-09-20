@@ -3,6 +3,7 @@ import type { FromWorker, ToWorker } from './protocol'
 interface WorkerCtx {
   postMessage(message: unknown, transfer?: Transferable[]): void
   onmessage: ((event: MessageEvent) => void) | null
+  addEventListener(type: string, listener: (event: Event) => void): void
 }
 
 interface PyodideLike {
@@ -65,6 +66,20 @@ function callFs(op: 'read' | 'write' | 'list', path: string, data?: string): Pro
     port?.postMessage(message)
   })
 }
+
+function postFatal(message: string): void {
+  if (!port) return
+  port.postMessage({ kind: 'fatal', message } satisfies FromWorker)
+}
+
+function describeEvent(event: Event): string {
+  const candidate = event as { error?: unknown; reason?: unknown }
+  const error = candidate.error ?? candidate.reason
+  return error === undefined ? 'The sandbox worker failed.' : describe(error)
+}
+
+ctx.addEventListener('error', (event) => postFatal(describeEvent(event)))
+ctx.addEventListener('unhandledrejection', (event) => postFatal(describeEvent(event)))
 
 function postResult(result: string | null, error?: string, fatal?: boolean): void {
   if (!port) return

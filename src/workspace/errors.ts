@@ -39,3 +39,20 @@ export class WorkspaceLimitError extends WorkspaceError {
     this.name = 'WorkspaceLimitError'
   }
 }
+
+export class WorkspaceConflictError extends WorkspaceError {
+  constructor(path: string, options?: ErrorOptions) {
+    super(`The workspace entry "${path}" already exists.`, options)
+    this.name = 'WorkspaceConflictError'
+  }
+}
+
+export class WorkspaceInvalidInputError extends WorkspaceError {
+  constructor(
+    message = 'The workspace operation received invalid input.',
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+    this.name = 'WorkspaceInvalidInputError'
+  }
+}

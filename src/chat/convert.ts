@@ -30,6 +30,19 @@ function textOf(part: IncomingPart): string {
   return typeof part.text === 'string' ? part.text : ''
 }
 
+function isFailureEnvelope(output: unknown): boolean {
+  return isPlainObject(output) && (output as { ok?: unknown }).ok === false
+}
+
+const APPROVAL_OPTIONS = [
+  { id: 'allow-once', kind: 'allow-once' },
+  { id: 'allow-always', kind: 'allow-always' },
+] as const
+
+function approvalOf(part: Record<string, unknown>): Record<string, unknown> | undefined {
+  return isPlainObject(part.approval) ? part.approval : undefined
+}
+
 function convertToolPart(part: Record<string, unknown>, toolName: string): ThreadPart {
   const input = part.input
   const base = {
@@ -41,15 +54,34 @@ function convertToolPart(part: Record<string, unknown>, toolName: string): Threa
   }
   switch (part.state) {
     case 'output-available':
-      return { ...base, result: part.output, isError: false }
+      return { ...base, result: part.output, isError: isFailureEnvelope(part.output) }
     case 'output-error':
       return {
         ...base,
         result: typeof part.errorText === 'string' ? part.errorText : 'The tool call failed.',
         isError: true,
       }
-    case 'output-denied':
-      return { ...base, result: 'The tool call was denied.', isError: true }
+    case 'output-denied': {
+      const approval = approvalOf(part)
+      const reason = approval && typeof approval.reason === 'string' ? approval.reason : undefined
+      return {
+        ...base,
+        ...(approval ? { approval } : {}),
+        result: reason ?? 'The tool call was denied.',
+        isError: true,
+      } as ThreadPart
+    }
+    case 'approval-requested': {
+      const approval = approvalOf(part)
+      return {
+        ...base,
+        ...(approval ? { approval: { ...approval, options: [...APPROVAL_OPTIONS] } } : {}),
+      } as ThreadPart
+    }
+    case 'approval-responded': {
+      const approval = approvalOf(part)
+      return { ...base, ...(approval ? { approval } : {}) } as ThreadPart
+    }
     default:
       return base
   }
@@ -157,13 +189,26 @@ export function toUiParts(content: IncomingContent): UIMessage['parts'] {
       case 'tool-call': {
         const toolName = typeof part.toolName === 'string' ? part.toolName : 'unknown'
         const hasResult = part.result !== undefined || part.isError === true
+        const approval = isPlainObject(part.approval)
+          ? (part.approval as Record<string, unknown>)
+          : undefined
+        const pausedState =
+          approval && !hasResult
+            ? typeof approval.approved === 'boolean'
+              ? 'approval-responded'
+              : 'approval-requested'
+            : undefined
+        const state =
+          pausedState ??
+          (hasResult ? (part.isError ? 'output-error' : 'output-available') : 'input-available')
         const toolPart = {
           type: `tool-${toolName}`,
           ...(typeof part.toolCallId === 'string' ? { toolCallId: part.toolCallId } : {}),
-          state: hasResult ? (part.isError ? 'output-error' : 'output-available') : 'input-available',
+          state,
           input: part.args ?? {},
           ...(hasResult ? { output: part.result } : {}),
           ...(part.isError && typeof part.result === 'string' ? { errorText: part.result } : {}),
+          ...(approval ? { approval } : {}),
         }
         parts.push(toolPart as unknown as UiPart)
         break

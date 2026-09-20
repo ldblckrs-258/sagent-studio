@@ -1,7 +1,7 @@
 ---
 title: "Harness Tools — Autonomous Core"
 description: "Ten-goal harness bundle that makes the harness safe for long-horizon autonomous work: uniform result envelopes, surgical edit, bounded workspace search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, a thread-scoped plan tool, and conversation permission modes."
-status: pending
+status: implemented
 priority: P1
 effort: 48h
 branch: main
@@ -279,12 +279,12 @@ plan — and every expected failure returns a structured value the model can act
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Tool Result Contract and Workspace Read Primitives](./phase-01-tool-result-contract.md) | Pending |
-| 2 | [Surgical Edit, Search, and File Operations](./phase-02-surgical-edit-search-and-file-ops.md) | Pending |
-| 3 | [Persistent Sandbox Sessions](./phase-03-persistent-sandbox-sessions.md) | Pending |
-| 4 | [Tool Approval Gates](./phase-04-tool-approval-gates.md) | Pending |
-| 5 | [Progressive Skill Disclosure](./phase-05-progressive-skill-disclosure.md) | Pending |
-| 6 | [Thread Plan Tool and Whole-Suite Verification](./phase-06-thread-plan-tool-and-verification.md) | Pending |
+| 1 | [Tool Result Contract and Workspace Read Primitives](./phase-01-tool-result-contract.md) | Implemented |
+| 2 | [Surgical Edit, Search, and File Operations](./phase-02-surgical-edit-search-and-file-ops.md) | Implemented |
+| 3 | [Persistent Sandbox Sessions](./phase-03-persistent-sandbox-sessions.md) | Implemented |
+| 4 | [Tool Approval Gates](./phase-04-tool-approval-gates.md) | Implemented (native path; browser-only artifact pending) |
+| 5 | [Progressive Skill Disclosure](./phase-05-progressive-skill-disclosure.md) | Implemented |
+| 6 | [Thread Plan Tool and Whole-Suite Verification](./phase-06-thread-plan-tool-and-verification.md) | Implemented (browser-only artifact pending) |
 
 Phases are strictly sequential. Each phase's `dependencies` field lists every prior
 phase, so a phase can start only after the whole chain before it is complete.

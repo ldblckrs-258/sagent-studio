@@ -1,23 +1,66 @@
 import type { ChatEngine, EngineDeps, ThreadStore } from '../chat/engine'
-import { createEngine } from '../chat/engine'
+import { createEngine, createSkillLoadPort } from '../chat/engine'
+import type { ThreadConfig } from '../chat/types'
 import { deleteThread, listThreads, loadThread, saveThread } from '../chat/persistence'
 import { createSandboxManager } from '../sandbox/manager'
 import type { SandboxManager } from '../sandbox/manager'
 import { createVaultSkillEnablement } from '../skills/enablement'
 import type { SkillEnablementPort } from '../skills/enablement'
 import { SkillRegistry } from '../skills/registry'
+import { createAdminPorts } from '../tools/admin-ports'
 import { createCodeToolProvider } from '../tools/builtin/code'
 import type { CodeRunnerSource } from '../tools/builtin/code'
+import { createModeToolProvider } from '../tools/builtin/mode'
+import { createPlanToolProvider } from '../tools/builtin/plan'
+import { createSandboxControlProvider } from '../tools/builtin/sandbox-control'
+import { createSkillManagementProvider } from '../tools/builtin/skill-management'
+import { createSkillToolProvider } from '../tools/builtin/skills'
+import { createToolManagementProvider } from '../tools/builtin/tool-management'
+import type { JsonSchemaObject, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
 import { ToolRegistry } from '../tools/registry'
 import { useVaultStore } from '../vault/store'
 import {
+  DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
   DEFAULT_SANDBOX_JS_TIMEOUT_MS,
   DEFAULT_SANDBOX_PY_TIMEOUT_MS,
 } from '../vault/settings'
 import type { SandboxSettings, Settings } from '../vault/settings'
 import type { WorkspaceFs } from '../workspace/fs'
 import { useWorkspaceStore } from './workspace-state'
+
+export interface BuiltinProviderInfo {
+  name: string
+  available: boolean
+  description: string
+  inputSchema?: JsonSchemaObject
+}
+
+function readJsonSchema(schema: unknown): JsonSchemaObject | undefined {
+  if (typeof schema !== 'object' || schema === null) return undefined
+  const candidate = (schema as { jsonSchema?: unknown }).jsonSchema
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return undefined
+  return candidate as JsonSchemaObject
+}
+
+function describeBuiltinTool(
+  provider: ToolProvider,
+  name: string,
+  ports: ToolRuntimePorts,
+): Pick<BuiltinProviderInfo, 'description' | 'inputSchema'> {
+  try {
+    const built = provider.create(name, ports)
+    const inputSchema = readJsonSchema(built.inputSchema)
+    return {
+      description: typeof built.description === 'string' ? built.description : '',
+      ...(inputSchema ? { inputSchema } : {}),
+    }
+  } catch {
+    // Unavailable tools (e.g. no workspace) refuse to build; their list entry
+    // still surfaces availability, just without details.
+    return { description: '' }
+  }
+}
 
 /**
  * The app's single composition root: one skill registry, one tool registry, one
@@ -34,8 +77,8 @@ export interface AppSession {
   dispose(): void
   getWorkspace(): WorkspaceFs | null
   setWorkspace(fs: WorkspaceFs | null): void
-  /** Builtin tool names with their current availability for the given ports. */
-  builtinProviders(): Array<{ name: string; available: boolean }>
+  /** Builtin tools with availability and introspection details for the given thread config's ports. */
+  builtinProviders(config?: ThreadConfig): BuiltinProviderInfo[]
   sandbox(): SandboxManager | null
 }
 
@@ -55,6 +98,7 @@ function currentSandbox(): SandboxSettings {
       enabled: true,
       jsTimeoutMs: DEFAULT_SANDBOX_JS_TIMEOUT_MS,
       pyTimeoutMs: DEFAULT_SANDBOX_PY_TIMEOUT_MS,
+      idleTimeoutMs: DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
     }
   )
 }
@@ -112,9 +156,37 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const toolRegistry = options.toolRegistry ?? new ToolRegistry()
   const codeProvider = createCodeToolProvider(runnerSource)
 
+  const sandboxControlPort = (): SandboxControlPort | undefined => {
+    if (!manager) return undefined
+    const active = manager
+    return {
+      reset: (language) => active.reset(language, 'tool'),
+      status: () => {
+        const availability = active.availability()
+        return { js: availability.js, python: availability.python }
+      },
+    }
+  }
+  const sandboxControlProvider = createSandboxControlProvider({
+    isEnabled: () => runnerSource.isEnabled(),
+    getPort: sandboxControlPort,
+  })
+
+  const modeProvider = createModeToolProvider()
+  const skillProvider = createSkillToolProvider({ isEnabled: () => runnerSource.isEnabled() })
+  const planProvider = createPlanToolProvider()
+  const skillManagementProvider = createSkillManagementProvider()
+  const toolManagementProvider = createToolManagementProvider()
+
   if (!options.toolRegistry) {
     toolRegistry.registerProvider(workspaceToolProvider)
     toolRegistry.registerProvider(codeProvider)
+    toolRegistry.registerProvider(sandboxControlProvider)
+    toolRegistry.registerProvider(modeProvider)
+    toolRegistry.registerProvider(skillProvider)
+    toolRegistry.registerProvider(planProvider)
+    toolRegistry.registerProvider(skillManagementProvider)
+    toolRegistry.registerProvider(toolManagementProvider)
   }
 
   const deps: EngineDeps = {
@@ -127,6 +199,9 @@ export function createSession(options: SessionOptions = {}): AppSession {
     },
     get codeRunner() {
       return runnerSource.getRunners().js
+    },
+    get sandbox() {
+      return sandboxControlPort()
     },
   }
 
@@ -170,14 +245,34 @@ export function createSession(options: SessionOptions = {}): AppSession {
       useWorkspaceStore.getState().setFs(fs)
     },
     sandbox: () => manager,
-    builtinProviders() {
+    builtinProviders(config) {
+      const skills = config ? skillRegistry.resolve(config.enabledSkills) : []
       const ports = {
         workspace: getWorkspace() ?? undefined,
         codeRunner: runnerSource.getRunners().js,
+        sandbox: sandboxControlPort(),
+        skills: createSkillLoadPort(skills),
+        ...(config
+          ? { plan: { get: () => [], set: async () => {} } }
+          : {}),
+        ...createAdminPorts({ skillRegistry, toolRegistry }),
       }
-      return [workspaceToolProvider, codeProvider]
+      return [
+        workspaceToolProvider,
+        codeProvider,
+        sandboxControlProvider,
+        modeProvider,
+        skillProvider,
+        planProvider,
+        skillManagementProvider,
+        toolManagementProvider,
+      ]
         .flatMap((provider) =>
-          provider.names.map((name) => ({ name, available: provider.isAvailable(ports) })),
+          provider.names.map((name) => ({
+            name,
+            available: provider.isAvailable(ports),
+            ...describeBuiltinTool(provider, name, ports),
+          })),
         )
         .sort((a, b) => a.name.localeCompare(b.name))
     },

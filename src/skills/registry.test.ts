@@ -176,6 +176,50 @@ describe('SkillRegistry', () => {
   })
 })
 
+describe('SkillRegistry observer', () => {
+  it('bumps the version on register, updateSkill, setEnabled, and removeSkill', async () => {
+    const registry = new SkillRegistry(fakeStore())
+    const start = registry.getVersion()
+    registry.register(manifest({ id: 'a' }))
+    const afterRegister = registry.getVersion()
+    expect(afterRegister).toBeGreaterThan(start)
+
+    await registry.updateSkill(manifest({ id: 'a', instructions: 'after' }))
+    const afterUpdate = registry.getVersion()
+    expect(afterUpdate).toBeGreaterThan(afterRegister)
+
+    registry.setEnabled({ id: 'a', source: 'vault' }, true)
+    const afterEnable = registry.getVersion()
+    expect(afterEnable).toBeGreaterThan(afterUpdate)
+
+    await registry.removeSkill({ id: 'a', source: 'vault' })
+    expect(registry.getVersion()).toBeGreaterThan(afterEnable)
+  })
+
+  it('notifies subscribers and stops after unsubscribe', () => {
+    const registry = new SkillRegistry(fakeStore())
+    let first = 0
+    let second = 0
+    const unsubscribeFirst = registry.subscribe(() => {
+      first += 1
+    })
+    const unsubscribeSecond = registry.subscribe(() => {
+      second += 1
+    })
+
+    registry.register(manifest({ id: 'a' }))
+    expect([first, second]).toEqual([1, 1])
+
+    unsubscribeFirst()
+    registry.setEnabled({ id: 'a', source: 'vault' }, true)
+    expect([first, second]).toEqual([1, 2])
+
+    unsubscribeSecond()
+    registry.register(manifest({ id: 'b' }))
+    expect([first, second]).toEqual([1, 2])
+  })
+})
+
 describe('SkillRegistry enablement port', () => {
   function fakePort(initial: SkillRef[] | null) {
     let current = initial
@@ -251,6 +295,35 @@ describe('SkillRegistry enablement port', () => {
     registry.setEnabled({ id: 'imp', source: 'vault' }, true)
     await registry.persistEnabled()
     expect(writes.at(-1)).toEqual([{ id: 'imp', source: 'vault' }])
+  })
+
+  it('reconciles enabled against the persisted policy', async () => {
+    const store = fakeStore()
+    await store.save(manifest({ id: 's1' }))
+    const { port } = fakePort([{ id: 's1', source: 'vault' }])
+    const registry = new SkillRegistry(store, port)
+    await registry.hydrate()
+    registry.setEnabled({ id: 's1', source: 'vault' }, true)
+    await expect(registry.reconcileEnabled({ id: 's1', source: 'vault' })).resolves.toBe(true)
+
+    const empty = fakePort([])
+    const other = new SkillRegistry(store, empty.port)
+    await other.hydrate()
+    other.setEnabled({ id: 's1', source: 'vault' }, true)
+    await expect(other.reconcileEnabled({ id: 's1', source: 'vault' })).resolves.toBe(false)
+    expect(other.isEnabled({ id: 's1', source: 'vault' })).toBe(false)
+  })
+
+  it('reconciles to disabled when the policy cannot be read', async () => {
+    const registry = new SkillRegistry(fakeStore(), {
+      load: async () => {
+        throw new Error('vault locked')
+      },
+      save: async () => {},
+    })
+    registry.register(manifest({ id: 'locked' }), { enabled: true })
+    await expect(registry.reconcileEnabled({ id: 'locked', source: 'vault' })).resolves.toBe(false)
+    expect(registry.isEnabled({ id: 'locked', source: 'vault' })).toBe(false)
   })
 
   it('drops a removed skill from the persisted policy', async () => {

@@ -1,6 +1,7 @@
 import { jsonSchema, tool } from 'ai'
 import type { Tool, ToolSet } from 'ai'
 import { executeHttpTool } from './http'
+import { toolFail, toolOk, wrapToolExecute } from './result'
 import { toolStore } from './store'
 import {
   ToolNameConflictError,
@@ -30,16 +31,39 @@ function asJsonSchema(schema: Record<string, unknown>): Parameters<typeof jsonSc
 export class ToolRegistry {
   private readonly providers = new Map<string, ToolProvider>()
   private readonly userTools = new Map<string, ToolDefinition>()
-  private readonly store: ToolStore
+  private readonly storeRef: ToolStore
+  private readonly listeners = new Set<() => void>()
+  private version = 0
 
   constructor(store: ToolStore = toolStore) {
-    this.store = store
+    this.storeRef = store
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  getVersion(): number {
+    return this.version
+  }
+
+  private notify(): void {
+    this.version += 1
+    for (const listener of this.listeners) listener()
+  }
+
+  /** The store this registry persists to. Admin ports must never fall back to the global. */
+  store(): ToolStore {
+    return this.storeRef
   }
 
   async hydrate(): Promise<void> {
     // Skip-existing rather than throwing: a second unlock in the same module
     // session re-hydrates over the already-registered tools.
-    for (const definition of await this.store.list()) {
+    for (const definition of await this.storeRef.list()) {
       if (this.providers.has(definition.name) || this.userTools.has(definition.name)) continue
       this.registerUserTool(definition)
     }
@@ -53,6 +77,7 @@ export class ToolRegistry {
       }
       this.providers.set(name, provider)
     }
+    this.notify()
   }
 
   registerUserTool(definition: ToolDefinition): void {
@@ -65,21 +90,45 @@ export class ToolRegistry {
       throw new ToolNameConflictError(definition.name)
     }
     this.userTools.set(definition.name, definition)
+    this.notify()
+  }
+
+  replaceUserTool(definition: ToolDefinition): void {
+    if (!isToolDefinition(definition)) {
+      throw new ToolSchemaError('The tool definition is malformed.')
+    }
+    validateToolName(definition.name)
+    assertPlainSchema(definition.inputSchema)
+    if (this.providers.has(definition.name)) throw new ToolNameConflictError(definition.name)
+    if (!this.userTools.has(definition.name)) throw new ToolNotFoundError(definition.name)
+    this.userTools.set(definition.name, definition)
+    this.notify()
   }
 
   setEnabled(name: string, enabled: boolean): void {
     const existing = this.userTools.get(name)
     if (!existing) throw new ToolNotFoundError(name)
     this.userTools.set(name, { ...existing, enabled })
+    this.notify()
   }
 
   removeUserTool(name: string): void {
     if (!this.userTools.has(name)) throw new ToolNotFoundError(name)
     this.userTools.delete(name)
+    this.notify()
+  }
+
+  /** True when a provider or a user tool owns the name. */
+  hasTool(name: string): boolean {
+    return this.providers.has(name) || this.userTools.has(name)
   }
 
   list(): ToolDefinition[] {
     return [...this.userTools.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  userToolKind(name: string): ToolDefinition['kind'] | undefined {
+    return this.userTools.get(name)?.kind
   }
 
   availableNames(ports: ToolRuntimePorts): string[] {
@@ -121,12 +170,16 @@ export class ToolRegistry {
     if (definition.kind === 'sandbox-js') {
       return tool({
         ...shared,
-        execute: async (input: unknown) => {
+        execute: wrapToolExecute(async (input: unknown) => {
           if (!ports.codeRunner) throw new ToolRuntimeUnavailableError(definition.name)
-          return ports.codeRunner.run(bindInput(definition.source, input), {
+          const result = await ports.codeRunner.run(bindInput(definition.source, input), {
             timeoutMs: definition.timeoutMs,
           })
-        },
+          if (result.error !== undefined) {
+            return toolFail('runtime_error', result.error, { value: result })
+          }
+          return toolOk(result)
+        }),
       })
     }
 

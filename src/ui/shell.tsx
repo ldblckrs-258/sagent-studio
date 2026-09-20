@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Boxes, FileText, FolderTree, Lock as LockIcon, Menu, PanelLeftClose, PanelLeftOpen, Settings2, Sparkles, Wrench, X } from 'lucide-react'
+import { Boxes, FileText, FolderTree, Lock as LockIcon, Menu, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, Sparkles, Wrench, X } from 'lucide-react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { Thread } from '../components/assistant-ui/elements/thread.aui'
 import { listThreadSummaries } from '../chat/persistence'
@@ -12,9 +12,11 @@ import { useMediaQuery } from '../hooks/use-media-query'
 import { useSession } from '../session/session-context'
 import { useVaultStore } from '../vault/store'
 import { useWorkspaceStore } from '../session/workspace-state'
+import { ApprovalsPanel } from './panels/approvals'
 import { ChatConfig } from './panels/chat-config'
 import type { ConfigTab } from './panels/chat-config'
 import { Conversations } from './panels/conversations'
+import { PlanPanel } from './plan-panel'
 import { FileEditorPanel } from './panels/file-editor'
 import { SandboxPanel } from './panels/sandbox'
 import { SkillsPanel } from './panels/skills'
@@ -32,6 +34,7 @@ export type RailPanelId =
   | 'skills'
   | 'tools'
   | 'sandbox'
+  | 'approvals'
 
 const RAIL_IDS: readonly RailPanelId[] = [
   'config',
@@ -40,6 +43,7 @@ const RAIL_IDS: readonly RailPanelId[] = [
   'skills',
   'tools',
   'sandbox',
+  'approvals',
 ]
 
 interface RailPanelState {
@@ -316,6 +320,7 @@ export function Shell({ left }: { left?: ReactNode }) {
     { id: 'skills', label: 'Skills', icon: Sparkles, render: () => <SkillsPanel /> },
     { id: 'tools', label: 'Tools', icon: Wrench, render: () => <ToolsPanel /> },
     { id: 'sandbox', label: 'Sandbox', icon: Boxes, render: () => <SandboxPanel /> },
+    { id: 'approvals', label: 'Approvals', icon: ShieldCheck, render: () => <ApprovalsPanel /> },
   ]
   const active = panels.find((panel) => panel.id === rail.activePanel) ?? panels[0]
 
@@ -407,6 +412,8 @@ export function Shell({ left }: { left?: ReactNode }) {
             </Button>
           </div>
         </header>
+
+        <PlanPanel />
 
         <div className="min-h-0 flex-1">
           <AssistantRuntimeProvider runtime={runtime}>

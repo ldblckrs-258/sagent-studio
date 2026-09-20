@@ -4,6 +4,8 @@ import { MockLanguageModelV4 } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillStore } from "../skills/registry";
 import { SkillRegistry } from "../skills/registry";
+import { createPlanToolProvider } from "../tools/builtin/plan";
+import { createSkillToolProvider } from "../tools/builtin/skills";
 import { ToolRegistry } from "../tools/registry";
 import type { ToolProvider } from "../tools/types";
 import type { Settings } from "../vault/settings";
@@ -194,6 +196,7 @@ function setup(options: {
   settings?: Settings | null;
   store?: MemoryStore;
   modelFactory?: EngineDeps["modelFactory"];
+  persistApproval?: EngineDeps["persistApproval"];
 }) {
   const store = options.store ?? memoryStore();
   const toolRegistry = options.toolRegistry ?? new ToolRegistry();
@@ -205,6 +208,7 @@ function setup(options: {
     toolRegistry,
     threadStore: store,
     modelFactory: options.modelFactory ?? (() => options.model),
+    ...(options.persistApproval ? { persistApproval: options.persistApproval } : {}),
   };
   return { engine: createEngine(deps), store, toolRegistry, skillRegistry };
 }
@@ -303,7 +307,7 @@ describe("chat engine", () => {
       {
         id: "s1",
         name: "Skill One",
-        description: "",
+        description: "SKILL_DESC",
         instructions: "SKILL_MARKER",
         allowedTools: ["test_tool"],
         source: "vault",
@@ -326,9 +330,9 @@ describe("chat engine", () => {
     await engine.sendTurn("th1", "go");
 
     expect(model.doStreamCalls).toHaveLength(2);
-    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain(
-      "SKILL_MARKER",
-    );
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain("SKILL_DESC");
+    expect(prompt).not.toContain("SKILL_MARKER");
     expect(toolNamesOf(model, 0)).toContain("test_tool");
     const messages = useChatStore.getState().threads.th1.messages;
     const last = messages[messages.length - 1];
@@ -617,5 +621,269 @@ describe("chat engine", () => {
 
     expect(useChatStore.getState().threads).toEqual({});
     expect(useChatStore.getState().status).toBe("idle");
+  });
+});
+
+describe("progressive skill disclosure", () => {
+  function skillRegistryWith(body: string): SkillRegistry {
+    const registry = new SkillRegistry(skillStore);
+    registry.resolve = (() => [
+      {
+        id: "s1",
+        name: "S1",
+        description: "D1",
+        instructions: body,
+        source: "vault" as const,
+        allowedTools: ["test_tool"],
+      },
+    ]) as typeof registry.resolve;
+    registry.toolNamesFor = (() => ["test_tool"]) as typeof registry.toolNamesFor;
+    return registry;
+  }
+
+  function registryWithTools(): ToolRegistry {
+    const registry = new ToolRegistry();
+    registry.registerProvider(echoProvider());
+    registry.registerProvider(createSkillToolProvider({ isEnabled: () => true }));
+    return registry;
+  }
+
+  it("unions load_skill into a narrowed tool set and sends only the index", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "done")) }]);
+    const { engine } = setup({
+      model,
+      toolRegistry: registryWithTools(),
+      skillRegistry: skillRegistryWith("BODY_MARKER"),
+    });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    const names = toolNamesOf(model, 0);
+    expect(names).toContain("test_tool");
+    expect(names).toContain("load_skill");
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain("D1");
+    expect(prompt).not.toContain("BODY_MARKER");
+  });
+
+  it("omits load_skill when no skill is enabled", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "done")) }]);
+    const { engine } = setup({ model, toolRegistry: registryWithTools() });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    expect(toolNamesOf(model, 0)).not.toContain("load_skill");
+  });
+});
+
+describe("thread plan", () => {
+  it("writes the plan and reads it back from the thread store", async () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(createPlanToolProvider());
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "update_plan", '{"items":[{"text":"one"}]}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine, store } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "plan it");
+    const expected = [{ id: "p1", text: "one", status: "pending" }];
+    expect(useChatStore.getState().threads.th1.plan).toEqual(expected);
+    expect(store.get("th1")?.plan).toEqual(expected);
+  });
+});
+
+function gatedProvider(counter: { count: number }): ToolProvider {
+  return {
+    names: ["write_file"],
+    isAvailable: () => true,
+    create: () =>
+      tool({
+        description: "Write a file.",
+        inputSchema: jsonSchema<{ path: string }>({
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        }),
+        execute: async () => {
+          counter.count += 1;
+          return "written";
+        },
+      }),
+  };
+}
+
+function pausedPart(messages: UIMessage[], id: string): Record<string, unknown> {
+  const message = messages.find((entry) => entry.id === id);
+  const part = message?.parts.find((entry) => entry.type === "tool-write_file");
+  if (!part) throw new Error("no paused part");
+  return part as unknown as Record<string, unknown>;
+}
+
+describe("tool approval", () => {
+  it("requests approval without executing, then executes once after approval", async () => {
+    const counter = { count: 0 };
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider(counter));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine, store } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    let messages = useChatStore.getState().threads.th1.messages;
+    const assistantId = messages[1].id;
+    const part = pausedPart(messages, assistantId);
+    expect(part.state).toBe("approval-requested");
+    expect(counter.count).toBe(0);
+    const approvalId = (part.approval as { id: string }).id;
+    expect(typeof approvalId).toBe("string");
+
+    await engine.respondToApproval("th1", { approvalId, approved: true });
+    messages = useChatStore.getState().threads.th1.messages;
+    expect(counter.count).toBe(1);
+    expect(messages.filter((message) => message.id === assistantId)).toHaveLength(1);
+    expect(textOf(messages.find((message) => message.id === assistantId)!)).toBe("done");
+    expect(store.get("th1")?.messages.filter((m) => m.id === assistantId)).toHaveLength(1);
+  });
+
+  it("does not execute on denial", async () => {
+    const counter = { count: 0 };
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider(counter));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    const messages = useChatStore.getState().threads.th1.messages;
+    const approvalId = (pausedPart(messages, messages[1].id).approval as { id: string }).id;
+
+    await engine.respondToApproval("th1", { approvalId, approved: false });
+    expect(counter.count).toBe(0);
+  });
+
+  it("ignores an unknown approval id without starting a run", async () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider({ count: 0 }));
+    const model = makeModel([{ stream: streamOf(textStep("t1", "hi")) }]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.respondToApproval("th1", { approvalId: "nope", approved: true });
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it("rejects a stale approval and expires it", async () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider({ count: 0 }));
+    const model = makeModel([{ stream: streamOf(textStep("t1", "hi")) }]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    const paused: UIMessage = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-write_file",
+          toolCallId: "c1",
+          state: "approval-requested",
+          input: { path: "a.txt" },
+          approval: { id: "ap1" },
+        } as unknown as UIMessage["parts"][number],
+      ],
+    };
+    const newer: UIMessage = { id: "u2", role: "user", parts: [{ type: "text", text: "later" }] };
+    seed("th1", [paused, newer]);
+
+    await engine.respondToApproval("th1", { approvalId: "ap1", approved: true });
+    expect(model.doStreamCalls).toHaveLength(0);
+    const part = useChatStore.getState().threads.th1.messages[0].parts[0] as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(part.state).toBe("output-error");
+    expect((part.approval as Record<string, unknown>).resolution).toBe("expired");
+  });
+
+  it("does not persist allow-once", async () => {
+    const persisted: Array<[string, string]> = [];
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider({ count: 0 }));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({
+      model,
+      toolRegistry: registry,
+      persistApproval: async (name, decision) => {
+        persisted.push([name, decision]);
+      },
+    });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    const messages = useChatStore.getState().threads.th1.messages;
+    const approvalId = (pausedPart(messages, messages[1].id).approval as { id: string }).id;
+    await engine.respondToApproval("th1", {
+      approvalId,
+      approved: true,
+      optionId: "allow-once",
+    });
+    expect(persisted).toEqual([]);
+  });
+
+  it("persists allow-always", async () => {
+    const persisted: Array<[string, string]> = [];
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider({ count: 0 }));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({
+      model,
+      toolRegistry: registry,
+      persistApproval: async (name, decision) => {
+        persisted.push([name, decision]);
+      },
+    });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    const messages = useChatStore.getState().threads.th1.messages;
+    const approvalId = (pausedPart(messages, messages[1].id).approval as { id: string }).id;
+    await engine.respondToApproval("th1", {
+      approvalId,
+      approved: true,
+      optionId: "allow-always",
+    });
+    expect(persisted).toEqual([["write_file", "allow"]]);
+  });
+
+  it("auto-approves a gated tool in god mode", async () => {
+    const counter = { count: 0 };
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider(counter));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+    useChatStore.getState().setThread({
+      ...useChatStore.getState().threads.th1,
+      mode: "god",
+    });
+
+    await engine.sendTurn("th1", "go");
+    expect(counter.count).toBe(1);
+    expect(textOf(useChatStore.getState().threads.th1.messages[1])).toBe("done");
   });
 });

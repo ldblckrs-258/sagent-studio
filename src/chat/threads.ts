@@ -1,7 +1,9 @@
 import type { Settings } from '../vault/settings'
 import { createThread, deleteThread, renameThread, setThreadWorkspaceLabel } from './persistence'
 import type { ThreadSummary } from './persistence'
-import type { ChatThread, ThreadConfig } from './types'
+import type { ChatMode, ChatThread, ThreadConfig } from './types'
+
+export const DEFAULT_CHAT_MODE: ChatMode = 'editing'
 
 export const DEFAULT_TITLE = 'New chat'
 export const MAX_TITLE_LENGTH = 80
@@ -49,6 +51,7 @@ export async function createConversation(input: CreateConversationInput): Promis
     title: normalizeTitle(input.title ?? DEFAULT_TITLE),
     messages: [],
     config,
+    mode: DEFAULT_CHAT_MODE,
     createdAt: now,
     updatedAt: now,
     ...(input.workspaceName !== undefined ? { workspaceName: input.workspaceName } : {}),
@@ -59,6 +62,11 @@ export async function createConversation(input: CreateConversationInput): Promis
 /** Merges a config patch and stamps `updatedAt`; the only way a thread config changes. */
 export function patchThreadConfig(thread: ChatThread, patch: Partial<ThreadConfig>): ChatThread {
   return { ...thread, config: { ...thread.config, ...patch }, updatedAt: Date.now() }
+}
+
+/** Sets a thread-level field like `mode`; the only writer of `ChatThread.mode`. */
+export function patchThreadMode(thread: ChatThread, mode: ChatMode): ChatThread {
+  return { ...thread, mode, updatedAt: Date.now() }
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {

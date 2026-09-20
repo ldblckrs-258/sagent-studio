@@ -46,6 +46,69 @@ describe('thread persistence', () => {
     keyring.install(await deriveKey('persist-password', KDF))
   })
 
+  it('round-trips the thread mode and leaves an absent one unset', async () => {
+    await saveThread(thread('mode-1', { mode: 'god' }))
+    await expect(loadThread('mode-1')).resolves.toMatchObject({ mode: 'god' })
+
+    await saveThread(thread('mode-2'))
+    const loaded = await loadThread('mode-2')
+    expect(loaded?.mode).toBeUndefined()
+  })
+
+  it('drops an unrecognized mode on load', async () => {
+    const raw = JSON.stringify({
+      version: THREAD_ENVELOPE_VERSION,
+      thread: { ...thread('mode-3'), mode: 'admin' },
+    })
+    const blob = await encryptRecord(raw, 'thread:mode-3')
+    await db.threads.put({ id: 'mode-3', blob, updatedAt: Date.now() })
+    const loaded = await loadThread('mode-3')
+    expect(loaded?.mode).toBeUndefined()
+  })
+
+  it('keeps the mode through a config-panel-style save', async () => {
+    const original = thread('mode-4', { mode: 'read_only' })
+    await saveThread(original)
+    const loaded = (await loadThread('mode-4')) as ChatThread
+    const configSaved: ChatThread = {
+      ...loaded,
+      config: { ...loaded.config, systemInstruction: 'changed' },
+    }
+    await saveThread(configSaved)
+    await expect(loadThread('mode-4')).resolves.toMatchObject({
+      mode: 'read_only',
+      config: { systemInstruction: 'changed' },
+    })
+  })
+
+  it('round-trips a plan and omits an absent one', async () => {
+    const plan = [{ id: 'p1', text: 'one', status: 'pending' as const }]
+    await saveThread(thread('plan-1', { plan }))
+    await expect(loadThread('plan-1')).resolves.toMatchObject({ plan })
+
+    await saveThread(thread('plan-2'))
+    const loaded = await loadThread('plan-2')
+    expect(loaded?.plan).toBeUndefined()
+  })
+
+  it('rejects an invalid plan on load', async () => {
+    const raw = JSON.stringify({
+      version: THREAD_ENVELOPE_VERSION,
+      thread: { ...thread('plan-3'), plan: [{ id: 'p1' }] },
+    })
+    const blob = await encryptRecord(raw, 'thread:plan-3')
+    await db.threads.put({ id: 'plan-3', blob, updatedAt: Date.now() })
+    await expect(loadThread('plan-3')).rejects.toThrow(/plan/)
+  })
+
+  it('keeps the plan through a config-panel-style save', async () => {
+    const plan = [{ id: 'p1', text: 'one', status: 'pending' as const }]
+    await saveThread(thread('plan-4', { plan }))
+    const loaded = (await loadThread('plan-4')) as ChatThread
+    await saveThread({ ...loaded, config: { ...loaded.config, systemInstruction: 'changed' } })
+    await expect(loadThread('plan-4')).resolves.toMatchObject({ plan })
+  })
+
   it('round-trips a thread and returns null for a missing id', async () => {
     const original = thread('t1')
     await createThread(original)

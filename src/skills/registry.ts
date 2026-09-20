@@ -22,10 +22,28 @@ export class SkillRegistry {
   private readonly enabled = new Set<string>()
   private readonly store: SkillStore
   private readonly enablement?: SkillEnablementPort
+  private readonly listeners = new Set<() => void>()
+  private version = 0
 
   constructor(store: SkillStore = skillStore, enablement?: SkillEnablementPort) {
     this.store = store
     this.enablement = enablement
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  getVersion(): number {
+    return this.version
+  }
+
+  private notify(): void {
+    this.version += 1
+    for (const listener of this.listeners) listener()
   }
 
   register(manifest: SkillManifest, options: { enabled?: boolean } = {}): void {
@@ -35,6 +53,7 @@ export class SkillRegistry {
     const key = skillKey(skillRefOf(manifest))
     this.skills.set(key, { ...manifest, allowedTools: [...manifest.allowedTools] })
     if (options.enabled) this.enabled.add(key)
+    this.notify()
   }
 
   get(ref: SkillRef): SkillManifest | undefined {
@@ -53,6 +72,7 @@ export class SkillRegistry {
     const key = skillKey(ref)
     if (enabled) this.enabled.add(key)
     else this.enabled.delete(key)
+    this.notify()
   }
 
   /** Reconstructs the enabled refs from the registered manifests. */
@@ -69,6 +89,30 @@ export class SkillRegistry {
   async persistEnabled(): Promise<void> {
     if (!this.enablement) return
     await this.enablement.save(this.snapshotEnabled())
+  }
+
+  /**
+   * Re-reads the persisted policy and returns the durable state for `ref`,
+   * reconciling the in-memory set to match. A policy write swallowed by a lock
+   * (or an unreadable policy) can never be honoured on reload, so it reads as
+   * disabled rather than reporting a state that will not survive.
+   */
+  async reconcileEnabled(ref: SkillRef): Promise<boolean> {
+    const key = skillKey(ref)
+    if (!this.enablement) return this.enabled.has(key)
+    let policy: SkillRef[] | null
+    try {
+      policy = await this.enablement.load()
+    } catch {
+      if (this.enabled.delete(key)) this.notify()
+      return false
+    }
+    const durable = policy !== null && policy.some((entry) => skillKey(entry) === key)
+    const wasEnabled = this.enabled.has(key)
+    if (durable) this.enabled.add(key)
+    else this.enabled.delete(key)
+    if (wasEnabled !== durable) this.notify()
+    return durable
   }
 
   resolve(refs: readonly SkillRef[]): ResolvedSkill[] {
@@ -134,6 +178,7 @@ export class SkillRegistry {
     }
     await this.store.save(manifest)
     this.skills.set(key, { ...manifest, allowedTools: [...manifest.allowedTools] })
+    this.notify()
   }
 
   async removeSkill(ref: SkillRef): Promise<void> {
@@ -142,6 +187,7 @@ export class SkillRegistry {
     this.skills.delete(key)
     this.enabled.delete(key)
     await this.persistEnabled()
+    this.notify()
   }
 
   private async allowedKeys(): Promise<Set<string> | null> {

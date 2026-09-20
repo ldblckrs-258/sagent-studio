@@ -4,7 +4,6 @@ import type { Tool } from 'ai'
 import type { CodeRunner } from '../sandbox/types'
 import { ToolRegistry } from './registry'
 import {
-  HttpToolError,
   ToolNameConflictError,
   ToolNotFoundError,
   ToolRuntimeUnavailableError,
@@ -116,7 +115,11 @@ describe('ToolRegistry', () => {
     const execute = toolSet.sandbox_echo.execute
     if (!execute) throw new Error('missing execute')
 
-    await execute({ value: 1 }, CALL_OPTIONS)
+    await expect(execute({ value: 1 }, CALL_OPTIONS)).resolves.toMatchObject({
+      ok: true,
+      code: 'ok',
+      value: { result: 'ok' },
+    })
     expect(runner.calls).toHaveLength(1)
     expect(runner.calls[0].source).toContain('const input = {"value":1};')
     expect(runner.calls[0].timeoutMs).toBe(250)
@@ -135,19 +138,21 @@ describe('ToolRegistry', () => {
     if (!execute) throw new Error('missing execute')
 
     await expect(execute({}, CALL_OPTIONS)).resolves.toMatchObject({
-      status: 200,
+      ok: true,
+      code: 'ok',
+      value: { status: 200 },
     })
     expect(seen).toBe('https://api.example.com/x')
   })
 
-  it('surfaces an http failure as HttpToolError', async () => {
+  it('surfaces an http failure as an http_error envelope', async () => {
     const registry = new ToolRegistry()
     registry.registerUserTool(httpTool('fetch_thing'))
     const fetchImpl = (async () => new Response('boom', { status: 503 })) as typeof fetch
     const toolSet = registry.buildToolSet(undefined, { fetch: fetchImpl })
     const execute = toolSet.fetch_thing.execute
     if (!execute) throw new Error('missing execute')
-    await expect(execute({}, CALL_OPTIONS)).rejects.toBeInstanceOf(HttpToolError)
+    await expect(execute({}, CALL_OPTIONS)).resolves.toMatchObject({ ok: false, code: 'http_error' })
   })
 
   it('rejects a duplicate name across providers and user tools', () => {
@@ -209,6 +214,81 @@ describe('ToolRegistry', () => {
     registry.removeUserTool('gone')
     expect(registry.availableNames({})).toEqual([])
     expect(() => registry.removeUserTool('gone')).toThrow(ToolNotFoundError)
+  })
+
+  it('reports name ownership through hasTool for providers and user tools', () => {
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider(['read_file']))
+    registry.registerUserTool(httpTool('fetch_thing'))
+    expect(registry.hasTool('read_file')).toBe(true)
+    expect(registry.hasTool('fetch_thing')).toBe(true)
+    expect(registry.hasTool('missing')).toBe(false)
+  })
+
+  it('exposes its injected store', () => {
+    const store = { save: async () => {}, remove: async () => {}, list: async () => [] }
+    expect(new ToolRegistry(store).store()).toBe(store)
+  })
+
+  it('replaces an existing user tool in place without a self-conflict', () => {
+    const registry = new ToolRegistry()
+    registry.registerUserTool(httpTool('fetch_thing', false))
+    registry.replaceUserTool(httpTool('fetch_thing', true))
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.list()[0].enabled).toBe(true)
+  })
+
+  it('rejects replace for an absent name or a provider-owned name', () => {
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider(['read_file']))
+    expect(() => registry.replaceUserTool(httpTool('missing'))).toThrow(ToolNotFoundError)
+    expect(() => registry.replaceUserTool(httpTool('read_file'))).toThrow(ToolNameConflictError)
+  })
+
+  it('bumps the version on every registry mutation', () => {
+    const registry = new ToolRegistry()
+    const start = registry.getVersion()
+    registry.registerProvider(provider(['read_file']))
+    const afterProvider = registry.getVersion()
+    expect(afterProvider).toBeGreaterThan(start)
+
+    registry.registerUserTool(httpTool('t'))
+    const afterRegister = registry.getVersion()
+    expect(afterRegister).toBeGreaterThan(afterProvider)
+
+    registry.replaceUserTool(httpTool('t', false))
+    const afterReplace = registry.getVersion()
+    expect(afterReplace).toBeGreaterThan(afterRegister)
+
+    registry.setEnabled('t', true)
+    const afterEnable = registry.getVersion()
+    expect(afterEnable).toBeGreaterThan(afterReplace)
+
+    registry.removeUserTool('t')
+    expect(registry.getVersion()).toBeGreaterThan(afterEnable)
+  })
+
+  it('notifies subscribers and stops after unsubscribe', () => {
+    const registry = new ToolRegistry()
+    let first = 0
+    let second = 0
+    const unsubscribeFirst = registry.subscribe(() => {
+      first += 1
+    })
+    const unsubscribeSecond = registry.subscribe(() => {
+      second += 1
+    })
+
+    registry.registerUserTool(httpTool('a'))
+    expect([first, second]).toEqual([1, 1])
+
+    unsubscribeFirst()
+    registry.setEnabled('a', false)
+    expect([first, second]).toEqual([1, 2])
+
+    unsubscribeSecond()
+    registry.removeUserTool('a')
+    expect([first, second]).toEqual([1, 2])
   })
 
   it('toggles enabled state through setEnabled', () => {

@@ -13,6 +13,25 @@ export type SkillRef = {
   source: "vault" | "workspace";
 };
 
+export type PlanItemStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+export interface PlanItem {
+  id: string;
+  text: string;
+  status: PlanItemStatus;
+}
+
+export const MAX_PLAN_ITEMS = 50;
+export const MAX_PLAN_TEXT_LENGTH = 500;
+
+export type ChatMode = "read_only" | "editing" | "god";
+
+export const DEFAULT_CHAT_MODE: ChatMode = "editing";
+
+export function isChatMode(value: unknown): value is ChatMode {
+  return value === "read_only" || value === "editing" || value === "god";
+}
+
 export interface ThreadConfig {
   providerId: string;
   modelId?: string;
@@ -31,6 +50,10 @@ export interface ChatThread {
   updatedAt: number;
   /** Snapshot of the workspace folder name at creation, for list grouping. */
   workspaceName?: string;
+  /** Conversation-scoped permission ceiling; absent reads as `editing`. */
+  mode?: ChatMode;
+  /** Thread-scoped todo list written by `update_plan`. */
+  plan?: PlanItem[];
 }
 
 export function defaultThreadConfig(

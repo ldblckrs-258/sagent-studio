@@ -3,7 +3,8 @@ import { VaultLockedError } from '../vault/errors'
 import { decryptRecord, encryptRecord } from '../vault/records'
 import { vaultWriteQueue } from '../vault/write-queue'
 import { ChatConfigError, ChatError } from './errors'
-import { validateThreadConfig } from './types'
+import { validatePlanItems } from './plan'
+import { isChatMode, validateThreadConfig } from './types'
 import type { ChatThread } from './types'
 
 export const THREAD_ENVELOPE_VERSION = 1
@@ -55,6 +56,10 @@ function validateThread(value: unknown): ChatThread {
   // Additive and tolerant: a missing field is indistinguishable from an old
   // record, which is the intended read. The envelope version stays 1.
   if (typeof candidate.workspaceName === 'string') thread.workspaceName = candidate.workspaceName
+  // Tolerant: an absent or unrecognized mode reads as `editing` (absent field).
+  if (isChatMode(candidate.mode)) thread.mode = candidate.mode
+  const plan = validatePlanItems(candidate.plan)
+  if (plan !== undefined) thread.plan = plan
   return thread
 }
 

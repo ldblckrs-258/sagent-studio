@@ -12,6 +12,7 @@ export interface RunnerAvailability {
 }
 
 export type SandboxLanguage = 'js' | 'python'
+export type SandboxScope = 'tool' | 'console'
 
 export interface SandboxRunnerPair {
   js: CodeRunner & { dispose(): void }
@@ -36,6 +37,7 @@ export interface SandboxManager {
     options?: { workspace?: boolean },
   ): Promise<RunResult>
   setSettings(sandbox: SandboxSettings): void
+  reset(language?: SandboxLanguage, scope?: SandboxScope): void
   dispose(): void
 }
 
@@ -60,13 +62,38 @@ function buildPair(
       ...(factories.js ? { workerFactory: factories.js } : {}),
       ...(workspace ? { workspace } : {}),
       defaultTimeoutMs: settings.jsTimeoutMs,
+      idleTimeoutMs: settings.idleTimeoutMs,
     }),
     python: new PyRunner({
       ...(factories.python ? { workerFactory: factories.python } : {}),
       ...(workspace ? { workspace } : {}),
       defaultTimeoutMs: settings.pyTimeoutMs,
+      idleTimeoutMs: settings.idleTimeoutMs,
     }),
   }
+}
+
+/**
+ * Wraps a runner pair so every call — including a model tool call that reaches
+ * the runner directly — is counted by the manager's in-flight accounting.
+ */
+function accountPair(
+  pair: SandboxRunnerPair,
+  begin: () => void,
+  end: () => void,
+): SandboxRunnerPair {
+  const wrap = (runner: SandboxRunnerPair['js']): SandboxRunnerPair['js'] => ({
+    run: async (source, options) => {
+      begin()
+      try {
+        return await runner.run(source, options)
+      } finally {
+        end()
+      }
+    },
+    dispose: () => runner.dispose(),
+  })
+  return { js: wrap(pair.js), python: wrap(pair.python) }
 }
 
 /**
@@ -76,23 +103,39 @@ function buildPair(
 export function createSandboxManager(options: SandboxManagerOptions): SandboxManager {
   const factories = options.workerFactory ?? {}
   let settings = options.settings
-  let toolPair = buildPair(settings, options.workspace, factories)
-  let consolePair = buildPair(settings, undefined, factories)
   let last: LastRun | null = null
   let activeRuns = 0
   let rebuildPending = false
 
-  const rebuild = () => {
+  const beginRun = (): void => {
+    activeRuns += 1
+  }
+
+  const endRun = (): void => {
+    activeRuns -= 1
+    // Only swap runners between runs; never terminate a live one.
+    if (activeRuns === 0 && rebuildPending) {
+      rebuildPending = false
+      rebuild()
+    }
+  }
+
+  let toolPair = buildPair(settings, options.workspace, factories)
+  let consolePair = buildPair(settings, undefined, factories)
+  let toolView = accountPair(toolPair, beginRun, endRun)
+
+  function rebuild(): void {
     toolPair.js.dispose()
     toolPair.python.dispose()
     consolePair.js.dispose()
     consolePair.python.dispose()
     toolPair = buildPair(settings, options.workspace, factories)
     consolePair = buildPair(settings, undefined, factories)
+    toolView = accountPair(toolPair, beginRun, endRun)
   }
 
   return {
-    toolRunners: () => toolPair,
+    toolRunners: () => toolView,
     consoleRunners: () => consolePair,
 
     availability() {
@@ -118,7 +161,7 @@ export function createSandboxManager(options: SandboxManagerOptions): SandboxMan
       const pair = options.workspace ? toolPair : consolePair
       const runner = language === 'js' ? pair.js : pair.python
       const timeoutMs = language === 'js' ? settings.jsTimeoutMs : settings.pyTimeoutMs
-      activeRuns += 1
+      beginRun()
       try {
         const result = await runner.run(source, { timeoutMs })
         last = { language, result }
@@ -128,18 +171,15 @@ export function createSandboxManager(options: SandboxManagerOptions): SandboxMan
         last = { language, error: message }
         return { stdout: '', stderr: '', result: null, error: message }
       } finally {
-        activeRuns -= 1
-        // Only swap runners between runs; never terminate a live one.
-        if (activeRuns === 0 && rebuildPending) {
-          rebuildPending = false
-          rebuild()
-        }
+        endRun()
       }
     },
 
     setSettings(next) {
       const timeoutChanged =
-        next.jsTimeoutMs !== settings.jsTimeoutMs || next.pyTimeoutMs !== settings.pyTimeoutMs
+        next.jsTimeoutMs !== settings.jsTimeoutMs ||
+        next.pyTimeoutMs !== settings.pyTimeoutMs ||
+        next.idleTimeoutMs !== settings.idleTimeoutMs
       settings = next
       if (!timeoutChanged) return
       if (activeRuns > 0) {
@@ -147,6 +187,17 @@ export function createSandboxManager(options: SandboxManagerOptions): SandboxMan
         return
       }
       rebuild()
+    },
+
+    reset(language, scope = 'tool') {
+      const pair = scope === 'console' ? consolePair : toolPair
+      if (language === undefined) {
+        pair.js.dispose()
+        pair.python.dispose()
+        return
+      }
+      if (language === 'js') pair.js.dispose()
+      else pair.python.dispose()
     },
 
     dispose() {

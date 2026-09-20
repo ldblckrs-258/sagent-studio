@@ -40,12 +40,22 @@ export interface SandboxSettings {
   enabled: boolean
   jsTimeoutMs: number
   pyTimeoutMs: number
+  idleTimeoutMs: number
 }
+
+export type ApprovalDecision = 'allow' | 'ask' | 'deny'
+
+export interface ApprovalSettings {
+  tools: Record<string, ApprovalDecision>
+}
+
+export const DEFAULT_APPROVAL_DECISION: ApprovalDecision = 'ask'
 
 // Kept in sync with the runner constants by a unit test, without importing
 // app-local sandbox modules into the vault layer.
 export const DEFAULT_SANDBOX_JS_TIMEOUT_MS = 10_000
 export const DEFAULT_SANDBOX_PY_TIMEOUT_MS = 30_000
+export const DEFAULT_SANDBOX_IDLE_TIMEOUT_MS = 300_000
 
 export interface Settings {
   version: number
@@ -53,6 +63,7 @@ export interface Settings {
   typesafe: TypeSafeSettings
   rag: RagSettings
   sandbox: SandboxSettings
+  approvals: ApprovalSettings
   egressNoticeDismissed: boolean
   idleLockMinutes: number
   /**
@@ -85,7 +96,9 @@ export function defaultSettings(): Settings {
       enabled: true,
       jsTimeoutMs: DEFAULT_SANDBOX_JS_TIMEOUT_MS,
       pyTimeoutMs: DEFAULT_SANDBOX_PY_TIMEOUT_MS,
+      idleTimeoutMs: DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
     },
+    approvals: { tools: {} },
     egressNoticeDismissed: false,
     idleLockMinutes: 15,
   }

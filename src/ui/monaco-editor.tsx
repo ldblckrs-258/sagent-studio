@@ -2,20 +2,45 @@ import { useEffect, useRef, useState } from 'react'
 
 type Monaco = typeof import('monaco-editor')
 
+type WorkerCtor = new () => Worker
+
 let monacoPromise: Promise<Monaco | null> | null = null
 
 async function loadMonaco(): Promise<Monaco | null> {
   if (!monacoPromise) {
     monacoPromise = (async () => {
       try {
-        const [monaco, workerModule] = await Promise.all([
+        const [monaco, editorWorker, tsWorker, jsonWorker, cssWorker, htmlWorker] = await Promise.all([
           import('monaco-editor'),
           import('monaco-editor/editor/editor.worker?worker'),
+          import('monaco-editor/language/typescript/ts.worker?worker'),
+          import('monaco-editor/language/json/json.worker?worker'),
+          import('monaco-editor/language/css/css.worker?worker'),
+          import('monaco-editor/language/html/html.worker?worker'),
         ])
-        const EditorWorker = workerModule.default
         ;(self as unknown as { MonacoEnvironment?: unknown }).MonacoEnvironment = {
-          // Vite emits the worker as a same-origin chunk, covered by worker-src 'self'.
-          getWorker: () => new EditorWorker(),
+          // Vite emits each worker as a same-origin chunk, covered by worker-src 'self'.
+          // Monaco asks by language label; the TypeScript, JSON, CSS, and HTML language
+          // services each need their own worker, everything else uses the base worker.
+          getWorker(_moduleId: string, label: string): Worker {
+            switch (label) {
+              case 'typescript':
+              case 'javascript':
+                return new (tsWorker.default as WorkerCtor)()
+              case 'json':
+                return new (jsonWorker.default as WorkerCtor)()
+              case 'css':
+              case 'scss':
+              case 'less':
+                return new (cssWorker.default as WorkerCtor)()
+              case 'html':
+              case 'handlebars':
+              case 'razor':
+                return new (htmlWorker.default as WorkerCtor)()
+              default:
+                return new (editorWorker.default as WorkerCtor)()
+            }
+          },
         }
         monaco.editor.defineTheme('sagent-light', {
           base: 'vs',

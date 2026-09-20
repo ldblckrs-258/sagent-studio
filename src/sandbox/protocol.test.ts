@@ -111,9 +111,20 @@ describe('parseInbound', () => {
       stdout: '',
       stderr: '',
       result: null,
-      fatal: true,
+      extra: true,
     })
     expect(parsed).toEqual({ kind: 'result', runId: 'r1', stdout: '', stderr: '', result: null })
+  })
+
+  it('parses a fatal result and a session-fatal message', () => {
+    expect(
+      parseInbound({ kind: 'result', runId: 'r1', stdout: '', stderr: '', result: null, fatal: true }),
+    ).toEqual({ kind: 'result', runId: 'r1', stdout: '', stderr: '', result: null, fatal: true })
+    expect(parseInbound({ kind: 'fatal', message: 'died' })).toEqual({
+      kind: 'fatal',
+      message: 'died',
+    })
+    expect(parseInbound({ kind: 'fatal' })).toBeNull()
   })
 })
 

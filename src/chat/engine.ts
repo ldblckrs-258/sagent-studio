@@ -8,11 +8,22 @@ import {
 import { createLLM } from "../ai/llm";
 import type { CodeRunner } from "../sandbox/types";
 import type { SkillRegistry } from "../skills/registry";
+import { createAdminPorts } from "../tools/admin-ports";
 import type { ToolRegistry } from "../tools/registry";
-import type { WorkspaceApi } from "../tools/types";
+import type { ToolGateDescriptor } from "../tools/approval";
+import type {
+  SandboxControlPort,
+  SkillLoadPort,
+  ThreadModePort,
+  ThreadPlanPort,
+  WorkspaceApi,
+} from "../tools/types";
 import { VaultLockedError } from "../vault/errors";
-import type { Settings } from "../vault/settings";
-import { composeSystemPrompt } from "./context";
+import type { ApprovalDecision, Settings } from "../vault/settings";
+import { useVaultStore } from "../vault/store";
+import { createToolApproval } from "./approval";
+import { clampIndexText, composeSystemPrompt } from "./context";
+import type { ResolvedSkill } from "./context";
 import { ChatError, ChatThreadNotFoundError } from "./errors";
 import type { ThreadSummary } from "./persistence";
 import {
@@ -23,9 +34,10 @@ import {
   editMessage as editMessages,
   undoLastTurn,
 } from "./reducer";
-import { rehydrateThread, sanitizePartial, setChatStatus } from "./sanitize";
+import { expireApprovals, rehydrateThread, sanitizePartial, setChatStatus } from "./sanitize";
 import { registerAbortAll, useChatStore } from "./store";
-import type { ChatThread, ThreadConfig } from "./types";
+import { patchThreadMode } from "./threads";
+import type { ChatMode, ChatThread, ThreadConfig } from "./types";
 
 export interface PipelineDeps {
   getSettings(): Settings | null;
@@ -33,11 +45,24 @@ export interface PipelineDeps {
   toolRegistry: ToolRegistry;
   workspace?: WorkspaceApi;
   codeRunner?: CodeRunner;
+  sandbox?: SandboxControlPort;
+  /** Persists an `allow-always` decision. Defaults to the encrypted vault. */
+  persistApproval?(
+    toolName: string,
+    decision: ApprovalDecision,
+  ): Promise<void>;
   modelFactory?(
     settings: Settings,
     providerId: string,
     modelId?: string,
   ): LanguageModel;
+}
+
+export interface ApprovalResponse {
+  approvalId: string;
+  approved: boolean;
+  optionId?: string;
+  reason?: string;
 }
 
 export interface ThreadStore {
@@ -60,6 +85,7 @@ export interface ChatEngine {
   ): Promise<void>;
   rerun(threadId: string, messageId: string): Promise<void>;
   undo(threadId: string): Promise<void>;
+  respondToApproval(threadId: string, response: ApprovalResponse): Promise<void>;
   cancel(threadId: string): Promise<void>;
   /** Unregisters the global abort callback and aborts any in-flight runs. */
   dispose(): void;
@@ -106,30 +132,125 @@ function createMessageId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+interface PendingApproval {
+  messageId: string;
+  messageIndex: number;
+  partIndex: number;
+  approvalId: string;
+  toolName: string;
+  approval: Record<string, unknown>;
+}
+
+function toolNameOf(part: Record<string, unknown>): string {
+  const type = part.type;
+  if (typeof type === "string" && type.startsWith("tool-")) {
+    return type.slice("tool-".length);
+  }
+  return typeof part.toolName === "string" ? part.toolName : "";
+}
+
+function collectPendingApprovals(messages: UIMessage[]): PendingApproval[] {
+  const pending: PendingApproval[] = [];
+  messages.forEach((message, messageIndex) => {
+    if (message.role !== "assistant") return;
+    message.parts.forEach((part, partIndex) => {
+      const record = part as unknown as Record<string, unknown>;
+      if (record.state !== "approval-requested") return;
+      const approval = record.approval as { id?: unknown } | undefined;
+      if (!approval || typeof approval.id !== "string") return;
+      pending.push({
+        messageId: message.id,
+        messageIndex,
+        partIndex,
+        approvalId: approval.id,
+        toolName: toolNameOf(record),
+        approval: approval as Record<string, unknown>,
+      });
+    });
+  });
+  return pending;
+}
+
+export function createSkillLoadPort(skills: readonly ResolvedSkill[]): SkillLoadPort {
+  const describe = (skill: ResolvedSkill) => ({
+    id: skill.id,
+    name: skill.source === "workspace" ? clampIndexText(skill.name) : skill.name,
+    description:
+      skill.source === "workspace" ? clampIndexText(skill.description) : skill.description,
+    source: skill.source,
+  })
+  return {
+    list: () => skills.map(describe),
+    load: (id, source) => {
+      const skill = skills.find(
+        (entry) => entry.id === id && (source === undefined || entry.source === source),
+      )
+      return skill ? { ...describe(skill), instructions: skill.instructions } : null
+    },
+  }
+}
+
+async function defaultPersistApproval(
+  toolName: string,
+  decision: ApprovalDecision,
+): Promise<void> {
+  await useVaultStore.getState().update({
+    approvals: { tools: { [toolName]: decision } },
+  });
+}
+
 export async function buildRunStream(
   deps: PipelineDeps,
   config: ThreadConfig,
   messages: UIMessage[],
   signal: AbortSignal,
   generateMessageId: () => string,
+  mode: ChatMode = "editing",
+  modePort?: ThreadModePort,
+  planPort?: ThreadPlanPort,
 ): Promise<BuiltRun> {
   const settings = deps.getSettings();
   if (!settings)
     throw new ChatError("The vault is locked; the chat cannot run.");
 
-  const ports = { workspace: deps.workspace, codeRunner: deps.codeRunner };
+  const skills = deps.skillRegistry.resolve(config.enabledSkills);
+  const ports = {
+    workspace: deps.workspace,
+    codeRunner: deps.codeRunner,
+    sandbox: deps.sandbox,
+    mode: modePort,
+    skills: createSkillLoadPort(skills),
+    plan: planPort,
+    ...createAdminPorts({
+      skillRegistry: deps.skillRegistry,
+      toolRegistry: deps.toolRegistry,
+    }),
+  };
   const pool = new Set(deps.toolRegistry.availableNames(ports));
-  const requestedTools = deps.skillRegistry.toolNamesFor(
+  const narrowed = deps.skillRegistry.toolNamesFor(
     config.enabledSkills,
     pool,
   );
+  // `load_skill` is unioned in whenever a skill is enabled, because a skill's
+  // `allowedTools` narrowing would otherwise exclude the tool the index needs.
+  const requestedTools =
+    narrowed === undefined
+      ? undefined
+      : skills.length > 0 && pool.has("load_skill") && !narrowed.includes("load_skill")
+        ? [...narrowed, "load_skill"]
+        : narrowed;
   const toolSet = deps.toolRegistry.buildToolSet(requestedTools, ports);
-  const skills = deps.skillRegistry.resolve(config.enabledSkills);
   const system = composeSystemPrompt(
     config.systemInstruction,
     skills,
     Object.keys(toolSet),
   );
+
+  const gateTools: ToolGateDescriptor[] = Object.keys(toolSet).map((name) => {
+    const kind = deps.toolRegistry.userToolKind(name);
+    return kind ? { name, kind } : { name };
+  });
+  const toolApproval = createToolApproval(mode, settings.approvals, gateTools);
 
   const modelFactory = deps.modelFactory ?? createLLM;
   const model = modelFactory(settings, config.providerId, config.modelId);
@@ -143,6 +264,7 @@ export async function buildRunStream(
     system,
     messages: modelMessages,
     tools: toolSet,
+    toolApproval,
     stopWhen: () => false,
     abortSignal: signal,
     ...config.params,
@@ -226,6 +348,63 @@ class DefaultEngine implements ChatEngine {
     await this.persist(threadId);
   }
 
+  async respondToApproval(
+    threadId: string,
+    response: ApprovalResponse,
+  ): Promise<void> {
+    const thread = await this.requireThread(threadId);
+    const pending = collectPendingApprovals(thread.messages);
+    const target = pending.find((entry) => entry.approvalId === response.approvalId);
+    if (!target) return;
+
+    const isLatest = pending[pending.length - 1] === target;
+    const isLastMessage = target.messageIndex === thread.messages.length - 1;
+    if (!isLatest || !isLastMessage) {
+      const messages = thread.messages.map((message, index) =>
+        index === target.messageIndex ? expireApprovals(message) : message,
+      );
+      this.setThreadMessages(threadId, messages);
+      await this.persist(threadId);
+      return;
+    }
+
+    if (response.optionId === "allow-always" && target.toolName !== "change_mode") {
+      const persist = this.deps.persistApproval ?? defaultPersistApproval;
+      await persist(target.toolName, "allow");
+    }
+
+    const messages = thread.messages.map((message, index) =>
+      index === target.messageIndex
+        ? {
+            ...message,
+            parts: message.parts.map((part, partIndex) =>
+              partIndex === target.partIndex
+                ? ({
+                    ...part,
+                    state: "approval-responded",
+                    approval: {
+                      ...target.approval,
+                      approved: response.approved,
+                      ...(response.optionId !== undefined
+                        ? { optionId: response.optionId }
+                        : {}),
+                      ...(response.reason !== undefined
+                        ? { reason: response.reason }
+                        : {}),
+                    },
+                  } as UIMessage["parts"][number])
+                : part,
+            ),
+          }
+        : message,
+    );
+    this.setThreadMessages(threadId, messages);
+    await this.persist(threadId);
+    await this.startRun(threadId, messages, {
+      resumeAssistantId: target.messageId,
+    });
+  }
+
   async cancel(threadId: string): Promise<void> {
     const controller = this.controllers.get(threadId);
     if (!controller) return;
@@ -270,6 +449,7 @@ class DefaultEngine implements ChatEngine {
   private async startRun(
     threadId: string,
     baseMessages: UIMessage[],
+    options: { resumeAssistantId?: string } = {},
   ): Promise<void> {
     const previous = this.runs.get(threadId);
     this.controllers.get(threadId)?.abort();
@@ -281,20 +461,34 @@ class DefaultEngine implements ChatEngine {
     useChatStore.getState().beginRun(threadId);
     useChatStore.getState().setError(null);
 
-    const assistantId = createMessageId();
-    this.setThreadMessages(threadId, [
-      ...baseMessages,
-      {
-        id: assistantId,
-        role: "assistant",
-        parts: [],
-        metadata: { chatStatus: "streaming" },
-      } satisfies UIMessage,
-    ]);
+    const resume = options.resumeAssistantId !== undefined;
+    const assistantId = options.resumeAssistantId ?? createMessageId();
+    // A non-resume run expires any stale paused approval before it starts; a
+    // resume keeps the responded part it was given.
+    const runBase = resume ? baseMessages : baseMessages.map(expireApprovals);
+    if (resume) {
+      this.setThreadMessages(threadId, runBase);
+    } else {
+      this.setThreadMessages(threadId, [
+        ...runBase,
+        {
+          id: assistantId,
+          role: "assistant",
+          parts: [],
+          metadata: { chatStatus: "streaming" },
+        } satisfies UIMessage,
+      ]);
+    }
 
     const run = (async () => {
       try {
-        await this.executeRun(thread, baseMessages, assistantId, controller);
+        await this.executeRun(
+          thread,
+          runBase,
+          assistantId,
+          controller,
+          thread.mode ?? "editing",
+        );
       } catch (error) {
         if (!controller.signal.aborted && !isAbortError(error)) {
           useChatStore.getState().setError(redactSecrets(describe(error)));
@@ -315,7 +509,34 @@ class DefaultEngine implements ChatEngine {
     baseMessages: UIMessage[],
     assistantId: string,
     controller: AbortController,
+    mode: ChatMode,
   ): Promise<void> {
+    const modePort: ThreadModePort = {
+      setMode: async (next) => {
+        const current = useChatStore.getState().threads[thread.id];
+        if (!current) return;
+        const updated = patchThreadMode(current, next);
+        useChatStore.getState().setThread(updated);
+        await this.deps.threadStore.saveThread(updated);
+      },
+    };
+    const planPort: ThreadPlanPort = {
+      get: () => useChatStore.getState().threads[thread.id]?.plan ?? [],
+      set: async (items) => {
+        const current = useChatStore.getState().threads[thread.id];
+        if (!current) return;
+        const next: ChatThread = { ...current, plan: [...items], updatedAt: Date.now() };
+        useChatStore.getState().setThread(next);
+        try {
+          await this.deps.threadStore.saveThread(next);
+        } catch (error) {
+          if (error instanceof VaultLockedError) {
+            useChatStore.getState().removeThread(thread.id);
+          }
+          throw error;
+        }
+      },
+    };
     const built = await (async () => {
       try {
         return await buildRunStream(
@@ -324,6 +545,9 @@ class DefaultEngine implements ChatEngine {
           baseMessages,
           controller.signal,
           () => assistantId,
+          mode,
+          modePort,
+          planPort,
         );
       } catch (error) {
         // A pre-stream failure (bad provider config, conversion error) must not
@@ -334,7 +558,9 @@ class DefaultEngine implements ChatEngine {
       }
     })();
 
-    let latest: UIMessage = {
+    const siblings = baseMessages.filter((message) => message.id !== assistantId);
+    const existing = baseMessages.find((message) => message.id === assistantId);
+    let latest: UIMessage = existing ?? {
       id: assistantId,
       role: "assistant",
       parts: [],
@@ -345,19 +571,19 @@ class DefaultEngine implements ChatEngine {
     try {
       for await (const partial of readUIMessageStream({
         stream: built.stream,
+        // A resumed run continues the existing assistant message, so the
+        // reconstructor needs it as its base to resolve the tool output.
+        ...(existing ? { message: existing } : {}),
       })) {
         latest = partial;
-        this.setThreadMessages(thread.id, [
-          ...baseMessages,
-          setChatStatus(partial, "streaming"),
-        ]);
+        this.setThreadMessages(thread.id, [...siblings, setChatStatus(partial, "streaming")]);
       }
     } catch (error) {
       failure = error;
     }
 
     const finished = sanitizePartial(latest);
-    this.setThreadMessages(thread.id, [...baseMessages, finished]);
+    this.setThreadMessages(thread.id, [...siblings, finished]);
     await this.persist(thread.id);
 
     if (failure && !controller.signal.aborted && !isAbortError(failure))

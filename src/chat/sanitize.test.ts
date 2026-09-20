@@ -50,6 +50,34 @@ describe('sanitizePartial', () => {
     expect(sanitized.parts[0]).toEqual(part)
   })
 
+  it('leaves an approval-requested part intact by default', () => {
+    const part = {
+      type: 'tool-write_file',
+      toolCallId: 'c1',
+      state: 'approval-requested',
+      input: {},
+      approval: { id: 'ap1' },
+    } as unknown as UIMessage['parts'][number]
+    const sanitized = sanitizePartial(assistant([part]))
+    expect(sanitized.parts[0]).toEqual(part)
+  })
+
+  it('expires a paused part when asked and marks the resolution', () => {
+    const part = {
+      type: 'tool-write_file',
+      toolCallId: 'c1',
+      state: 'approval-requested',
+      input: {},
+      approval: { id: 'ap1' },
+    } as unknown as UIMessage['parts'][number]
+    const sanitized = sanitizePartial(assistant([part]), { expireApprovals: true })
+    const out = sanitized.parts[0] as unknown as Record<string, unknown>
+    expect(out.state).toBe('output-error')
+    expect(out.output).toBeUndefined()
+    expect(typeof out.errorText).toBe('string')
+    expect((out.approval as Record<string, unknown>).resolution).toBe('expired')
+  })
+
   it('sets chatStatus to done', () => {
     const sanitized = sanitizePartial(assistant([{ type: 'text', text: 'hi' }]))
     expect(sanitized.metadata).toMatchObject({ chatStatus: 'done' })
@@ -83,6 +111,37 @@ describe('rehydrateThread', () => {
     const rehydrated = rehydrateThread(thread(message))
     const part = rehydrated.messages[0].parts[0] as unknown as Record<string, unknown>
     expect(part.state).toBe('output-error')
+  })
+
+  it('expires a paused approval and leaves a completed part untouched', () => {
+    const paused = assistant([
+      {
+        type: 'tool-write_file',
+        toolCallId: 'c1',
+        state: 'approval-requested',
+        input: {},
+        approval: { id: 'ap1' },
+      } as unknown as UIMessage['parts'][number],
+    ])
+    const rehydrated = rehydrateThread(thread(paused))
+    const part = rehydrated.messages[0].parts[0] as unknown as Record<string, unknown>
+    expect(part.state).toBe('output-error')
+    expect((part.approval as Record<string, unknown>).resolution).toBe('expired')
+
+    const completed = assistant(
+      [
+        {
+          type: 'tool-write_file',
+          toolCallId: 'c2',
+          state: 'output-available',
+          input: {},
+          output: { ok: true },
+        } as unknown as UIMessage['parts'][number],
+      ],
+      { chatStatus: 'done' },
+    )
+    const again = rehydrateThread(thread(completed))
+    expect((again.messages[0].parts[0] as { state: string }).state).toBe('output-available')
   })
 
   it('leaves a clean thread unchanged', () => {

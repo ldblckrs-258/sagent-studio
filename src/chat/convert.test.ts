@@ -68,6 +68,38 @@ describe('toThreadMessageLike', () => {
     ])
   })
 
+  it('marks a failure envelope result as an error part', () => {
+    const part = {
+      type: 'tool-read_file',
+      toolCallId: 'ce1',
+      state: 'output-available',
+      input: { path: '../x' },
+      output: { ok: false, code: 'path_rejected', message: 'nope' },
+    }
+    expect(partsOf(message('assistant', [part]))).toEqual([
+      {
+        type: 'tool-call',
+        toolCallId: 'ce1',
+        toolName: 'read_file',
+        args: { path: '../x' },
+        argsText: '{"path":"../x"}',
+        result: { ok: false, code: 'path_rejected', message: 'nope' },
+        isError: true,
+      },
+    ])
+  })
+
+  it('leaves a success envelope result as a non-error part', () => {
+    const part = {
+      type: 'tool-read_file',
+      toolCallId: 'ce2',
+      state: 'output-available',
+      input: { path: 'a.txt' },
+      output: { ok: true, code: 'ok', value: { path: 'a.txt', content: 'hi' } },
+    }
+    expect(partsOf(message('assistant', [part]))).toMatchObject([{ isError: false }])
+  })
+
   it('maps an input-streaming tool with partial input', () => {
     const part = {
       type: 'tool-weather',
@@ -105,6 +137,54 @@ describe('toThreadMessageLike', () => {
         isError: true,
       },
     ])
+  })
+
+  it('maps an approval-requested part with synthesized options and no result', () => {
+    const part = {
+      type: 'tool-write_file',
+      toolCallId: 'c5',
+      state: 'approval-requested',
+      input: { path: 'a.txt' },
+      approval: { id: 'ap1' },
+    }
+    const result = partsOf(message('assistant', [part]))[0] as Record<string, unknown>
+    expect(result.state).toBeUndefined()
+    expect(result.isError).toBeUndefined()
+    expect(result.result).toBeUndefined()
+    expect(result.approval).toEqual({
+      id: 'ap1',
+      options: [
+        { id: 'allow-once', kind: 'allow-once' },
+        { id: 'allow-always', kind: 'allow-always' },
+      ],
+    })
+  })
+
+  it('maps an approval-responded part carrying the decision', () => {
+    const part = {
+      type: 'tool-write_file',
+      toolCallId: 'c6',
+      state: 'approval-responded',
+      input: { path: 'a.txt' },
+      approval: { id: 'ap1', approved: true },
+    }
+    const result = partsOf(message('assistant', [part]))[0] as Record<string, unknown>
+    expect(result.approval).toEqual({ id: 'ap1', approved: true })
+    expect(result.result).toBeUndefined()
+  })
+
+  it('uses the approval reason for an output-denied part', () => {
+    const part = {
+      type: 'tool-write_file',
+      toolCallId: 'c7',
+      state: 'output-denied',
+      input: { path: 'a.txt' },
+      approval: { id: 'ap1', approved: false, reason: 'not now' },
+    }
+    expect(partsOf(message('assistant', [part]))[0]).toMatchObject({
+      result: 'not now',
+      isError: true,
+    })
   })
 
   it('maps a data part by its prefixed type', () => {
@@ -190,6 +270,48 @@ describe('toUiParts', () => {
         state: 'output-available',
         input: { city: 'Paris' },
         output: { temp: 20 },
+      },
+    ])
+  })
+
+  it('round-trips an approval part back to the paused state', () => {
+    const content: IncomingContent = [
+      {
+        type: 'tool-call',
+        toolCallId: 'c1',
+        toolName: 'write_file',
+        args: { path: 'a.txt' },
+        approval: { id: 'ap1', options: [{ id: 'allow-once', kind: 'allow-once' }] },
+      },
+    ]
+    expect(toUiParts(content)).toEqual([
+      {
+        type: 'tool-write_file',
+        toolCallId: 'c1',
+        state: 'approval-requested',
+        input: { path: 'a.txt' },
+        approval: { id: 'ap1', options: [{ id: 'allow-once', kind: 'allow-once' }] },
+      },
+    ])
+  })
+
+  it('round-trips an answered approval as approval-responded', () => {
+    const content: IncomingContent = [
+      {
+        type: 'tool-call',
+        toolCallId: 'c1',
+        toolName: 'write_file',
+        args: {},
+        approval: { id: 'ap1', approved: true },
+      },
+    ]
+    expect(toUiParts(content)).toEqual([
+      {
+        type: 'tool-write_file',
+        toolCallId: 'c1',
+        state: 'approval-responded',
+        input: {},
+        approval: { id: 'ap1', approved: true },
       },
     ])
   })

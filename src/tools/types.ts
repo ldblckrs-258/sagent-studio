@@ -1,5 +1,6 @@
 import type { Tool } from 'ai'
 import type { CodeRunner } from '../sandbox/types'
+import type { ChatMode, PlanItem } from '../chat/types'
 
 export type JsonSchemaObject = Record<string, unknown>
 
@@ -14,15 +15,54 @@ export interface WorkspaceStat {
   path: string
   kind: 'file' | 'directory'
   size: number
+  lastModified?: number
+}
+
+export interface WorkspaceListOptions {
+  recursive?: boolean
+  glob?: string
+  maxEntries?: number
+}
+
+export interface WorkspaceTransferResult {
+  from: string
+  to: string
+  kind: 'file' | 'directory'
+  size: number
+}
+
+export interface WorkspaceSearchOptions {
+  pattern: string
+  ignoreCase?: boolean
+  path?: string
+  maxResults?: number
+  maxFilesScanned?: number
+  maxDepth?: number
+}
+
+export interface WorkspaceSearchHit {
+  path: string
+  line: number
+  text: string
+}
+
+export interface WorkspaceSearchResult {
+  hits: WorkspaceSearchHit[]
+  truncated: boolean
+  filesScanned: number
+  filesSkipped: number
 }
 
 export interface WorkspaceApi {
-  list(path: string): Promise<WorkspaceEntry[]>
+  list(path: string, options?: WorkspaceListOptions): Promise<WorkspaceEntry[]>
   readFile(path: string): Promise<string>
   writeFile(path: string, content: string): Promise<void>
   makeDir(path: string): Promise<void>
   remove(path: string): Promise<void>
   stat(path: string): Promise<WorkspaceStat>
+  move(from: string, to: string): Promise<WorkspaceTransferResult>
+  copy(from: string, to: string): Promise<WorkspaceTransferResult>
+  search(options: WorkspaceSearchOptions): Promise<WorkspaceSearchResult>
 }
 
 export interface SandboxJsToolDefinition {
@@ -55,10 +95,92 @@ export interface HttpToolDefinition {
 
 export type ToolDefinition = SandboxJsToolDefinition | HttpToolDefinition
 
+export interface SandboxControlPort {
+  reset(language?: 'js' | 'python'): void
+  status(): { js: boolean; python: boolean }
+}
+
+export interface ThreadModePort {
+  setMode(mode: ChatMode): Promise<void>
+}
+
+export interface SkillLoadEntry {
+  id: string
+  name: string
+  description: string
+  source: 'vault' | 'workspace'
+}
+
+export interface SkillLoadResult extends SkillLoadEntry {
+  instructions: string
+}
+
+export interface SkillLoadPort {
+  list(): ReadonlyArray<SkillLoadEntry>
+  load(id: string, source?: 'vault' | 'workspace'): SkillLoadResult | null
+}
+
+export interface ThreadPlanPort {
+  get(): ReadonlyArray<PlanItem>
+  set(items: readonly PlanItem[]): Promise<void>
+}
+
+export interface SkillDraft {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  allowedTools: string[]
+}
+
+export interface SkillAdminEntry extends SkillDraft {
+  source: 'vault' | 'workspace'
+  enabled: boolean
+}
+
+export interface SkillAdminPort {
+  list(): SkillAdminEntry[]
+  get(id: string, source: 'vault' | 'workspace'): SkillAdminEntry | undefined
+  /** True when the id exists under any source. */
+  exists(id: string): boolean
+  create(draft: SkillDraft, options?: { enabled?: boolean }): Promise<SkillAdminEntry>
+  update(
+    ref: { id: string; source: 'vault' | 'workspace' },
+    patch: Partial<SkillDraft>,
+    options?: { enabled?: boolean },
+  ): Promise<SkillAdminEntry>
+  remove(ref: { id: string; source: 'vault' | 'workspace' }): Promise<void>
+}
+
+export interface ToolAdminEntry {
+  name: string
+  kind: ToolDefinition['kind']
+  description: string
+  enabled: boolean
+  summary: string
+}
+
+export interface ToolAdminPort {
+  list(): ToolAdminEntry[]
+  get(name: string): ToolDefinition | undefined
+  /** True when a provider or a user tool owns the name. */
+  hasTool(name: string): boolean
+  create(definition: ToolDefinition): Promise<ToolAdminEntry>
+  /** Replaces the tool named `from`; renames when `definition.name !== from`. */
+  update(from: string, definition: ToolDefinition): Promise<ToolAdminEntry>
+  remove(name: string): Promise<void>
+}
+
 export interface ToolRuntimePorts {
   codeRunner?: CodeRunner
   workspace?: WorkspaceApi
   fetch?: typeof fetch
+  sandbox?: SandboxControlPort
+  mode?: ThreadModePort
+  skills?: SkillLoadPort
+  plan?: ThreadPlanPort
+  skillAdmin?: SkillAdminPort
+  toolAdmin?: ToolAdminPort
 }
 
 export interface ToolProvider {

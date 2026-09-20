@@ -5,6 +5,7 @@ import { MockLanguageModelV4 } from 'ai/test'
 import { SkillRegistry } from '../skills/registry'
 import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
+import type { SandboxControlPort, ToolProvider } from '../tools/types'
 import { defaultSettings } from '../vault/settings'
 import { createChatTransport } from './transport'
 import { defaultThreadConfig } from './types'
@@ -83,6 +84,41 @@ describe('createChatTransport', () => {
       .join('')
     expect(text).toBe('Hello')
     expect(model.doStreamCalls).toHaveLength(1)
+  })
+
+  it('passes the sandbox control port into the run ports', async () => {
+    const sandbox: SandboxControlPort = { reset: () => {}, status: () => ({ js: true, python: true }) }
+    let seen: SandboxControlPort | undefined
+    const probe: ToolProvider = {
+      names: ['probe_port'],
+      isAvailable: (ports) => {
+        seen = ports.sandbox
+        return false
+      },
+      create: () => {
+        throw new Error('unused')
+      },
+    }
+    const toolRegistry = new ToolRegistry()
+    toolRegistry.registerProvider(probe)
+    const model = new MockLanguageModelV4({ doStream: [{ stream: streamOf(textStep('Hi')) }] })
+    const transport = createChatTransport({
+      getSettings: () => defaultSettings(),
+      skillRegistry: new SkillRegistry(skillStore),
+      toolRegistry,
+      sandbox,
+      modelFactory: () => model,
+      getConfig: () => defaultThreadConfig('p1', 'm1'),
+    })
+
+    await transport.sendMessages({
+      trigger: 'submit-message',
+      chatId: 'th1',
+      messageId: undefined,
+      messages: [user('u1', 'hi')],
+      abortSignal: undefined,
+    })
+    expect(seen).toBe(sandbox)
   })
 
   it('resolves reconnectToStream to null', async () => {
