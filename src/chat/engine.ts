@@ -7,6 +7,7 @@ import {
 } from "ai";
 import { createLLM } from "../ai/llm";
 import type { CodeRunner } from "../sandbox/types";
+import type { WorkspaceJournal } from "../workspace/journal";
 import type { SkillRegistry } from "../skills/registry";
 import { createAdminPorts } from "../tools/admin-ports";
 import type { ToolRegistry } from "../tools/registry";
@@ -49,6 +50,8 @@ export interface PipelineDeps {
   codeRunner?: CodeRunner;
   sandbox?: SandboxControlPort;
   preview?: PreviewPort;
+  /** The conversation's journal, loaded lazily so a run always records into its own. */
+  journalFor?(threadId: string): Promise<WorkspaceJournal>;
   /** Persists an `allow-always` decision. Defaults to the encrypted vault. */
   persistApproval?(
     toolName: string,
@@ -283,6 +286,7 @@ export async function buildRunStream(
   mode: ChatMode = "editing",
   modePort?: ThreadModePort,
   planPort?: ThreadPlanPort,
+  journal?: WorkspaceJournal,
 ): Promise<BuiltRun> {
   const settings = deps.getSettings();
   if (!settings)
@@ -297,6 +301,7 @@ export async function buildRunStream(
     mode: modePort,
     skills: createSkillLoadPort(skills),
     plan: planPort,
+    journal,
     ...createAdminPorts({
       skillRegistry: deps.skillRegistry,
       toolRegistry: deps.toolRegistry,
@@ -687,6 +692,9 @@ class DefaultEngine implements ChatEngine {
     };
     const built = await (async () => {
       try {
+        const journal = this.deps.journalFor
+          ? await this.deps.journalFor(thread.id)
+          : undefined;
         return await buildRunStream(
           this.deps,
           thread.config,
@@ -696,6 +704,7 @@ class DefaultEngine implements ChatEngine {
           mode,
           modePort,
           planPort,
+          journal,
         );
       } catch (error) {
         // A pre-stream failure (bad provider config, conversion error) must not

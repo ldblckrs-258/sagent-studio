@@ -174,6 +174,7 @@ export class ToolRegistry {
           if (!ports.codeRunner) throw new ToolRuntimeUnavailableError(definition.name)
           const result = await ports.codeRunner.run(bindInput(definition.source, input), {
             timeoutMs: definition.timeoutMs,
+            ...(ports.journal ? { journal: ports.journal } : {}),
           })
           if (result.error !== undefined) {
             return toolFail('runtime_error', result.error, { value: result })

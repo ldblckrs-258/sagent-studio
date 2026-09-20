@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createWorkspaceJournal } from './journal'
+import { MAX_TOTAL_SNAPSHOT_CHARS, createWorkspaceJournal } from './journal'
 
 describe('workspace journal restore', () => {
   it('restores a pre-existing file to its state before the checkpoint', () => {
@@ -39,5 +39,34 @@ describe('workspace journal restore', () => {
     const plan = journal.planRestore(checkpoint.id)
     expect(plan?.expired).toBe(true)
     expect(plan?.changes).toEqual([])
+  })
+
+  it('evicts the oldest snapshots past the byte budget', () => {
+    const journal = createWorkspaceJournal()
+    const chunk = 'x'.repeat(250_000)
+    for (let index = 0; index < 40; index += 1) {
+      journal.record({ kind: 'write', path: `f${index}.txt`, before: null, after: chunk })
+    }
+    const state = journal.snapshotState()
+    const total = state.entries.reduce(
+      (sum, entry) => sum + (entry.before?.length ?? 0) + (entry.after?.length ?? 0),
+      0,
+    )
+    expect(state.entries.length).toBeLessThan(40)
+    expect(total).toBeLessThanOrEqual(MAX_TOTAL_SNAPSHOT_CHARS)
+  })
+
+  it('round-trips through snapshotState and restoreState', () => {
+    const journal = createWorkspaceJournal()
+    const checkpoint = journal.checkpoint('mark')
+    journal.record({ kind: 'edit', path: 'a.txt', before: 'old', after: 'new' })
+
+    const revived = createWorkspaceJournal()
+    revived.restoreState(journal.snapshotState())
+
+    expect(revived.checkpoints()[0].id).toBe(checkpoint.id)
+    expect(revived.planRestore(checkpoint.id)?.changes).toEqual([
+      { path: 'a.txt', content: 'old' },
+    ])
   })
 })

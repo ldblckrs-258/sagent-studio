@@ -1,4 +1,5 @@
 import type { Settings } from '../vault/settings'
+import { workspaceJournalStore } from '../workspace/journal-store'
 import { createThread, deleteThread, renameThread, setThreadWorkspaceLabel } from './persistence'
 import type { ThreadSummary } from './persistence'
 import type { ChatMode, ChatThread, SkillRef, ThreadConfig } from './types'
@@ -91,6 +92,8 @@ export async function renameConversation(id: string, title: string): Promise<voi
 
 export async function deleteConversation(id: string): Promise<void> {
   await deleteThread(id)
+  // The journal is scoped to the conversation, so it goes with it.
+  await workspaceJournalStore.remove(id)
 }
 
 export async function labelConversation(id: string, workspaceName: string | undefined): Promise<void> {

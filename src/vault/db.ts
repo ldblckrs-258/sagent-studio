@@ -43,6 +43,12 @@ export interface FsHandleRecord {
   updatedAt: number
 }
 
+export interface JournalRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
 export class VaultDatabase extends Dexie {
   vault!: Table<VaultRecord, string>
   meta!: Table<MetaRecord, string>
@@ -50,6 +56,7 @@ export class VaultDatabase extends Dexie {
   skills!: Table<SkillRecord, string>
   tools!: Table<ToolRecord, string>
   fs!: Table<FsHandleRecord, string>
+  journals!: Table<JournalRecord, string>
 
   constructor(name = 'sagent-vault') {
     super(name)
@@ -76,6 +83,15 @@ export class VaultDatabase extends Dexie {
       skills: 'id, updatedAt',
       tools: 'id, updatedAt',
       fs: 'id',
+    })
+    this.version(5).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+      fs: 'id',
+      journals: 'id, updatedAt',
     })
   }
 }

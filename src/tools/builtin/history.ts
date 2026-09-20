@@ -22,18 +22,21 @@ function readNumber(input: unknown, key: string): number | undefined {
 }
 
 /**
- * Workspace history tools backed by the process-local write journal:
+ * Workspace history tools backed by the conversation's write journal:
  * `checkpoint` marks a restore point, `restore` reverts to it, `diff` shows a
- * change, and `history` lists recent mutations.
+ * change, and `history` lists recent mutations. The journal comes from the run's
+ * ports (one per conversation, persisted across reloads); the module singleton
+ * is only a fallback for callers that do not supply one.
  */
 export function createHistoryToolProvider(
-  journal: WorkspaceJournal = workspaceJournal,
+  fallback: WorkspaceJournal = workspaceJournal,
 ): ToolProvider {
   return {
     names: NAMES,
     isAvailable: (ports) => ports.workspace !== undefined,
     create(name, ports) {
       const workspace = ports.workspace
+      const journal = ports.journal ?? fallback
       switch (name) {
         case 'checkpoint':
           return tool({

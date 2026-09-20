@@ -31,6 +31,7 @@ import {
 import type { SandboxSettings, Settings } from '../vault/settings'
 import type { WorkspaceFs } from '../workspace/fs'
 import { workspaceJournal } from '../workspace/journal'
+import { workspaceJournalStore } from '../workspace/journal-store'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -221,6 +222,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     get preview() {
       return previewPort()
     },
+    journalFor: (threadId) => workspaceJournalStore.forThread(threadId),
   }
 
   const engines = new Map<string, ChatEngine>()
@@ -243,6 +245,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
 
   function dispose(): void {
     for (const threadId of [...engines.keys()]) disposeThread(threadId)
+    // Persist any debounced journal writes before the session tears down.
+    void workspaceJournalStore.flushAll()
     workspaceJournal.clear()
     unsubVault?.()
     unsubWorkspace?.()

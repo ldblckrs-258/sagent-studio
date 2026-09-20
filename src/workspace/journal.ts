@@ -67,8 +67,18 @@ export interface HistoryEntry {
 }
 
 const MAX_ENTRIES = 500
+/** Total captured characters kept in memory; older entries are evicted first. */
+export const MAX_TOTAL_SNAPSHOT_CHARS = 8 * 1024 * 1024
 const MAX_SNAPSHOT_CHARS = 262_144
 const MAX_DIFF_LINES = 400
+const MAX_CHECKPOINTS = 200
+
+/** Serializable journal state for persistence across reloads. */
+export interface JournalSnapshot {
+  seq: number
+  entries: JournalEntry[]
+  checkpoints: JournalCheckpoint[]
+}
 
 export interface WorkspaceJournal {
   record(input: {
@@ -88,6 +98,8 @@ export interface WorkspaceJournal {
   checkpoints(limit?: number): JournalCheckpoint[]
   size(): number
   clear(): void
+  snapshotState(): JournalSnapshot
+  restoreState(state: JournalSnapshot): void
 }
 
 function snapshot(value: string | null): { value: string | null; partial: boolean } {
@@ -143,11 +155,35 @@ function diffLines(before: string | null, after: string | null): DiffResult {
 export function createWorkspaceJournal(): WorkspaceJournal {
   let seq = 0
   let entries: JournalEntry[] = []
-  const checkpoints = new Map<string, JournalCheckpoint>()
+  let checkpoints = new Map<string, JournalCheckpoint>()
+  let snapshotChars = 0
+
+  const entryChars = (entry: JournalEntry): number =>
+    (entry.before?.length ?? 0) + (entry.after?.length ?? 0)
+
+  const prune = (): void => {
+    let index = 0
+    while (
+      index < entries.length &&
+      (entries.length - index > MAX_ENTRIES ||
+        (snapshotChars > MAX_TOTAL_SNAPSHOT_CHARS && entries.length - index > 1))
+    ) {
+      snapshotChars -= entryChars(entries[index])
+      index += 1
+    }
+    if (index > 0) entries = entries.slice(index)
+    if (checkpoints.size > MAX_CHECKPOINTS) {
+      const ordered = [...checkpoints.values()].sort((a, b) => a.seq - b.seq)
+      checkpoints = new Map(
+        ordered.slice(ordered.length - MAX_CHECKPOINTS).map((entry) => [entry.id, entry]),
+      )
+    }
+  }
 
   const push = (entry: JournalEntry): void => {
     entries.push(entry)
-    if (entries.length > MAX_ENTRIES) entries = entries.slice(entries.length - MAX_ENTRIES)
+    snapshotChars += entryChars(entry)
+    prune()
   }
 
   const contentEntries = (path?: string): JournalEntry[] =>
@@ -295,10 +331,25 @@ export function createWorkspaceJournal(): WorkspaceJournal {
       return entries.length
     },
 
+    snapshotState() {
+      return { seq, entries: entries.map((entry) => ({ ...entry })), checkpoints: [...checkpoints.values()] }
+    },
+
+    restoreState(state) {
+      seq = Number.isFinite(state.seq) ? state.seq : 0
+      entries = Array.isArray(state.entries) ? state.entries.map((entry) => ({ ...entry })) : []
+      snapshotChars = entries.reduce((total, entry) => total + entryChars(entry), 0)
+      checkpoints = new Map(
+        (Array.isArray(state.checkpoints) ? state.checkpoints : []).map((entry) => [entry.id, entry]),
+      )
+      prune()
+    },
+
     clear() {
       seq = 0
       entries = []
-      checkpoints.clear()
+      checkpoints = new Map()
+      snapshotChars = 0
     },
   }
 }

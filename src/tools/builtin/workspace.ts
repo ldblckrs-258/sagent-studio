@@ -2,6 +2,8 @@ import { jsonSchema, tool } from 'ai'
 import { WorkspaceLimitError } from '../../workspace/errors'
 import { DEFAULT_RECURSIVE_MAX_ENTRIES } from '../../workspace/fs'
 import { readForJournal, recordMutation } from '../../workspace/journal-io'
+import { workspaceJournal } from '../../workspace/journal'
+import type { WorkspaceJournal } from '../../workspace/journal'
 import { countLines, sliceLines, splitLines } from '../../workspace/lines'
 import { withPathLock, withWorkspaceLock } from '../../workspace/lock'
 import { planPatchMulti } from '../../workspace/patch'
@@ -179,6 +181,7 @@ async function readTransferSource(
 }
 
 function recordTransfer(
+  journal: WorkspaceJournal | undefined,
   kind: 'move' | 'copy',
   from: string,
   to: string,
@@ -186,9 +189,9 @@ function recordTransfer(
 ): void {
   const partial = !source.known
   if (kind === 'move') {
-    recordMutation('remove', from, source.content, null, { partial })
+    recordMutation(journal, 'remove', from, source.content, null, { partial })
   }
-  recordMutation('write', to, null, source.content, { partial })
+  recordMutation(journal, 'write', to, null, source.content, { partial })
 }
 
 export const workspaceToolProvider: ToolProvider = {
@@ -197,6 +200,9 @@ export const workspaceToolProvider: ToolProvider = {
   create(name, ports) {
     const workspace = ports.workspace
     if (!workspace) throw new ToolRuntimeUnavailableError(name)
+    // Prefer the run's per-conversation journal; the singleton is a fallback for
+    // direct provider use and tests.
+    const journal = ports.journal ?? workspaceJournal
 
     switch (name) {
       case 'list_dir':
@@ -298,7 +304,7 @@ export const workspaceToolProvider: ToolProvider = {
             return withPathLock(path, async () => {
               const before = await readForJournal(workspace, path)
               await workspace.writeFile(path, content)
-              if (before.known) recordMutation('write', path, before.content, content)
+              if (before.known) recordMutation(journal, 'write', path, before.content, content)
               return toolOk({
                 path,
                 bytes: utf8Bytes(content),
@@ -327,12 +333,12 @@ export const workspaceToolProvider: ToolProvider = {
           execute: wrapToolExecute(async (input) => {
             const path = inputPath(input)
             return withPathLock(path, async () => {
-              const journal = await readForJournal(workspace, path).catch(() => ({
+              const snapshot = await readForJournal(workspace, path).catch(() => ({
                 known: false,
                 content: null as string | null,
               }))
               await workspace.remove(path)
-              if (journal.known) recordMutation('remove', path, journal.content, null)
+              if (snapshot.known) recordMutation(journal, 'remove', path, snapshot.content, null)
               return toolOk({ path, removed: true })
             })
           }),
@@ -428,7 +434,7 @@ export const workspaceToolProvider: ToolProvider = {
               const applied = plan.replacements > 0
               if (applied) {
                 await workspace.writeFile(path, plan.content)
-                recordMutation('edit', path, content, plan.content)
+                recordMutation(journal, 'edit', path, content, plan.content)
               }
               const beforeBytes = utf8Bytes(content)
               const afterBytes = utf8Bytes(plan.content)
@@ -585,7 +591,7 @@ export const workspaceToolProvider: ToolProvider = {
             return withWorkspaceLock(async () => {
               const source = await readTransferSource(workspace, from)
               const result = await workspace.move(from, to)
-              recordTransfer('move', from, to, source)
+              recordTransfer(journal, 'move', from, to, source)
               return toolOk({
                 from: result.from,
                 to: result.to,
@@ -606,7 +612,7 @@ export const workspaceToolProvider: ToolProvider = {
             return withWorkspaceLock(async () => {
               const source = await readTransferSource(workspace, from)
               const result = await workspace.copy(from, to)
-              recordTransfer('copy', from, to, source)
+              recordTransfer(journal, 'copy', from, to, source)
               return toolOk({
                 from: result.from,
                 to: result.to,

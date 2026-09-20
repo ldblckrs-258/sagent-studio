@@ -1,5 +1,6 @@
 import type { Tool } from 'ai'
 import type { CodeRunner } from '../sandbox/types'
+import type { WorkspaceJournal } from '../workspace/journal'
 import type { ChatMode, PlanItem } from '../chat/types'
 
 export type JsonSchemaObject = Record<string, unknown>
@@ -205,6 +206,8 @@ export interface ToolAdminPort {
 export interface ToolRuntimePorts {
   codeRunner?: CodeRunner
   workspace?: WorkspaceApi
+  /** The conversation's write journal, used to record mutations and expose checkpoint tools. */
+  journal?: WorkspaceJournal
   fetch?: typeof fetch
   sandbox?: SandboxControlPort
   mode?: ThreadModePort

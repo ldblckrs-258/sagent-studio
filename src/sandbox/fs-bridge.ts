@@ -1,4 +1,6 @@
 import { journaledWrite } from '../workspace/journal-io'
+import { workspaceJournal } from '../workspace/journal'
+import type { WorkspaceJournal } from '../workspace/journal'
 import type { WorkspaceApi } from '../tools/types'
 import { SandboxError, assertSerializable } from './protocol'
 import type { FromWorker, ToWorker } from './protocol'
@@ -23,6 +25,7 @@ function resolveWorkspace(source: WorkspaceSource): WorkspaceApi | undefined {
 export function executeFsCall(
   source: WorkspaceSource,
   handle: FsCall,
+  journal?: WorkspaceJournal,
 ): Promise<string> {
   const workspace = resolveWorkspace(source)
   if (!workspace) {
@@ -34,7 +37,9 @@ export function executeFsCall(
   }
   if (handle.op === 'read') return workspace.readFile(handle.path)
   if (handle.op === 'write') {
-    return journaledWrite(workspace, handle.path, handle.data ?? '').then(() => '')
+    return journaledWrite(journal ?? workspaceJournal, workspace, handle.path, handle.data ?? '').then(
+      () => '',
+    )
   }
   return workspace.list(handle.path).then((entries) => JSON.stringify(entries))
 }
@@ -44,11 +49,12 @@ export function attachFsHandler(
   handle: FsCall,
   pendingFs: Set<PendingFs>,
   safePost: (message: ToWorker) => void,
+  journal?: WorkspaceJournal,
 ): void {
   let cancel: (error: Error) => void = () => {}
   const deferred = new Promise<string>((resolve, reject) => {
     cancel = reject
-    executeFsCall(source, handle).then(resolve, reject)
+    executeFsCall(source, handle, journal).then(resolve, reject)
   })
   const entry: PendingFs = { cancel: (error) => cancel(error) }
   pendingFs.add(entry)

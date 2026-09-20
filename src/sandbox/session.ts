@@ -1,4 +1,5 @@
 import type { WorkspaceApi } from '../tools/types'
+import type { WorkspaceJournal } from '../workspace/journal'
 import { attachFsHandler } from './fs-bridge'
 import type { PendingFs, WorkspaceSource } from './fs-bridge'
 import { SandboxTimeoutError, parseInbound, truncateOutput } from './protocol'
@@ -23,6 +24,7 @@ interface RunEntry {
   timer: ReturnType<typeof setTimeout> | undefined
   pendingFs: Set<PendingFs>
   settled: boolean
+  journal?: WorkspaceJournal
   resolve(result: RunResult): void
   reject(error: Error): void
 }
@@ -90,6 +92,7 @@ export class WorkerSession {
         timer: undefined,
         pendingFs: new Set(),
         settled: false,
+        ...(options.journal === undefined ? {} : { journal: options.journal }),
         resolve,
         reject,
       }
@@ -156,7 +159,7 @@ export class WorkerSession {
     if (message.kind === 'fs.call') {
       attachFsHandler(this.workspace, message, entry.pendingFs, (outbound) => {
         if (!entry.settled) this.port?.postMessage(outbound)
-      })
+      }, entry.journal)
       return
     }
 

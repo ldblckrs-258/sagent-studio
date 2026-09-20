@@ -1,5 +1,9 @@
+import type { WorkspaceJournal } from '../workspace/journal'
+
 export type RunOptions = {
   timeoutMs?: number
+  /** The conversation journal to record sandbox writes into, when one applies. */
+  journal?: WorkspaceJournal
 }
 
 export type RunResult = {

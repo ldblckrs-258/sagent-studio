@@ -1,8 +1,7 @@
 import type { WorkspaceApi } from '../tools/types'
 import { WorkspaceLimitError, WorkspaceNotFoundError } from './errors'
-import { workspaceJournal } from './journal'
-import type { JournalKind } from './journal'
 import { withPathLock } from './lock'
+import type { JournalKind, WorkspaceJournal } from './journal'
 
 /**
  * Reads a path for journaling. Returns unknown when the content cannot be
@@ -22,15 +21,22 @@ export async function readForJournal(
   }
 }
 
+/**
+ * Records a mutation in the given conversation's journal. `journal` is optional
+ * so a tool can run without one (older call sites, tests); journaling is
+ * best-effort and must never fail the mutation.
+ */
 export function recordMutation(
+  journal: WorkspaceJournal | undefined,
   kind: Exclude<JournalKind, 'checkpoint'>,
   path: string,
   before: string | null,
   after: string | null,
   options: { partial?: boolean } = {},
 ): void {
+  if (!journal) return
   try {
-    workspaceJournal.record({
+    journal.record({
       kind,
       path,
       before,
@@ -38,16 +44,17 @@ export function recordMutation(
       ...(options.partial === true ? { partial: true } : {}),
     })
   } catch {
-    // Journaling is best-effort: a failed record must never fail the mutation.
+    // best-effort
   }
 }
 
 /**
  * Writes a file the way the workspace tools do: under the path lock and into
- * the write journal. The sandbox `fs`/`workspace` bridge uses it so a script
- * write stays visible to checkpoint, restore, diff, and history.
+ * the conversation journal. The sandbox `fs`/`workspace` bridge uses it so a
+ * script write stays visible to checkpoint, restore, diff, and history.
  */
 export async function journaledWrite(
+  journal: WorkspaceJournal | undefined,
   workspace: WorkspaceApi,
   path: string,
   content: string,
@@ -55,6 +62,6 @@ export async function journaledWrite(
   await withPathLock(path, async () => {
     const before = await readForJournal(workspace, path)
     await workspace.writeFile(path, content)
-    if (before.known) recordMutation('write', path, before.content, content)
+    if (before.known) recordMutation(journal, 'write', path, before.content, content)
   })
 }
