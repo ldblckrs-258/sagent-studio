@@ -38,7 +38,7 @@ export interface ToolRecord {
 }
 
 export interface FsHandleRecord {
-  id: 'workspace'
+  id: string
   handle: FileSystemDirectoryHandle
   updatedAt: number
 }

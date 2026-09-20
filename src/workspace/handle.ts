@@ -5,6 +5,15 @@ import type { WorkspaceFs } from './fs'
 
 export const WORKSPACE_HANDLE_ID = 'workspace' as const
 
+/**
+ * The slot a conversation's folder is stored under. The plain `workspace` slot
+ * stays the last-picked folder, so a reload with no conversation open still
+ * restores something.
+ */
+export function threadHandleId(threadId: string): string {
+  return `thread:${threadId}`
+}
+
 export function isPickerAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
 }
@@ -17,12 +26,23 @@ export async function pickWorkspace(): Promise<WorkspaceFs> {
   return createWorkspaceFs(handle)
 }
 
-export async function restoreWorkspace(): Promise<WorkspaceFs | null> {
-  const record = await db.fs.get(WORKSPACE_HANDLE_ID)
+export async function saveWorkspaceHandle(
+  id: string,
+  handle: FileSystemDirectoryHandle,
+): Promise<void> {
+  await db.fs.put({ id, handle, updatedAt: Date.now() })
+}
+
+export async function restoreWorkspaceHandle(id: string): Promise<WorkspaceFs | null> {
+  const record = await db.fs.get(id)
   if (!record) return null
   return createWorkspaceFs(record.handle)
 }
 
-export async function clearWorkspaceHandle(): Promise<void> {
-  await db.fs.delete(WORKSPACE_HANDLE_ID)
+export async function restoreWorkspace(): Promise<WorkspaceFs | null> {
+  return restoreWorkspaceHandle(WORKSPACE_HANDLE_ID)
+}
+
+export async function clearWorkspaceHandle(id: string = WORKSPACE_HANDLE_ID): Promise<void> {
+  await db.fs.delete(id)
 }

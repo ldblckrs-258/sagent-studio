@@ -25,6 +25,7 @@ const GATED_BUILTINS = new Set([
   'create_tool',
   'update_tool',
   'delete_tool',
+  'call_user_tool',
 ])
 
 const READ_ONLY_TOOLS = new Set([

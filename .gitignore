@@ -23,3 +23,5 @@ public/pyodide/
 *.njsproj
 *.sln
 *.sw?
+
+.sagent

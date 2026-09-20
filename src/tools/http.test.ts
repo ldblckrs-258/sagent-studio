@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { executeHttpTool, MAX_RESPONSE_BYTES } from './http'
+import { assertRequestTemplates, executeHttpTool, MAX_RESPONSE_BYTES } from './http'
+import { ToolSchemaError } from './types'
 import type { HttpRequestTemplate } from './types'
 
 function responseFetch(
@@ -131,5 +132,54 @@ describe('executeHttpTool', () => {
     await expect(
       executeHttpTool(request({ method: 'TRACE' }), {}, responseFetch('{}')),
     ).resolves.toMatchObject({ ok: false, code: 'http_error' })
+  })
+})
+
+describe('placeholder validation', () => {
+  it('rejects a template whose placeholder is not input-scoped', () => {
+    expect(() =>
+      assertRequestTemplates(request({ url: 'https://api.example.com/posts/{{id}}' }), 'demo'),
+    ).toThrow(ToolSchemaError)
+    expect(() =>
+      assertRequestTemplates(request({ body: '{"id":"{{ args.id }}"}' }), 'demo'),
+    ).toThrow(ToolSchemaError)
+    expect(() =>
+      assertRequestTemplates(
+        request({ headers: { 'x-key': '{{secret}}' } }),
+        'demo',
+      ),
+    ).toThrow(ToolSchemaError)
+  })
+
+  it('accepts input-scoped placeholders', () => {
+    expect(() =>
+      assertRequestTemplates(
+        request({
+          url: 'https://api.example.com/posts/{{input.id}}',
+          body: '{"q":"{{ input.query }}"}',
+          headers: { 'x-key': '{{input.key}}' },
+        }),
+        'demo',
+      ),
+    ).not.toThrow()
+  })
+
+  it('reports an unsubstituted url placeholder instead of calling the server', async () => {
+    let called = false
+    const fetchImpl = (async () => {
+      called = true
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch
+
+    const result = await executeHttpTool(
+      request({ url: 'https://api.example.com/posts/{{id}}' }),
+      { id: 1 },
+      fetchImpl,
+    )
+
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('http_error')
+    expect(result.message).toContain('{{id}}')
   })
 })

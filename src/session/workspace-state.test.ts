@@ -6,10 +6,16 @@ import type { WorkspaceDeps } from './workspace-state'
 import type { WorkspaceFs } from '../workspace/fs'
 import { WORKSPACE_HANDLE_ID } from '../workspace/handle'
 
-function fakeFs(name: string, permission: PermissionState = 'granted'): WorkspaceFs {
+function fakeFs(
+  name: string,
+  permission: PermissionState = 'granted',
+  folderId: string = name,
+): WorkspaceFs {
   const handle = {
     name,
     queryPermission: async () => permission,
+    isSameEntry: async (other: { folderId?: string }) => other.folderId === folderId,
+    folderId,
   } as unknown as FileSystemDirectoryHandle
   return {
     kind: 'workspace',
@@ -32,6 +38,8 @@ function deps(overrides: Partial<WorkspaceDeps>): WorkspaceDeps {
     isAvailable: () => true,
     pick: async () => fakeFs('picked'),
     restore: async () => null,
+    restoreThread: async () => null,
+    saveThread: async () => {},
     ...overrides,
   }
 }
@@ -109,6 +117,106 @@ describe('workspace store', () => {
     const store = createWorkspaceStore(deps({}))
     store.getState().markDenied('No access')
     expect(store.getState()).toMatchObject({ status: 'denied', error: 'No access' })
+  })
+
+  it('restores the folder bound to the conversation being opened', async () => {
+    const folders: Record<string, WorkspaceFs> = {
+      t1: fakeFs('folder-a'),
+      t2: fakeFs('folder-b'),
+    }
+    const store = createWorkspaceStore(
+      deps({ restoreThread: async (threadId) => folders[threadId] ?? null }),
+    )
+
+    await store.getState().bindThread('t2')
+    expect(store.getState().folderName).toBe('folder-b')
+
+    await store.getState().bindThread('t1')
+    expect(store.getState()).toMatchObject({ folderName: 'folder-a', status: 'ready' })
+  })
+
+  it('binds the live folder to a conversation that has none stored yet', async () => {
+    const saved: Array<[string, string]> = []
+    const store = createWorkspaceStore(
+      deps({
+        pick: async () => fakeFs('folder-a'),
+        saveThread: async (threadId, fs) => {
+          saved.push([threadId, fs.handle.name])
+        },
+      }),
+    )
+
+    await store.getState().bindThread('t1')
+    await store.getState().pick()
+    expect(saved).toEqual([['t1', 'folder-a']])
+    expect(store.getState().folderName).toBe('folder-a')
+  })
+
+  it('adopts the folder on screen for a conversation stored before folders were per-conversation', async () => {
+    const saved: Array<[string, string]> = []
+    const store = createWorkspaceStore(
+      deps({
+        restore: async () => fakeFs('legacy-folder'),
+        saveThread: async (threadId, fs) => {
+          saved.push([threadId, fs.handle.name])
+        },
+      }),
+    )
+
+    await store.getState().restore()
+    await store.getState().bindThread('t-old')
+    expect(saved).toEqual([['t-old', 'legacy-folder']])
+    expect(store.getState().folderName).toBe('legacy-folder')
+  })
+
+  it('keeps the live handle when two conversations share one folder', async () => {
+    const store = createWorkspaceStore(
+      deps({
+        restore: async () => fakeFs('shared', 'granted', 'same'),
+        restoreThread: async () => fakeFs('shared', 'granted', 'same'),
+      }),
+    )
+    await store.getState().restore()
+    const before = store.getState().fs
+
+    await store.getState().bindThread('t2')
+    expect(store.getState().fs).toBe(before)
+  })
+
+  it('ignores a restore that lands after the user switched away', async () => {
+    const gate = { release: () => {} }
+    const opened = new Promise<void>((resolve) => {
+      gate.release = resolve
+    })
+    const store = createWorkspaceStore(
+      deps({
+        restoreThread: async (threadId) => {
+          if (threadId === 't-slow') {
+            await opened
+            return fakeFs('slow-folder')
+          }
+          return fakeFs('fast-folder')
+        },
+      }),
+    )
+
+    const slow = store.getState().bindThread('t-slow')
+    await store.getState().bindThread('t-fast')
+    gate.release()
+    await slow
+    expect(store.getState().folderName).toBe('fast-folder')
+  })
+
+  it('restores the bound conversation folder, not the last-picked one, on refresh', async () => {
+    const store = createWorkspaceStore(
+      deps({
+        restore: async () => fakeFs('last-picked'),
+        restoreThread: async () => fakeFs('conversation-folder'),
+      }),
+    )
+    await store.getState().bindThread('t1')
+    await store.getState().restore()
+    expect(store.getState().folderName).toBe('conversation-folder')
   })
 
   it('clear drops the in-memory reference without deleting the persisted handle', async () => {

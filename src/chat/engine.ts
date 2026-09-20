@@ -16,6 +16,7 @@ import type { WorkspaceJournal } from "../workspace/journal";
 import type { SkillRegistry } from "../skills/registry";
 import { createAdminPorts } from "../tools/admin-ports";
 import type { ToolRegistry } from "../tools/registry";
+import { decisionFor } from "../tools/approval";
 import type { ToolGateDescriptor } from "../tools/approval";
 import type {
   SandboxControlPort,
@@ -136,6 +137,8 @@ const MODEL_MAX_RETRIES = 3;
 
 /** Always kept available when skills are enabled, even under allowedTools narrowing. */
 const SKILL_INDEX_TOOLS = ["load_skill", "search_skills"] as const;
+
+const GUIDE_TOOLS = ["read_tool_guide"] as const;
 
 export function redactSecrets(text: string): string {
   let output = text;
@@ -320,6 +323,9 @@ export async function buildRunStream(
     skills: createSkillLoadPort(skills),
     plan: planPort,
     journal,
+    approvals: {
+      decision: (toolName: string) => decisionFor(settings.approvals, toolName),
+    },
     ...createAdminPorts({
       skillRegistry: deps.skillRegistry,
       toolRegistry: deps.toolRegistry,
@@ -333,17 +339,17 @@ export async function buildRunStream(
   // `load_skill` and `search_skills` are unioned in whenever a skill is
   // enabled, because a skill's `allowedTools` narrowing would otherwise exclude
   // the tools the index needs.
+  const kept = [
+    ...(skills.length > 0 ? SKILL_INDEX_TOOLS : []),
+    ...GUIDE_TOOLS,
+  ] as readonly string[];
   const requestedTools =
     narrowed === undefined
       ? undefined
-      : skills.length > 0
-        ? [
-            ...narrowed,
-            ...SKILL_INDEX_TOOLS.filter(
-              (name) => pool.has(name) && !narrowed.includes(name),
-            ),
-          ]
-        : narrowed;
+      : [
+          ...narrowed,
+          ...kept.filter((name) => pool.has(name) && !narrowed.includes(name)),
+        ];
   const toolSet = deps.toolRegistry.buildToolSet(requestedTools, ports);
   const projectInstruction = await loadProjectInstruction(deps.workspace);
   const system = composeSystemPrompt(

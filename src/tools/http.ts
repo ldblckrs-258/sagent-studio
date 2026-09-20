@@ -1,6 +1,6 @@
 import { toolOk, toToolResult } from './result'
 import type { ToolResult } from './result'
-import { HttpToolError } from './types'
+import { HttpToolError, ToolSchemaError } from './types'
 import type { HttpRequestTemplate } from './types'
 
 export const MAX_RESPONSE_BYTES = 1_000_000
@@ -8,6 +8,7 @@ export const DEFAULT_TIMEOUT_MS = 15_000
 export const ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])
 
 const INTERPOLATION = /\{\{\s*input\.([A-Za-z0-9_.]+)\s*\}\}/g
+const ANY_PLACEHOLDER = /\{\{([^{}]*)\}\}/g
 
 export interface HttpToolResult {
   status: number
@@ -34,6 +35,31 @@ function readPath(input: unknown, path: string): string {
 
 function interpolate(template: string, input: unknown): string {
   return template.replace(INTERPOLATION, (_match, path: string) => readPath(input, path))
+}
+
+function unresolvedPlaceholders(template: string): string[] {
+  const found: string[] = []
+  for (const match of template.matchAll(ANY_PLACEHOLDER)) {
+    if (!/^\s*input\.[A-Za-z0-9_.]+\s*$/.test(match[1] ?? '')) found.push(match[0])
+  }
+  return found
+}
+
+export function assertRequestTemplates(request: HttpRequestTemplate, name: string): void {
+  const templates = [
+    request.url,
+    ...(request.body === undefined ? [] : [request.body]),
+    ...Object.values(request.headers ?? {}),
+  ]
+  for (const template of templates) {
+    if (typeof template !== 'string') continue
+    const unresolved = unresolvedPlaceholders(template)
+    if (unresolved.length > 0) {
+      throw new ToolSchemaError(
+        `The http tool "${name}" has placeholders that will never interpolate: ${unresolved.join(', ')}. Only {{input.<path>}} is substituted, where <path> names a tool argument.`,
+      )
+    }
+  }
 }
 
 function assertStaticAuthority(rawUrl: string): void {
@@ -71,6 +97,12 @@ export function resolveToolUrl(
 ): URL {
   assertStaticAuthority(template)
   const resolved = interpolate(template, input)
+  const unresolved = unresolvedPlaceholders(resolved)
+  if (unresolved.length > 0) {
+    throw new HttpToolError(
+      `The URL still contains uninterpolated placeholders: ${unresolved.join(', ')}. Only {{input.<path>}} is substituted, where <path> names a tool argument.`,
+    )
+  }
   let parsed: URL
   try {
     parsed = new URL(resolved)
@@ -161,6 +193,8 @@ export async function executeHttpTool(
       body: await readCapped(response, MAX_RESPONSE_BYTES),
     })
   } catch (error) {
-    return toToolResult(error) as ToolResult<HttpToolResult>
+    return toToolResult(error, {
+      hint: 'Call read_tool_guide with topic "custom_tools" for the rules and examples.',
+    }) as ToolResult<HttpToolResult>
   }
 }

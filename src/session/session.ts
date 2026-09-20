@@ -2,6 +2,8 @@ import type { ChatEngine, EngineDeps, ThreadStore } from '../chat/engine'
 import { createEngine, createSkillLoadPort } from '../chat/engine'
 import type { ThreadConfig } from '../chat/types'
 import { deleteThread, listThreads, loadThread, saveThread } from '../chat/persistence'
+import { useChatStore } from '../chat/store'
+import { labelConversation } from '../chat/threads'
 import { createSandboxManager } from '../sandbox/manager'
 import type { SandboxManager } from '../sandbox/manager'
 import { createVaultSkillEnablement } from '../skills/enablement'
@@ -18,6 +20,7 @@ import { createPreviewToolProvider } from '../tools/builtin/preview'
 import { createSandboxControlProvider } from '../tools/builtin/sandbox-control'
 import { createSkillManagementProvider } from '../tools/builtin/skill-management'
 import { createSkillToolProvider } from '../tools/builtin/skills'
+import { createToolGuideProvider } from '../tools/builtin/tool-guide'
 import { createToolManagementProvider } from '../tools/builtin/tool-management'
 import type { JsonSchemaObject, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
@@ -127,6 +130,38 @@ export function createSession(options: SessionOptions = {}): AppSession {
   let manager: SandboxManager | null = null
   let unsubVault: (() => void) | null = null
   let unsubWorkspace: (() => void) | null = null
+  let unsubFolder: (() => void) | null = null
+  let unsubThread: (() => void) | null = null
+
+  /**
+   * Keeps the conversation's list label on the folder it actually runs against,
+   * including the first time an older conversation adopts one.
+   */
+  function syncWorkspaceLabel(folderName: string | null): void {
+    const { activeThreadId, threads } = useChatStore.getState()
+    if (!activeThreadId) return
+    const thread = threads[activeThreadId]
+    if (!thread) return
+    const next = folderName ?? undefined
+    if (thread.workspaceName === next) return
+    useChatStore.getState().setThread({ ...thread, workspaceName: next, updatedAt: Date.now() })
+    void labelConversation(activeThreadId, next)
+  }
+
+  // The journal records mutations against one folder, so a folder change makes
+  // it stale no matter which path changed it.
+  unsubFolder = useWorkspaceStore.subscribe((state, previous) => {
+    if (state.fs === previous.fs) return
+    workspaceJournal.clear()
+    syncWorkspaceLabel(state.folderName)
+  })
+
+  // One owner for "the open conversation decides the folder"; every path that
+  // switches conversations goes through the chat store.
+  unsubThread = useChatStore.subscribe((state, previous) => {
+    if (state.activeThreadId === previous.activeThreadId) return
+    void useWorkspaceStore.getState().bindThread(state.activeThreadId)
+  })
 
   if (options.runnerSource) {
     manager = null
@@ -187,6 +222,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const planProvider = createPlanToolProvider()
   const skillManagementProvider = createSkillManagementProvider()
   const toolManagementProvider = createToolManagementProvider()
+  const toolGuideProvider = createToolGuideProvider()
   const previewProvider = createPreviewToolProvider()
   const checkProvider = createCheckToolProvider()
   const historyProvider = createHistoryToolProvider()
@@ -203,6 +239,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(skillManagementProvider)
     toolRegistry.registerProvider(toolManagementProvider)
     toolRegistry.registerProvider(previewProvider)
+    toolRegistry.registerProvider(toolGuideProvider)
   }
 
   const deps: EngineDeps = {
@@ -250,8 +287,12 @@ export function createSession(options: SessionOptions = {}): AppSession {
     workspaceJournal.clear()
     unsubVault?.()
     unsubWorkspace?.()
+    unsubFolder?.()
+    unsubThread?.()
     unsubVault = null
     unsubWorkspace = null
+    unsubFolder = null
+    unsubThread = null
     manager?.dispose()
   }
 
@@ -265,7 +306,6 @@ export function createSession(options: SessionOptions = {}): AppSession {
     dispose,
     getWorkspace,
     setWorkspace(fs) {
-      if (useWorkspaceStore.getState().fs !== fs) workspaceJournal.clear()
       useWorkspaceStore.getState().setFs(fs)
     },
     sandbox: () => manager,
@@ -294,6 +334,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         skillManagementProvider,
         toolManagementProvider,
         previewProvider,
+        toolGuideProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

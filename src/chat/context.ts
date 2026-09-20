@@ -24,6 +24,9 @@ const UNTRUSTED_INDEX_PREAMBLE =
 const PREVIEW_GUIDANCE =
   'When you create or edit a file the user would want to see (HTML, Markdown, JSON, or a Mermaid `.mmd`/`.mermaid` diagram), call `open_preview` with its workspace path immediately after the write so the File panel shows the result.'
 
+const TOOL_GUIDE_GUIDANCE =
+  'Complex tools carry usage guides. Call `read_tool_guide` with no argument to list the topics, or with a topic or tool name (for example `create_tool`, `run_python`, `edit_file`) to read its rules, limits, and examples. Read the guide before your first call into a topic and whenever a call from it fails.'
+
 const MODE_GUIDANCE: Record<ChatMode, string> = {
   read_only:
     'You may read and search the workspace but must not change it. Write, edit, and remove tools are gated and should not be called without a clear request.',
@@ -131,6 +134,10 @@ export function composeSystemPrompt(
 
   if (toolNames.includes('open_preview')) {
     sections.push(`## Previewing artifacts\n\n${PREVIEW_GUIDANCE}`)
+  }
+
+  if (toolNames.includes('read_tool_guide')) {
+    sections.push(`## Tool guides\n\n${TOOL_GUIDE_GUIDANCE}`)
   }
 
   return sections.join('\n\n')

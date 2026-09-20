@@ -110,6 +110,14 @@ describe('composeSystemPrompt', () => {
     )
   })
 
+  it('adds tool guide guidance only when read_tool_guide is available', () => {
+    const withGuide = composeSystemPrompt('base', [], ['read_tool_guide'])
+    expect(withGuide).toContain('## Tool guides')
+    expect(withGuide).toContain('read_tool_guide')
+
+    expect(composeSystemPrompt('base', [], ['read_file'])).not.toContain('## Tool guides')
+  })
+
   it('omits the skills block when there are no skills', () => {
     const prompt = composeSystemPrompt('base', [], ['read_file'])
     expect(prompt).not.toContain('## Skills')

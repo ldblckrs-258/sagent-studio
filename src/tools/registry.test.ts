@@ -291,6 +291,34 @@ describe('ToolRegistry', () => {
     expect([first, second]).toEqual([1, 2])
   })
 
+  it('executes the definition the registry holds now, not the one captured at build time', async () => {
+    const registry = new ToolRegistry()
+    const runner = fakeRunner()
+    registry.registerUserTool(sandboxTool('echo'))
+    const toolSet = registry.buildToolSet(undefined, { codeRunner: runner })
+    const execute = toolSet.echo.execute
+    if (!execute) throw new Error('missing execute')
+
+    registry.replaceUserTool({ ...(sandboxTool('echo') as SandboxJsToolDefinition), source: 'return 42' })
+    await execute({ a: 1 }, CALL_OPTIONS)
+
+    expect(runner.calls).toHaveLength(1)
+    expect(runner.calls[0]?.source).toContain('return 42')
+  })
+
+  it('fails a call whose tool was disabled after the tool set was built', async () => {
+    const registry = new ToolRegistry()
+    registry.registerUserTool(sandboxTool('echo'))
+    const toolSet = registry.buildToolSet(undefined, { codeRunner: fakeRunner() })
+    const execute = toolSet.echo.execute
+    if (!execute) throw new Error('missing execute')
+
+    registry.setEnabled('echo', false)
+    const result = (await execute({}, CALL_OPTIONS)) as { ok: boolean; code: string }
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('not_found')
+  })
+
   it('toggles enabled state through setEnabled', () => {
     const registry = new ToolRegistry()
     registry.registerUserTool(httpTool('toggle_me', false))

@@ -42,6 +42,17 @@
   --color-caution-rule: oklch(0.872 0.062 72);
   --color-positive: oklch(0.48 0.1 152);
 
+  /*
+    File-kind hues for the workspace tree. They sit at the accent's lightness
+    and chroma so a listing reads as one family rather than a palette, and they
+    are deliberately off the accent's teal so a coloured icon never reads as a
+    link.
+  */
+  --color-file-code: oklch(0.5 0.105 258);
+  --color-file-data: oklch(0.52 0.095 95);
+  --color-file-media: oklch(0.52 0.105 315);
+  --color-file-sheet: oklch(0.48 0.1 152);
+
   --radius-sm: 2px;
   --radius-md: 3px;
 
@@ -114,6 +125,10 @@
     --color-caution-soft: oklch(0.272 0.042 72);
     --color-caution-rule: oklch(0.44 0.062 72);
     --color-positive: oklch(0.765 0.115 152);
+    --color-file-code: oklch(0.78 0.1 258);
+    --color-file-data: oklch(0.8 0.095 95);
+    --color-file-media: oklch(0.79 0.1 315);
+    --color-file-sheet: oklch(0.765 0.115 152);
   }
 }
 

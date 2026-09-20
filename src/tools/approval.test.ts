@@ -15,6 +15,16 @@ describe('isGatedTool', () => {
     }
   })
 
+  it('gates the user-tool dispatcher in every mode below god', () => {
+    expect(isGatedTool('call_user_tool')).toBe(true)
+    expect(resolveApprovalStatus('read_only', undefined, 'call_user_tool')).toBe('user-approval')
+    expect(resolveApprovalStatus('editing', undefined, 'call_user_tool')).toBe('user-approval')
+    expect(resolveApprovalStatus('god', undefined, 'call_user_tool')).toBe('approved')
+    expect(resolveApprovalStatus('editing', { tools: { call_user_tool: 'deny' } }, 'call_user_tool')).toBe(
+      'denied',
+    )
+  })
+
   it('gates the six harness-management mutations and not the two list tools', () => {
     for (const name of [
       'create_skill',

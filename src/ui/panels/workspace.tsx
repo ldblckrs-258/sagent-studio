@@ -1,10 +1,4 @@
-import {
-  ChevronDown,
-  ChevronRight,
-  File as FileIcon,
-  Folder,
-  RefreshCw,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useWorkspaceStore } from "../../session/workspace-state";
 import {
@@ -16,6 +10,8 @@ import { isPickerAvailable } from "../../workspace/handle";
 import type { TreeNode } from "../../workspace/tree";
 import { buildTreeEntries, flattenTree } from "../../workspace/tree";
 import { Button } from "../primitives";
+import { fileLookFor, folderLookFor } from "./file-icon";
+import { useWorkspaceTreeStore } from "./workspace-tree-state";
 
 function messageOf(error: unknown): string {
   if (error instanceof WorkspaceError) return error.message;
@@ -31,11 +27,20 @@ function WorkspaceTree({
   onOpenFile(path: string): void;
 }) {
   const markDenied = useWorkspaceStore((s) => s.markDenied);
-  const [rootNodes, setRootNodes] = useState<TreeNode[]>([]);
-  const [children, setChildren] = useState<Map<string, TreeNode[]>>(new Map());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const source = useWorkspaceTreeStore((s) => s.source);
+  const rootNodes = useWorkspaceTreeStore((s) => s.rootNodes);
+  const children = useWorkspaceTreeStore((s) => s.children);
+  const expanded = useWorkspaceTreeStore((s) => s.expanded);
+  const setRoot = useWorkspaceTreeStore((s) => s.setRoot);
+  const cacheChildren = useWorkspaceTreeStore((s) => s.cacheChildren);
+  const expand = useWorkspaceTreeStore((s) => s.expand);
+  const collapse = useWorkspaceTreeStore((s) => s.collapse);
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+
+  // The cached tree belongs to one folder; until the roots for this one land,
+  // the previous folder's nodes must not be drawn.
+  const ready = source === fs;
 
   const report = useCallback(
     (cause: unknown) => {
@@ -46,11 +51,12 @@ function WorkspaceTree({
   );
 
   useEffect(() => {
+    if (ready) return;
     let cancelled = false;
     void (async () => {
       try {
         const entries = await fs.list("");
-        if (!cancelled) setRootNodes(buildTreeEntries(entries, ""));
+        if (!cancelled) setRoot(fs, buildTreeEntries(entries, ""));
       } catch (cause) {
         if (!cancelled) report(cause);
       }
@@ -58,7 +64,7 @@ function WorkspaceTree({
     return () => {
       cancelled = true;
     };
-  }, [fs, report]);
+  }, [fs, ready, setRoot, report]);
 
   const toggle = async (node: TreeNode) => {
     if (node.kind === "file") {
@@ -66,18 +72,14 @@ function WorkspaceTree({
       return;
     }
     if (expanded.has(node.path)) {
-      const next = new Set(expanded);
-      next.delete(node.path);
-      setExpanded(next);
+      collapse(node.path);
       return;
     }
     if (!children.has(node.path)) {
       setLoading((prev) => new Set(prev).add(node.path));
       try {
         const entries = await fs.list(node.path);
-        setChildren((prev) =>
-          new Map(prev).set(node.path, buildTreeEntries(entries, node.path)),
-        );
+        cacheChildren(node.path, buildTreeEntries(entries, node.path));
       } catch (cause) {
         report(cause);
         return;
@@ -89,10 +91,10 @@ function WorkspaceTree({
         });
       }
     }
-    setExpanded((prev) => new Set(prev).add(node.path));
+    expand(node.path);
   };
 
-  const flat = flattenTree(rootNodes, children, expanded);
+  const flat = ready ? flattenTree(rootNodes, children, expanded) : [];
 
   return (
     <div className="flex flex-col gap-1">
@@ -101,40 +103,46 @@ function WorkspaceTree({
           {error}
         </p>
       ) : null}
-      {flat.length === 0 ? (
+      {ready && flat.length === 0 ? (
         <p className="px-1 text-xs text-faint">This folder is empty.</p>
       ) : null}
       <ul>
-        {flat.map((node) => (
-          <li key={node.path}>
-            <button
-              type="button"
-              onClick={() => void toggle(node)}
-              className="flex w-full items-center gap-1.5 rounded-sm px-1 py-1 text-left text-sm text-ink hover:bg-paper-sunk"
-              style={{ paddingLeft: `${node.depth * 12 + 4}px` }}
-            >
-              {node.kind === "directory" ? (
-                <>
-                  {expanded.has(node.path) ? (
+        {flat.map((node) => {
+          const isDirectory = node.kind === "directory";
+          const open = isDirectory && expanded.has(node.path);
+          const { Icon, className } = isDirectory
+            ? folderLookFor(open)
+            : fileLookFor(node.path);
+          return (
+            <li key={node.path}>
+              <button
+                type="button"
+                onClick={() => void toggle(node)}
+                className="flex w-full items-center gap-1.5 rounded-sm px-1 py-1 text-left text-sm text-ink hover:bg-paper-sunk"
+                style={{ paddingLeft: `${node.depth * 12 + 4}px` }}
+              >
+                {isDirectory ? (
+                  open ? (
                     <ChevronDown size={14} strokeWidth={1.75} />
                   ) : (
                     <ChevronRight size={14} strokeWidth={1.75} />
-                  )}
-                  <Folder size={14} strokeWidth={1.75} />
-                </>
-              ) : (
-                <>
+                  )
+                ) : (
                   <span className="w-3.5" />
-                  <FileIcon size={14} strokeWidth={1.75} />
-                </>
-              )}
-              <span className="min-w-0 flex-1 truncate">{node.name}</span>
-              {loading.has(node.path) ? (
-                <span className="text-xs text-faint">…</span>
-              ) : null}
-            </button>
-          </li>
-        ))}
+                )}
+                <Icon
+                  size={14}
+                  strokeWidth={1.75}
+                  className={`shrink-0 ${className}`}
+                />
+                <span className="min-w-0 flex-1 truncate">{node.name}</span>
+                {loading.has(node.path) ? (
+                  <span className="text-xs text-faint">…</span>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -152,7 +160,6 @@ export function WorkspacePanel({
   const pick = useWorkspaceStore((s) => s.pick);
   const regrant = useWorkspaceStore((s) => s.regrant);
   const restore = useWorkspaceStore((s) => s.restore);
-  const [reloadKey, setReloadKey] = useState(0);
 
   const refresh = async () => {
     if (fs) {
@@ -163,8 +170,10 @@ export function WorkspacePanel({
         return;
       }
     }
+    // Refresh is the one action that means "re-read the folder", so the cached
+    // tree goes even though the folder itself has not changed.
+    useWorkspaceTreeStore.getState().reset();
     await restore();
-    setReloadKey((key) => key + 1);
   };
 
   return (
@@ -221,11 +230,7 @@ export function WorkspacePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {fs && status !== "denied" ? (
-          <WorkspaceTree
-            key={`${folderName}-${reloadKey}`}
-            fs={fs}
-            onOpenFile={onOpenFile}
-          />
+          <WorkspaceTree fs={fs} onOpenFile={onOpenFile} />
         ) : (
           <p className="px-1 text-xs text-faint">
             {status === "denied"

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { abortersCount, useChatStore } from '../chat/store'
 import { defaultThreadConfig } from '../chat/types'
+import { db } from '../vault/db'
+import { threadHandleId } from '../workspace/handle'
+import { useWorkspaceStore } from './workspace-state'
 import type { CodeRunner } from '../sandbox/types'
 import { isGatedTool } from '../tools/approval'
 import type { CodeToolRunners } from '../tools/builtin/code'
@@ -10,9 +13,59 @@ function noopRunner(): CodeRunner {
   return { run: async () => ({ stdout: '', stderr: '', result: null }) }
 }
 
+/**
+ * The folder binding is fired and forgotten by the chat-store subscription and
+ * reads IndexedDB, so it settles on a real task, not a microtask.
+ */
+async function expectFolder(name: string | null): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (useWorkspaceStore.getState().folderName === name) break
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  expect(useWorkspaceStore.getState().folderName).toBe(name)
+}
+
 describe('createSession', () => {
   beforeEach(() => {
     useChatStore.getState().clear()
+  })
+
+  it('follows the open conversation to the folder bound to it', async () => {
+    const folder = (name: string) =>
+      ({ name, kind: 'directory' }) as unknown as FileSystemDirectoryHandle
+    await db.fs.put({ id: threadHandleId('t-a'), handle: folder('folder-a'), updatedAt: 1 })
+    await db.fs.put({ id: threadHandleId('t-b'), handle: folder('folder-b'), updatedAt: 1 })
+    const session = createSession()
+
+    useChatStore.getState().setActiveThread('t-a')
+    await expectFolder('folder-a')
+
+    useChatStore.getState().setActiveThread('t-b')
+    await expectFolder('folder-b')
+
+    useChatStore.getState().setActiveThread('t-a')
+    await expectFolder('folder-a')
+
+    session.dispose()
+    await useWorkspaceStore.getState().clear()
+    await db.fs.delete(threadHandleId('t-a'))
+    await db.fs.delete(threadHandleId('t-b'))
+  })
+
+  it('stops following conversations once disposed', async () => {
+    await db.fs.put({
+      id: threadHandleId('t-a'),
+      handle: { name: 'folder-a', kind: 'directory' } as unknown as FileSystemDirectoryHandle,
+      updatedAt: 1,
+    })
+    const session = createSession()
+    session.dispose()
+
+    useChatStore.getState().setActiveThread('t-a')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(useWorkspaceStore.getState().folderName).toBeNull()
+
+    await db.fs.delete(threadHandleId('t-a'))
   })
 
   it('memoizes one engine per thread and disposes it', () => {
@@ -35,6 +88,7 @@ describe('createSession', () => {
     const session = createSession()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
@@ -44,6 +98,7 @@ describe('createSession', () => {
     await session.toolRegistry.hydrate()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
@@ -61,12 +116,13 @@ describe('createSession', () => {
 
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
     ])
     enabled = false
-    expect(session.toolRegistry.availableNames({})).toEqual(['change_mode'])
+    expect(session.toolRegistry.availableNames({})).toEqual(['change_mode', 'read_tool_guide'])
 
     session.dispose()
   })

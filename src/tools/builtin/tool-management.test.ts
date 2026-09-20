@@ -79,6 +79,27 @@ async function run(name: string, toolAdmin: ToolAdminPort, input: unknown) {
   return built.execute(input, CALL_OPTIONS)
 }
 
+async function dispatch(
+  toolAdmin: ToolAdminPort,
+  input: unknown,
+  extra: Partial<ToolRuntimePorts> = {},
+) {
+  const provider = createToolManagementProvider()
+  const built = provider.create('call_user_tool', { toolAdmin, ...extra })
+  if (!built.execute) throw new Error('missing execute')
+  return built.execute(input, CALL_OPTIONS)
+}
+
+function okFetch(onUrl: (url: string) => void): typeof fetch {
+  return (async (url: string | URL | Request) => {
+    onUrl(String(url))
+    return new Response('{"ok":true}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+}
+
 const SANDBOX_SOURCE = 'return input'
 
 describe('tool management provider', () => {
@@ -122,6 +143,23 @@ describe('tool management provider', () => {
         source: SANDBOX_SOURCE,
       }),
     ).toMatchObject({ ok: false, code: 'invalid_input' })
+  })
+
+  it('rejects a request template whose placeholder would never interpolate', async () => {
+    const admin = fakeToolAdmin()
+    const result = await run('create_tool', admin.port, {
+      kind: 'http',
+      name: 'demo_get_post',
+      description: '',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      request: {
+        url: 'https://api.example.com/posts/{{id}}',
+        allowedOrigins: ['https://api.example.com'],
+      },
+    })
+    expect(result).toMatchObject({ ok: false, code: 'invalid_input' })
+    expect((result as { message: string }).message).toContain('{{id}}')
+    expect(admin.rows.has('demo_get_post')).toBe(false)
   })
 
   it('rejects a builtin or existing user name with conflict', async () => {
@@ -196,5 +234,59 @@ describe('tool management provider', () => {
       code: 'ok',
     })
     expect(admin.rows.has('gone')).toBe(false)
+  })
+
+  it('calls a user tool created in the same turn through call_user_tool', async () => {
+    const admin = fakeToolAdmin()
+    await admin.port.create({
+      ...httpDefinition('fresh_tool'),
+      request: {
+        method: 'GET',
+        url: 'https://api.example.com/posts/{{input.id}}',
+        allowedOrigins: ['https://api.example.com'],
+      },
+    })
+
+    let seen = ''
+    const result = await dispatch(
+      admin.port,
+      { name: 'fresh_tool', input: { id: '7' } },
+      { fetch: okFetch((url) => (seen = url)) },
+    )
+
+    expect(result).toMatchObject({ ok: true, code: 'ok' })
+    expect(seen).toBe('https://api.example.com/posts/7')
+  })
+
+  it('reports an unknown or disabled target instead of calling it', async () => {
+    const admin = fakeToolAdmin()
+    expect(await dispatch(admin.port, { name: 'nope' })).toMatchObject({
+      ok: false,
+      code: 'not_found',
+    })
+
+    await admin.port.create(httpDefinition('off_tool', false))
+    expect(await dispatch(admin.port, { name: 'off_tool' })).toMatchObject({
+      ok: false,
+      code: 'disabled',
+    })
+  })
+
+  it('refuses a target the approval policy denies', async () => {
+    const admin = fakeToolAdmin()
+    await admin.port.create(httpDefinition('denied_tool'))
+
+    let called = false
+    const result = await dispatch(
+      admin.port,
+      { name: 'denied_tool' },
+      {
+        approvals: { decision: () => 'deny' },
+        fetch: okFetch(() => (called = true)),
+      },
+    )
+
+    expect(result).toMatchObject({ ok: false, code: 'denied' })
+    expect(called).toBe(false)
   })
 })

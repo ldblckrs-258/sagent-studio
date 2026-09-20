@@ -1,5 +1,8 @@
 import { jsonSchema, tool } from 'ai'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
+import { toolGuideHint } from './tool-guide'
+import { assertRequestTemplates } from '../http'
+import { executeUserTool } from '../user-tool'
 import { assertHttpDefinition } from '../store'
 import {
   ToolNameConflictError,
@@ -19,7 +22,16 @@ import type {
   ToolProvider,
 } from '../types'
 
-const NAMES = ['list_user_tools', 'create_tool', 'update_tool', 'delete_tool'] as const
+const NAMES = [
+  'list_user_tools',
+  'create_tool',
+  'update_tool',
+  'delete_tool',
+  'call_user_tool',
+] as const
+
+const NEXT_TURN_NOTE =
+  'A tool joins the model tool list at the start of the next turn. To use it during this turn, call it through call_user_tool.'
 
 function asRecord(input: unknown): Record<string, unknown> {
   return typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
@@ -98,12 +110,19 @@ function assertValid(definition: ToolDefinition): void {
     return
   }
   assertHttpDefinition(definition)
+  assertRequestTemplates(definition.request, definition.name)
 }
 
+const GUIDE_HINT = toolGuideHint('custom_tools')
+
 function mapPortError(error: unknown) {
-  if (error instanceof ToolNameConflictError) return toolFail('conflict', error.message)
+  if (error instanceof ToolNameConflictError) {
+    return toolFail('conflict', error.message, { hint: GUIDE_HINT })
+  }
   if (error instanceof ToolNotFoundError) return toolFail('not_found', error.message)
-  if (error instanceof ToolSchemaError) return toolFail('invalid_input', error.message)
+  if (error instanceof ToolSchemaError) {
+    return toolFail('invalid_input', error.message, { hint: GUIDE_HINT })
+  }
   return null
 }
 
@@ -162,17 +181,22 @@ export function createToolManagementProvider(): ToolProvider {
               const port = ports.toolAdmin
               if (!port) throw new ToolRuntimeUnavailableError(name)
               const built = buildDefinition(asRecord(input))
-              if ('error' in built) return toolFail('invalid_input', built.error)
+              if ('error' in built) {
+                return toolFail('invalid_input', built.error, { hint: GUIDE_HINT })
+              }
               try {
                 assertValid(built)
               } catch (error) {
                 return mapPortError(error) ?? rethrowUnmapped(error)
               }
               if (port.hasTool(built.name)) {
-                return toolFail('conflict', `A tool named "${built.name}" already exists.`)
+                return toolFail('conflict', `A tool named "${built.name}" already exists.`, {
+                  hint: GUIDE_HINT,
+                })
               }
               try {
-                return toolOk(await port.create(built))
+                const created = await port.create(built)
+                return toolOk({ ...created, note: NEXT_TURN_NOTE })
               } catch (error) {
                 return mapPortError(error) ?? rethrowUnmapped(error)
               }
@@ -231,17 +255,25 @@ export function createToolManagementProvider(): ToolProvider {
                 merged.request = record.request ?? current.request
               }
               const built = buildDefinition(merged)
-              if ('error' in built) return toolFail('invalid_input', built.error)
+              if ('error' in built) {
+                return toolFail('invalid_input', built.error, { hint: GUIDE_HINT })
+              }
               try {
                 assertValid(built)
               } catch (error) {
                 return mapPortError(error) ?? rethrowUnmapped(error)
               }
               if (built.name !== from && port.hasTool(built.name)) {
-                return toolFail('conflict', `A tool named "${built.name}" already exists.`)
+                return toolFail('conflict', `A tool named "${built.name}" already exists.`, {
+                  hint: GUIDE_HINT,
+                })
               }
               try {
-                return toolOk(await port.update(from, built))
+                const updated = await port.update(from, built)
+                return toolOk({
+                  ...updated,
+                  ...(updated.name === from ? {} : { note: NEXT_TURN_NOTE }),
+                })
               } catch (error) {
                 return mapPortError(error) ?? rethrowUnmapped(error)
               }
@@ -271,6 +303,49 @@ export function createToolManagementProvider(): ToolProvider {
               } catch (error) {
                 return mapPortError(error) ?? rethrowUnmapped(error)
               }
+            }),
+          })
+        case 'call_user_tool':
+          return tool({
+            description:
+              'Call a custom user tool by name, resolving its definition when the call runs. Use it for a tool that was created, renamed, or enabled during this turn, because such a tool only joins the model tool list on the next turn. Call an already-listed tool directly instead.',
+            inputSchema: jsonSchema<{ name: string; input?: Record<string, unknown> }>({
+              type: 'object',
+              properties: { name: { type: 'string' }, input: { type: 'object' } },
+              required: ['name'],
+            } as Parameters<typeof jsonSchema>[0]),
+            execute: wrapToolExecute(async (raw) => {
+              const port = ports.toolAdmin
+              if (!port) throw new ToolRuntimeUnavailableError(name)
+              const record = asRecord(raw)
+              const target = readString(record, 'name') ?? ''
+              if (target.length === 0) {
+                return toolFail('invalid_input', 'name must be a non-empty tool name.')
+              }
+              const definition = port.get(target)
+              if (!definition) {
+                const available = port
+                  .list()
+                  .map((entry) => entry.name)
+                  .join(', ')
+                return toolFail('not_found', `No user tool named "${target}".`, {
+                  hint: available.length > 0 ? `User tools: ${available}.` : undefined,
+                })
+              }
+              if (!definition.enabled) {
+                return toolFail('disabled', `The user tool "${target}" is disabled.`, {
+                  hint: 'Enable it with update_tool before calling it.',
+                })
+              }
+              if (ports.approvals?.decision(target) === 'deny') {
+                return toolFail(
+                  'denied',
+                  `The user tool "${target}" is denied by the approval policy.`,
+                  { hint: 'Change the policy for that tool in the approvals settings.' },
+                )
+              }
+              const input = isPlainObject(record.input) ? record.input : {}
+              return executeUserTool(definition, input, ports)
             }),
           })
         default:

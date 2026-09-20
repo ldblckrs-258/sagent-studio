@@ -1,27 +1,22 @@
 import { jsonSchema, tool } from 'ai'
 import type { Tool, ToolSet } from 'ai'
-import { executeHttpTool } from './http'
-import { toolFail, toolOk, wrapToolExecute } from './result'
+import { toolFail, wrapToolExecute } from './result'
 import { toolStore } from './store'
 import {
   ToolNameConflictError,
   ToolNotFoundError,
-  ToolRuntimeUnavailableError,
   ToolSchemaError,
   assertPlainSchema,
   isToolDefinition,
   validateToolName,
 } from './types'
 import type { ToolDefinition, ToolProvider, ToolRuntimePorts } from './types'
+import { executeUserTool } from './user-tool'
 
 export interface ToolStore {
   save(definition: ToolDefinition): Promise<void>
   remove(name: string): Promise<void>
   list(): Promise<ToolDefinition[]>
-}
-
-function bindInput(source: string, input: unknown): string {
-  return `const input = ${JSON.stringify(input ?? null)};\n${source}`
 }
 
 function asJsonSchema(schema: Record<string, unknown>): Parameters<typeof jsonSchema>[0] {
@@ -161,32 +156,28 @@ export class ToolRegistry {
     return toolSet
   }
 
-  private createUserTool(definition: ToolDefinition, ports: ToolRuntimePorts): Tool {
-    const shared = {
-      description: definition.description,
-      inputSchema: jsonSchema(asJsonSchema(definition.inputSchema)),
-    }
+  private currentUserTool(definition: ToolDefinition): ToolDefinition | undefined {
+    const live = this.userTools.get(definition.name)
+    if (!live || !live.enabled || live.kind !== definition.kind) return undefined
+    return live
+  }
 
-    if (definition.kind === 'sandbox-js') {
-      return tool({
-        ...shared,
-        execute: wrapToolExecute(async (input: unknown) => {
-          if (!ports.codeRunner) throw new ToolRuntimeUnavailableError(definition.name)
-          const result = await ports.codeRunner.run(bindInput(definition.source, input), {
-            timeoutMs: definition.timeoutMs,
-            ...(ports.journal ? { journal: ports.journal } : {}),
-          })
-          if (result.error !== undefined) {
-            return toolFail('runtime_error', result.error, { value: result })
-          }
-          return toolOk(result)
-        }),
-      })
-    }
+  private createUserTool(definition: ToolDefinition, ports: ToolRuntimePorts): Tool {
+    const stale = () =>
+      toolFail(
+        'not_found',
+        `The tool "${definition.name}" was renamed, disabled, or removed during this turn.`,
+        { hint: 'Call list_user_tools to see the current definitions.' },
+      )
 
     return tool({
-      ...shared,
-      execute: async (input: unknown) => executeHttpTool(definition.request, input, ports.fetch),
+      description: definition.description,
+      inputSchema: jsonSchema(asJsonSchema(definition.inputSchema)),
+      execute: wrapToolExecute(async (input: unknown) => {
+        const live = this.currentUserTool(definition)
+        if (!live) return stale()
+        return executeUserTool(live, input, ports)
+      }),
     })
   }
 }

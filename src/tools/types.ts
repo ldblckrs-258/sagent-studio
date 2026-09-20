@@ -2,6 +2,7 @@ import type { Tool } from 'ai'
 import type { CodeRunner } from '../sandbox/types'
 import type { WorkspaceJournal } from '../workspace/journal'
 import type { ChatMode, PlanItem } from '../chat/types'
+import type { ApprovalDecision } from '../vault/settings'
 
 export type JsonSchemaObject = Record<string, unknown>
 
@@ -203,6 +204,10 @@ export interface ToolAdminPort {
   remove(name: string): Promise<void>
 }
 
+export interface ApprovalPolicyPort {
+  decision(toolName: string): ApprovalDecision
+}
+
 export interface ToolRuntimePorts {
   codeRunner?: CodeRunner
   workspace?: WorkspaceApi
@@ -216,6 +221,7 @@ export interface ToolRuntimePorts {
   preview?: PreviewPort
   skillAdmin?: SkillAdminPort
   toolAdmin?: ToolAdminPort
+  approvals?: ApprovalPolicyPort
 }
 
 export interface ToolProvider {
