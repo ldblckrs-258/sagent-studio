@@ -49,6 +49,12 @@ declare global {
 
 export const DEFAULT_SIZE_CAP = 2 * 1024 * 1024;
 
+/**
+ * Media and document previews are read as blobs, not decoded text, so they get a
+ * separate ceiling from the text editor's `DEFAULT_SIZE_CAP`.
+ */
+export const DEFAULT_BINARY_SIZE_CAP = 100 * 1024 * 1024;
+
 export const DEFAULT_RECURSIVE_MAX_ENTRIES = 1000;
 
 const SEGMENT = /^[^<>:"|?*\0\\/]+$/;
@@ -429,6 +435,35 @@ class FileWorkspaceFs implements WorkspaceFs {
     options: WorkspaceSearchOptions,
   ): Promise<WorkspaceSearchResult> {
     return this.searchRunner.search(options);
+  }
+}
+
+/**
+ * Reads a workspace file as a `Blob` without decoding it. Used by binary
+ * previews (images, media, DOCX, spreadsheets); text flows through
+ * `WorkspaceFs.readFile` and its smaller cap instead. Kept as a function rather
+ * than an interface member so existing `WorkspaceFs` mocks stay valid.
+ */
+export async function readWorkspaceBlob(
+  fs: WorkspaceFs,
+  path: string,
+  options: { maxBytes?: number } = {},
+): Promise<Blob> {
+  const segments = resolveSegments(path);
+  if (segments.length === 0) throw new WorkspacePathError(path);
+  await fs.ensurePermission("read");
+  try {
+    let directory = fs.handle;
+    for (const segment of segments.slice(0, -1)) {
+      directory = await directory.getDirectoryHandle(segment);
+    }
+    const handle = await directory.getFileHandle(segments[segments.length - 1]);
+    const file = await handle.getFile();
+    const cap = options.maxBytes ?? DEFAULT_BINARY_SIZE_CAP;
+    if (file.size > cap) throw new WorkspaceLimitError(path);
+    return file;
+  } catch (error) {
+    mapDomError(error, segments.join("/"));
   }
 }
 

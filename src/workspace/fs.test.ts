@@ -9,7 +9,7 @@ import {
 } from "./errors";
 import { createFakeWorkspace } from "./fake-handle";
 import type { WorkspaceFs } from "./fs";
-import { createWorkspaceFs, resolveSegments } from "./fs";
+import { createWorkspaceFs, readWorkspaceBlob, resolveSegments } from "./fs";
 import { createInlineSearchRunner } from "./search-runner";
 
 function buildFs(initial: Record<string, string> = {}, sizeCap?: number) {
@@ -373,6 +373,47 @@ describe("WorkspaceFs.move and copy", () => {
       WorkspacePermissionError,
     );
     await expect(fs.move("a.txt", "b.txt")).rejects.toBeInstanceOf(
+      WorkspacePermissionError,
+    );
+  });
+});
+
+describe("readWorkspaceBlob", () => {
+  it("returns the file as a blob without decoding it as text", async () => {
+    const { fs } = buildFs({ "assets/pixel.png": "hello" });
+    const blob = await readWorkspaceBlob(fs, "assets/pixel.png");
+    expect(blob.size).toBe(5);
+    await expect(blob.text()).resolves.toBe("hello");
+  });
+
+  it("rejects a missing file", async () => {
+    const { fs } = buildFs();
+    await expect(readWorkspaceBlob(fs, "missing.png")).rejects.toBeInstanceOf(
+      WorkspaceNotFoundError,
+    );
+  });
+
+  it("rejects a file above the byte cap", async () => {
+    const { fs } = buildFs({ "big.png": "hello" });
+    await expect(
+      readWorkspaceBlob(fs, "big.png", { maxBytes: 2 }),
+    ).rejects.toBeInstanceOf(WorkspaceLimitError);
+  });
+
+  it("rejects traversal and empty paths", async () => {
+    const { fs } = buildFs({ "a.png": "x" });
+    await expect(readWorkspaceBlob(fs, "../secret.png")).rejects.toBeInstanceOf(
+      WorkspacePathError,
+    );
+    await expect(readWorkspaceBlob(fs, "")).rejects.toBeInstanceOf(
+      WorkspacePathError,
+    );
+  });
+
+  it("rejects when the handle permission is denied", async () => {
+    const { fake, fs } = buildFs({ "a.png": "x" });
+    fake.setPermission("denied");
+    await expect(readWorkspaceBlob(fs, "a.png")).rejects.toBeInstanceOf(
       WorkspacePermissionError,
     );
   });

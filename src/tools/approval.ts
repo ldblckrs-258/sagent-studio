@@ -32,6 +32,7 @@ const READ_ONLY_TOOLS = new Set([
   'stat',
   'file_info',
   'search',
+  'open_preview',
   'load_skill',
   'update_plan',
   'change_mode',

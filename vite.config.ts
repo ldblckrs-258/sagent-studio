@@ -32,7 +32,14 @@ import { defineConfig } from "vite";
 function cspPlugin(): Plugin {
   const policy = [
     "default-src 'self'",
-    "script-src 'self'",
+    // `blob:` lets the model-artifact preview serve its document and its
+    // externalized scripts from app-created blob URLs. A blob URL can only be
+    // minted by same-origin script that is already executing, so this does not
+    // turn injected text into code the way 'unsafe-inline' would; that directive
+    // must never be added. The artifact frame itself is sandboxed without
+    // `allow-same-origin`, so it cannot read app storage or the parent DOM.
+    "script-src 'self' blob:",
+    "frame-src 'self' blob:",
     "worker-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",

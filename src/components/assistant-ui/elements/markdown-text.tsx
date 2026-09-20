@@ -9,13 +9,21 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useMemo, useRef } from "react";
+import {
+  type FC,
+  type MouseEvent as ReactMouseEvent,
+  memo,
+  useMemo,
+  useRef,
+} from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { useFileViewStore } from "@/session/file-view-state";
+import { absoluteHttpUrl } from "@/ui/file-view/kind";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
@@ -147,15 +155,29 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  a: ({ className, href, onClick, ...props }) => {
+    const openInPanel = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      onClick?.(event);
+      if (event.defaultPrevented) return;
+      // Modifier-click keeps the browser's new-tab behavior.
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const url = absoluteHttpUrl(href);
+      if (!url) return;
+      event.preventDefault();
+      useFileViewStore.getState().openUrl(url);
+    };
+    return (
+      <a
+        className={cn(
+          "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
+          className,
+        )}
+        href={href}
+        onClick={openInPanel}
+        {...props}
+      />
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

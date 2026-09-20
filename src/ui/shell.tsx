@@ -9,20 +9,20 @@ import { rehydrateThread } from '../chat/sanitize'
 import { useChatRuntime } from '../chat/use-chat-runtime'
 import { useChatStore } from '../chat/store'
 import { useMediaQuery } from '../hooks/use-media-query'
+import { useFileViewStore } from '../session/file-view-state'
 import { useSession } from '../session/session-context'
 import { useVaultStore } from '../vault/store'
-import { useWorkspaceStore } from '../session/workspace-state'
 import { ApprovalsPanel } from './panels/approvals'
 import { ChatConfig } from './panels/chat-config'
 import type { ConfigTab } from './panels/chat-config'
 import { Conversations } from './panels/conversations'
 import { PlanPanel } from './plan-panel'
-import { FileEditorPanel } from './panels/file-editor'
+import { FilePanel } from './panels/file-editor'
 import { SandboxPanel } from './panels/sandbox'
 import { SkillsPanel } from './panels/skills'
 import { ToolsPanel } from './panels/tools'
 import { WorkspacePanel } from './panels/workspace'
-import { Button, EmptyState } from './primitives'
+import { Button } from './primitives'
 import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from './resize'
 import { ResizeHandle } from './resize-handle'
 import { Shortcuts } from './shortcuts'
@@ -224,11 +224,9 @@ export function Shell({ left }: { left?: ReactNode }) {
     }
   }, [session])
 
-  const workspaceFs = useWorkspaceStore((s) => s.fs)
   const [rail, setRail] = useState<RailPanelState>(readRailState)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [filePath, setFilePath] = useState<string | null>(null)
   const [configTab, setConfigTab] = useState<ConfigTab>('thread')
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const railTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -265,10 +263,26 @@ export function Shell({ left }: { left?: ReactNode }) {
   const panelMax = panelWidthMax(viewportWidth)
   const panelWidth = clampPanelWidth(rail.width, viewportWidth)
 
-  const openFile = (path: string) => {
-    setFilePath(path)
-    setRail((prev) => ({ ...prev, open: true, activePanel: 'files' }))
-  }
+  const openWorkspaceFile = useFileViewStore((s) => s.openWorkspace)
+
+  // Every entry point that sets a target — the Workspace tree, the File panel's
+  // URL bar, or a chat link — reveals the File panel. Subscribing keeps the
+  // setState in a store callback rather than in the effect body.
+  useEffect(
+    () =>
+      useFileViewStore.subscribe((state) => {
+        if (!state.target) return
+        setRail((prev) =>
+          prev.open && prev.activePanel === 'files'
+            ? prev
+            : { ...prev, open: true, activePanel: 'files' },
+        )
+      }),
+    [],
+  )
+
+  const openWorkspacePanel = () =>
+    setRail((prev) => ({ ...prev, open: true, activePanel: 'workspace' }))
 
   const panels: RailPanelDef[] = [
     {
@@ -281,41 +295,13 @@ export function Shell({ left }: { left?: ReactNode }) {
       id: 'workspace',
       label: 'Workspace',
       icon: FolderTree,
-      render: () => <WorkspacePanel onOpenFile={openFile} />,
+      render: () => <WorkspacePanel onOpenFile={openWorkspaceFile} />,
     },
     {
       id: 'files',
       label: 'File',
       icon: FileText,
-      render: () =>
-        filePath && workspaceFs ? (
-          <FileEditorPanel fs={workspaceFs} path={filePath} onClose={() => setFilePath(null)} />
-        ) : (
-          <div className="p-3">
-            <EmptyState
-              icon={<FileText size={18} strokeWidth={1.5} />}
-              title={filePath ? 'File unavailable' : 'No file open'}
-              hint={
-                filePath
-                  ? 'The workspace folder is not available. Choose or grant it again, then reopen the file.'
-                  : workspaceFs
-                    ? 'Pick a file in the Workspace panel to view or edit it here.'
-                    : 'Choose a workspace folder first, then open a file.'
-              }
-              action={
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() =>
-                    setRail((prev) => ({ ...prev, open: true, activePanel: 'workspace' }))
-                  }
-                >
-                  Browse workspace
-                </Button>
-              }
-            />
-          </div>
-        ),
+      render: () => <FilePanel onBrowseWorkspace={openWorkspacePanel} />,
     },
     { id: 'skills', label: 'Skills', icon: Sparkles, render: () => <SkillsPanel /> },
     { id: 'tools', label: 'Tools', icon: Wrench, render: () => <ToolsPanel /> },

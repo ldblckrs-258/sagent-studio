@@ -162,4 +162,11 @@ describe('createSession', () => {
     ).toBe(true)
     session.dispose()
   })
+
+  it('lists the open_preview tool from the preview provider', () => {
+    const session = createSession()
+    const listed = session.builtinProviders(defaultThreadConfig('p1', 'm1'))
+    expect(listed.some((entry) => entry.name === 'open_preview')).toBe(true)
+    session.dispose()
+  })
 })

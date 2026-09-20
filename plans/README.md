@@ -1,6 +1,6 @@
 # Plans
 
-Four plans for sagent-studio. Core infrastructure ships first; the RAG pipeline
+Seven plans for sagent-studio. Core infrastructure ships first; the RAG pipeline
 and the core chat engine both build on the shared vault, settings store, and SDK
 factories, and the chat interface builds on the chat engine.
 
@@ -13,6 +13,8 @@ factories, and the chat interface builds on the chat engine.
 | 3 | [Core chat engine](./260919-0828-core-chat-engine/plan.md) | implemented (two manual gates pending) | Plan 1 | Streaming tool-using engine with editable history, skills, workspace tools, sandboxed runners |
 | 4 | [Chat interface](./260919-1437-chat-interface/plan.md) | implemented (browser gates pending) | Plan 3 | Three-column assistant-ui shell: workspace-grouped conversations, streaming thread with edit/rerun, workspace/file/chat-config/skills/tools/sandbox panels |
 | 5 | [Harness tools — autonomous core](./260919-1821-harness-tools/plan.md) | pending | Plan 3 (additive) | Result envelopes, surgical edit, bounded search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, thread plan tool, permission modes |
+| 6 | [File panel viewers — local files and links](./260920-0900-file-panel-viewers/plan.md) | implemented | Plan 4 (`File` panel) | File panel opens text/code, image, audio, video, HTML, CSV, XLSX, DOCX from the workspace, plus http(s) links from a URL bar and clickable chat links |
+| 7 | [Harness artifact preview](./260920-1246-harness-artifact-preview/plan.md) | implemented (browser gates pending) | Plan 5, Plan 6 | Model can open a workspace artifact via an `open_preview` tool; authored HTML renders in an opaque-origin runtime; Markdown, JSON, and Mermaid viewers |
 
 ## Sequencing
 

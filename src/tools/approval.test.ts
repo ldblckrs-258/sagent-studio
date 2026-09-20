@@ -96,6 +96,7 @@ describe('modeCeiling and resolveApprovalStatus', () => {
         'load_skill',
         'list_skills',
         'list_user_tools',
+        'open_preview',
         'read_file',
         'search',
         'stat',
@@ -104,6 +105,12 @@ describe('modeCeiling and resolveApprovalStatus', () => {
     )
     expect((ceiling as ReadonlySet<string>).has('create_skill')).toBe(false)
     expect((ceiling as ReadonlySet<string>).has('delete_tool')).toBe(false)
+  })
+
+  it('approves the navigational open_preview tool in every mode', () => {
+    expect(resolveApprovalStatus('read_only', { tools: {} }, 'open_preview')).toBe('approved')
+    expect(resolveApprovalStatus('editing', { tools: {} }, 'open_preview')).toBe('approved')
+    expect(resolveApprovalStatus('god', { tools: {} }, 'open_preview')).toBe('approved')
   })
 
   it('escalates harness mutations in read_only but approves the list tools', () => {

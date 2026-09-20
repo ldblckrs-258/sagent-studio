@@ -1,154 +1,139 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Save, X } from 'lucide-react'
-import { WorkspaceError } from '../../workspace/errors'
-import { DEFAULT_SIZE_CAP } from '../../workspace/fs'
-import type { WorkspaceFs } from '../../workspace/fs'
-import { MonacoEditor } from '../monaco-editor'
-import { Button } from '../primitives'
+import { useState } from 'react'
+import type { FormEvent } from 'react'
+import { ExternalLink, FileText, Link2, X } from 'lucide-react'
+import { targetKey, useFileViewStore } from '../../session/file-view-state'
+import { useWorkspaceStore } from '../../session/workspace-state'
+import { Badge, Button, EmptyState, Input } from '../primitives'
+import { DocxView } from '../file-view/docx-view'
+import { DiagramView } from '../file-view/diagram-view'
+import { EmbedView } from '../file-view/embed-view'
+import { HtmlView } from '../file-view/html-view'
+import { ImageView } from '../file-view/image-view'
+import { JsonView } from '../file-view/json-view'
+import { kindForTarget, kindLabel, normalizeRemoteInput, targetTitle } from '../file-view/kind'
+import { MarkdownView } from '../file-view/markdown-view'
+import { MediaView } from '../file-view/media-view'
+import { SheetView } from '../file-view/sheet-view'
+import { TextView } from '../file-view/text-view'
 
-const LANGUAGE_BY_EXTENSION: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'typescript',
-  js: 'javascript',
-  jsx: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  json: 'json',
-  md: 'markdown',
-  css: 'css',
-  html: 'html',
-  py: 'python',
-  yml: 'yaml',
-  yaml: 'yaml',
-  sh: 'shell',
-  toml: 'ini',
-}
-
-function languageFor(path: string): string {
-  const extension = path.split('.').pop()?.toLowerCase() ?? ''
-  return LANGUAGE_BY_EXTENSION[extension] ?? 'plaintext'
-}
-
-function messageOf(error: unknown): string {
-  if (error instanceof WorkspaceError) return error.message
-  if (error instanceof Error) return error.message
-  return 'The file operation failed.'
-}
-
-export function FileEditorPanel({
-  fs,
-  path,
-  onClose,
-}: {
-  fs: WorkspaceFs
-  path: string
-  onClose(): void
-}) {
-  const [saved, setSaved] = useState('')
-  const [draft, setDraft] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+function UrlBar({ onOpen }: { onOpen(url: string): void }) {
+  const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const content = await fs.readFile(path)
-        if (cancelled) return
-        setSaved(content)
-        setDraft(content)
-        setError(null)
-      } catch (cause) {
-        if (!cancelled) setError(messageOf(cause))
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const url = normalizeRemoteInput(value)
+    if (!url) {
+      setError('Enter an http(s) link.')
+      return
     }
-  }, [fs, path])
-
-  const dirty = draft !== saved
-  const byteLength = useMemo(() => new TextEncoder().encode(draft).byteLength, [draft])
-
-  const requestClose = () => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
-    onClose()
-  }
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      await fs.writeFile(path, draft)
-      setSaved(draft)
-      setError(null)
-    } catch (cause) {
-      // Keep the draft so the user does not lose text on a failed save.
-      setError(messageOf(cause))
-    } finally {
-      setSaving(false)
-    }
+    setError(null)
+    setValue('')
+    onOpen(url)
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-rule px-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-mono text-xs text-ink">{path}</span>
-          {dirty ? <span className="size-1.5 rounded-full bg-caution" aria-label="Unsaved changes" /> : null}
+    <form onSubmit={submit} className="flex shrink-0 flex-col gap-1 border-b border-rule p-2">
+      <div className="flex items-center gap-1.5">
+        <Link2 size={14} strokeWidth={1.75} className="shrink-0 text-faint" />
+        <Input
+          size="sm"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="Paste a link…"
+          aria-label="Open a link"
+          spellCheck={false}
+        />
+        <Button size="sm" variant="secondary" type="submit">
+          Open
+        </Button>
+      </div>
+      {error ? (
+        <span role="alert" className="font-mono text-xs text-danger">
+          {error}
+        </span>
+      ) : null}
+    </form>
+  )
+}
+
+export function FilePanel({ onBrowseWorkspace }: { onBrowseWorkspace(): void }) {
+  const target = useFileViewStore((s) => s.target)
+  const revision = useFileViewStore((s) => s.revision)
+  const openUrl = useFileViewStore((s) => s.openUrl)
+  const clear = useFileViewStore((s) => s.clear)
+  const fs = useWorkspaceStore((s) => s.fs)
+
+  if (!target) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <UrlBar onOpen={openUrl} />
+        <div className="p-3">
+          <EmptyState
+            icon={<FileText size={18} strokeWidth={1.5} />}
+            title="No file open"
+            hint="Pick a file in the Workspace panel, or paste a link above to preview it here."
+            action={
+              <Button size="sm" variant="secondary" onClick={onBrowseWorkspace}>
+                Browse workspace
+              </Button>
+            }
+          />
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            size="sm"
-            variant="quiet"
-            disabled={!dirty || saving || loading}
-            onClick={() => void save()}
-            icon={<Save size={14} strokeWidth={1.75} />}
-          >
-            Save
-          </Button>
-          <Button
-            size="sm"
-            variant="quiet"
-            disabled={!dirty}
-            onClick={() => setDraft(saved)}
-          >
-            Cancel
-          </Button>
+      </div>
+    )
+  }
+
+  const kind = kindForTarget(target)
+  const url = target.kind === 'url' ? target.url : null
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 flex-col gap-1 border-b border-rule px-2 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink" title={targetTitle(target)}>
+            {targetTitle(target)}
+          </span>
+          <Badge size="sm">{kindLabel(kind)}</Badge>
+          {url ? (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open link in new tab"
+              title="Open in new tab"
+              className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-sm text-muted transition-colors after:absolute after:-inset-1 after:content-[''] hover:text-ink"
+            >
+              <ExternalLink size={15} strokeWidth={1.75} />
+            </a>
+          ) : null}
           <button
             type="button"
             aria-label="Close file"
-            onClick={requestClose}
-            className="relative inline-flex size-7 items-center justify-center rounded-sm text-muted transition-colors after:absolute after:-inset-1 after:content-[''] hover:text-ink"
+            title="Close file"
+            onClick={clear}
+            className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-sm text-muted transition-colors after:absolute after:-inset-1 after:content-[''] hover:text-ink"
           >
             <X size={15} strokeWidth={1.75} />
           </button>
         </div>
       </div>
 
-      <p className="shrink-0 px-2 py-0.5 font-mono text-xs text-faint">
-        {byteLength.toLocaleString()} / {DEFAULT_SIZE_CAP.toLocaleString()} bytes
-      </p>
-
-      {error ? (
-        <p role="alert" className="shrink-0 border-y border-danger-rule bg-danger-soft px-2 py-1 font-mono text-xs text-danger">
-          {error}
-        </p>
-      ) : null}
-
-      <div className="min-h-0 flex-1">
-        {loading ? (
-          <p className="p-3 font-mono text-xs text-faint">Loading file…</p>
-        ) : (
-          <MonacoEditor
-            value={draft}
-            onChange={setDraft}
-            language={languageFor(path)}
-            className="h-full"
-          />
-        )}
+      <div className="min-h-0 flex-1" key={targetKey(target, revision)}>
+        {kind === 'text' ? <TextView fs={fs} target={target} /> : null}
+        {kind === 'html' ? <HtmlView fs={fs} target={target} /> : null}
+        {kind === 'image' ? <ImageView fs={fs} target={target} /> : null}
+        {kind === 'audio' || kind === 'video' ? (
+          <MediaView fs={fs} target={target} kind={kind} />
+        ) : null}
+        {kind === 'csv' || kind === 'spreadsheet' ? (
+          <SheetView fs={fs} target={target} kind={kind} />
+        ) : null}
+        {kind === 'docx' ? <DocxView fs={fs} target={target} /> : null}
+        {kind === 'markdown' ? <MarkdownView fs={fs} target={target} /> : null}
+        {kind === 'json' ? <JsonView fs={fs} target={target} /> : null}
+        {kind === 'diagram' ? <DiagramView fs={fs} target={target} /> : null}
+        {kind === 'embed' ? <EmbedView target={target} /> : null}
       </div>
     </div>
   )

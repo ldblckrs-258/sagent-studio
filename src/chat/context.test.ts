@@ -100,6 +100,16 @@ describe('composeSystemPrompt', () => {
     expect(composeSystemPrompt('base', [], [])).not.toContain('load_skill')
   })
 
+  it('adds preview guidance only when open_preview is available', () => {
+    const withPreview = composeSystemPrompt('base', [], ['open_preview'])
+    expect(withPreview).toContain('## Previewing artifacts')
+    expect(withPreview).toContain('open_preview')
+
+    expect(composeSystemPrompt('base', [], ['read_file'])).not.toContain(
+      '## Previewing artifacts',
+    )
+  })
+
   it('omits the skills block when there are no skills', () => {
     const prompt = composeSystemPrompt('base', [], ['read_file'])
     expect(prompt).not.toContain('## Skills')

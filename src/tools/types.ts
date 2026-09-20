@@ -125,6 +125,11 @@ export interface ThreadPlanPort {
   set(items: readonly PlanItem[]): Promise<void>
 }
 
+/** Lets a tool hand a workspace file to the File panel without importing a UI store. */
+export interface PreviewPort {
+  open(path: string): void
+}
+
 export interface SkillDraft {
   id: string
   name: string
@@ -179,6 +184,7 @@ export interface ToolRuntimePorts {
   mode?: ThreadModePort
   skills?: SkillLoadPort
   plan?: ThreadPlanPort
+  preview?: PreviewPort
   skillAdmin?: SkillAdminPort
   toolAdmin?: ToolAdminPort
 }

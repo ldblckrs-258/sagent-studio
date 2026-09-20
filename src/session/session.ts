@@ -12,11 +12,12 @@ import { createCodeToolProvider } from '../tools/builtin/code'
 import type { CodeRunnerSource } from '../tools/builtin/code'
 import { createModeToolProvider } from '../tools/builtin/mode'
 import { createPlanToolProvider } from '../tools/builtin/plan'
+import { createPreviewToolProvider } from '../tools/builtin/preview'
 import { createSandboxControlProvider } from '../tools/builtin/sandbox-control'
 import { createSkillManagementProvider } from '../tools/builtin/skill-management'
 import { createSkillToolProvider } from '../tools/builtin/skills'
 import { createToolManagementProvider } from '../tools/builtin/tool-management'
-import type { JsonSchemaObject, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
+import type { JsonSchemaObject, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
 import { ToolRegistry } from '../tools/registry'
 import { useVaultStore } from '../vault/store'
@@ -27,6 +28,7 @@ import {
 } from '../vault/settings'
 import type { SandboxSettings, Settings } from '../vault/settings'
 import type { WorkspaceFs } from '../workspace/fs'
+import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
 export interface BuiltinProviderInfo {
@@ -112,6 +114,11 @@ export function createSession(options: SessionOptions = {}): AppSession {
   }
   const getWorkspace = (): WorkspaceFs | null => useWorkspaceStore.getState().fs
   const getSettings = options.getSettings ?? (() => useVaultStore.getState().settings)
+  // The tool layer reaches the File panel only through this port, so it never
+  // imports a UI store directly. `presentWorkspace` marks model authorship.
+  const previewPort = (): PreviewPort => ({
+    open: (path) => useFileViewStore.getState().presentWorkspace(path),
+  })
 
   let manager: SandboxManager | null = null
   let unsubVault: (() => void) | null = null
@@ -177,6 +184,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const planProvider = createPlanToolProvider()
   const skillManagementProvider = createSkillManagementProvider()
   const toolManagementProvider = createToolManagementProvider()
+  const previewProvider = createPreviewToolProvider()
 
   if (!options.toolRegistry) {
     toolRegistry.registerProvider(workspaceToolProvider)
@@ -187,6 +195,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(planProvider)
     toolRegistry.registerProvider(skillManagementProvider)
     toolRegistry.registerProvider(toolManagementProvider)
+    toolRegistry.registerProvider(previewProvider)
   }
 
   const deps: EngineDeps = {
@@ -202,6 +211,9 @@ export function createSession(options: SessionOptions = {}): AppSession {
     },
     get sandbox() {
       return sandboxControlPort()
+    },
+    get preview() {
+      return previewPort()
     },
   }
 
@@ -251,6 +263,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         workspace: getWorkspace() ?? undefined,
         codeRunner: runnerSource.getRunners().js,
         sandbox: sandboxControlPort(),
+        preview: previewPort(),
         skills: createSkillLoadPort(skills),
         ...(config
           ? { plan: { get: () => [], set: async () => {} } }
@@ -266,6 +279,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         planProvider,
         skillManagementProvider,
         toolManagementProvider,
+        previewProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

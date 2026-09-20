@@ -16,6 +16,7 @@ import type {
   SkillLoadPort,
   ThreadModePort,
   ThreadPlanPort,
+  PreviewPort,
   WorkspaceApi,
 } from "../tools/types";
 import { VaultLockedError } from "../vault/errors";
@@ -46,6 +47,7 @@ export interface PipelineDeps {
   workspace?: WorkspaceApi;
   codeRunner?: CodeRunner;
   sandbox?: SandboxControlPort;
+  preview?: PreviewPort;
   /** Persists an `allow-always` decision. Defaults to the encrypted vault. */
   persistApproval?(
     toolName: string,
@@ -218,6 +220,7 @@ export async function buildRunStream(
     workspace: deps.workspace,
     codeRunner: deps.codeRunner,
     sandbox: deps.sandbox,
+    preview: deps.preview,
     mode: modePort,
     skills: createSkillLoadPort(skills),
     plan: planPort,
