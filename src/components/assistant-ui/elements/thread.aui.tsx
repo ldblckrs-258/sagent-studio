@@ -25,6 +25,8 @@ import { cn } from "@/lib/utils";
 import { ApprovalPrompt } from "@/ui/approval-prompt";
 import { ChatErrorBanner } from "@/ui/chat-error-banner";
 import { ComposerControls } from "@/ui/composer-controls";
+import { ContextMeter } from "@/ui/context-meter";
+import { SlashSuggestions } from "@/ui/slash-suggestions";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -33,6 +35,7 @@ import {
   ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
+  QueueItemPrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
   useAuiState,
@@ -54,9 +57,12 @@ import {
   PencilIcon,
   PhoneIcon,
   RefreshCwIcon,
+  ScissorsIcon,
+  SparklesIcon,
   SquareIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  XIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -231,6 +237,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadFollowupSuggestions />
             <ChatErrorBanner />
             <Composer autoFocus={autoFocus} />
+            <ContextMeter />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
@@ -247,11 +254,72 @@ const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
   const isSpoken = useAuiState((s) => s.message.metadata.modality === "voice");
+  const custom = useAuiState(
+    (s) =>
+      s.message.metadata.custom as
+        | {
+            skillDirective?: { name: string };
+            compaction?: { replacedCount: number };
+          }
+        | undefined,
+  );
+  const skillDirective = custom?.skillDirective;
+  const compaction = custom?.compaction;
 
   if (isEditing) return <EditComposer />;
   if (isSpoken) return <SpokenMessage />;
+  if (skillDirective) return <SkillDirectiveMarker name={skillDirective.name} />;
+  if (compaction) return <CompactionMarker replacedCount={compaction.replacedCount} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
+};
+
+/**
+ * A compaction boundary. It is deliberately not an assistant bubble: that
+ * would offer Regenerate, and regenerating it drops the boundary and silently
+ * un-compacts the thread. The summary is still readable on demand, since it is
+ * what the model now sees in place of the history above it.
+ */
+const CompactionMarker: FC<{ replacedCount: number }> = ({ replacedCount }) => {
+  return (
+    <details
+      data-slot="aui_compaction-marker"
+      className="border-rule text-muted group rounded-sm border border-dashed px-2.5 py-1.5 text-xs"
+    >
+      <summary className="hover:text-foreground flex cursor-pointer list-none items-center gap-2 transition-colors">
+        <ScissorsIcon size={12} strokeWidth={1.75} aria-hidden="true" />
+        <span>
+          Compacted{" "}
+          <span className="numeric font-mono">{replacedCount}</span>{" "}
+          {replacedCount === 1 ? "message" : "messages"} into a summary
+        </span>
+        <span className="text-faint ml-auto text-[10px] group-open:hidden">
+          show
+        </span>
+      </summary>
+      <div className="border-rule text-ink mt-2 border-t pt-2">
+        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+      </div>
+    </details>
+  );
+};
+
+/**
+ * A skill invocation is a real message the model reads, but reading it adds
+ * nothing for the user, so the transcript shows the fact of it on one line.
+ */
+const SkillDirectiveMarker: FC<{ name: string }> = ({ name }) => {
+  return (
+    <div
+      data-slot="aui_skill-directive"
+      className="text-muted flex items-center gap-2 text-xs"
+    >
+      <SparklesIcon size={12} strokeWidth={1.75} aria-hidden="true" />
+      <span>
+        Loaded skill <span className="font-mono text-ink">{name}</span>
+      </span>
+    </div>
+  );
 };
 
 type VoiceRunPosition = "single" | "start" | "middle" | "end";
@@ -422,21 +490,57 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
           data-slot="aui_composer-shell"
           className="border-foreground/10 focus-within:border-foreground/25 data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
         >
-          <ComposerPrimitive.Input
-            placeholder="Send a message..."
-            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
-            rows={1}
-            autoFocus={autoFocus}
-            enterKeyHint="send"
-            aria-label="Message input"
-          />
+          <SlashSuggestions>
+            <ComposerPrimitive.Input
+              placeholder="Send a message..."
+              className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
+              rows={1}
+              autoFocus={autoFocus}
+              enterKeyHint="send"
+              aria-label="Message input"
+            />
+          </SlashSuggestions>
           <div className="flex items-center justify-between gap-2">
             <ComposerControls />
             <ComposerAction />
           </div>
         </div>
       </ComposerPrimitive.AttachmentDropzone>
+      <ComposerQueue />
     </ComposerPrimitive.Root>
+  );
+};
+
+/**
+ * Messages typed during a run. They wait here in order and dispatch when the
+ * run settles; removing one drops it without touching the run.
+ */
+const ComposerQueue: FC = () => {
+  return (
+    <div
+      data-slot="aui_composer-queue"
+      className="mt-1.5 flex flex-col gap-1 empty:hidden"
+    >
+      <ComposerPrimitive.Queue>
+        {() => (
+          <div className="border-rule bg-paper-sunk text-muted flex items-center gap-2 rounded-sm border px-2 py-1 text-xs">
+            <span className="text-faint shrink-0 font-mono text-[10px]">
+              queued
+            </span>
+            <QueueItemPrimitive.Text className="min-w-0 flex-1 truncate" />
+            <QueueItemPrimitive.Remove asChild>
+              <button
+                type="button"
+                aria-label="Remove queued message"
+                className="hover:text-foreground shrink-0 transition-colors"
+              >
+                <XIcon size={12} strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            </QueueItemPrimitive.Remove>
+          </div>
+        )}
+      </ComposerPrimitive.Queue>
+    </div>
   );
 };
 

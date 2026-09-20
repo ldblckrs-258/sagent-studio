@@ -43,6 +43,23 @@ export interface SandboxSettings {
   idleTimeoutMs: number
 }
 
+/**
+ * The context window the chat measures itself against. It is user-supplied
+ * because `model-catalog.ts` discovers model ids from OpenAI-compatible
+ * endpoints and those endpoints report no context-window metadata, so there is
+ * nothing to infer the cap from.
+ */
+export interface ContextSettings {
+  maxContextTokens: number
+  autoCompactRatio: number
+  autoCompactEnabled: boolean
+}
+
+export const DEFAULT_MAX_CONTEXT_TOKENS = 128_000
+export const DEFAULT_AUTO_COMPACT_RATIO = 0.8
+export const MIN_AUTO_COMPACT_RATIO = 0.1
+export const MAX_AUTO_COMPACT_RATIO = 0.95
+
 export type ApprovalDecision = 'allow' | 'ask' | 'deny'
 
 export interface ApprovalSettings {
@@ -64,6 +81,7 @@ export interface Settings {
   rag: RagSettings
   sandbox: SandboxSettings
   approvals: ApprovalSettings
+  context: ContextSettings
   egressNoticeDismissed: boolean
   idleLockMinutes: number
   /**
@@ -99,9 +117,49 @@ export function defaultSettings(): Settings {
       idleTimeoutMs: DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
     },
     approvals: { tools: {} },
+    context: {
+      maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
+      autoCompactRatio: DEFAULT_AUTO_COMPACT_RATIO,
+      autoCompactEnabled: true,
+    },
     egressNoticeDismissed: false,
     idleLockMinutes: 15,
   }
+}
+
+/**
+ * Checks a context block and reports the first problem in the message. Throwing
+ * is what `migrate` catches to fall back to the defaults, so a vault written by
+ * hand stays loadable while a bad value never reaches the cap arithmetic.
+ */
+export function validateContextSettings(value: unknown): ContextSettings {
+  if (!isPlainObject(value)) {
+    throw new VaultMigrationError('The context settings must be an object.')
+  }
+  const maxContextTokens = value.maxContextTokens
+  if (
+    typeof maxContextTokens !== 'number' ||
+    !Number.isInteger(maxContextTokens) ||
+    maxContextTokens <= 0
+  ) {
+    throw new VaultMigrationError('maxContextTokens must be a positive integer.')
+  }
+  const autoCompactRatio = value.autoCompactRatio
+  if (
+    typeof autoCompactRatio !== 'number' ||
+    !Number.isFinite(autoCompactRatio) ||
+    autoCompactRatio < MIN_AUTO_COMPACT_RATIO ||
+    autoCompactRatio > MAX_AUTO_COMPACT_RATIO
+  ) {
+    throw new VaultMigrationError(
+      `autoCompactRatio must be between ${MIN_AUTO_COMPACT_RATIO} and ${MAX_AUTO_COMPACT_RATIO}.`,
+    )
+  }
+  const autoCompactEnabled = value.autoCompactEnabled
+  if (typeof autoCompactEnabled !== 'boolean') {
+    throw new VaultMigrationError('autoCompactEnabled must be a boolean.')
+  }
+  return { maxContextTokens, autoCompactRatio, autoCompactEnabled }
 }
 
 type PlainObject = Record<string, unknown>
@@ -147,5 +205,14 @@ export function migrate(version: number, data: unknown): Settings {
   if (!isPlainObject(data)) {
     throw new VaultMigrationError('Decrypted settings were not an object.')
   }
-  return deepMerge(defaultSettings(), data)
+  const merged = deepMerge(defaultSettings(), data)
+  // A vault written before the context block existed merges the defaults in;
+  // one carrying an out-of-range value is repaired rather than made unloadable,
+  // because the cap is a preference and refusing to unlock over it would lock
+  // the user out of their own keys.
+  try {
+    return { ...merged, context: validateContextSettings(merged.context) }
+  } catch {
+    return { ...merged, context: defaultSettings().context }
+  }
 }

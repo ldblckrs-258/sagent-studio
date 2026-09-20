@@ -95,6 +95,83 @@ function makeModel(
   return new MockLanguageModelV4({ doStream: entries });
 }
 
+/*
+  Step variants that carry explicit counts, so a multi-step turn can be given
+  per-step usage and the summed-versus-final-step distinction asserted.
+*/
+function textStepWithUsage(
+  id: string,
+  delta: string,
+  input: number,
+  output: number,
+): Chunk[] {
+  return [
+    { type: "stream-start", warnings: [] },
+    { type: "text-start", id },
+    { type: "text-delta", id, delta },
+    { type: "text-end", id },
+    {
+      type: "finish",
+      usage: {
+        inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: output, text: output, reasoning: 0 },
+      },
+      finishReason: { unified: "stop", raw: undefined },
+    },
+  ];
+}
+
+function toolStepWithUsage(
+  id: string,
+  toolName: string,
+  input: string,
+  inputTokens: number,
+  outputTokens: number,
+): Chunk[] {
+  return [
+    { type: "stream-start", warnings: [] },
+    { type: "tool-input-start", id, toolName },
+    { type: "tool-input-delta", id, delta: input },
+    { type: "tool-input-end", id },
+    { type: "tool-call", toolCallId: id, toolName, input },
+    {
+      type: "finish",
+      usage: {
+        inputTokens: {
+          total: inputTokens,
+          noCache: inputTokens,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+        outputTokens: { total: outputTokens, text: outputTokens, reasoning: 0 },
+      },
+      finishReason: { unified: "tool-calls", raw: "tool_calls" },
+    },
+  ];
+}
+
+/** A model that can both stream a turn and answer the compaction summary call. */
+function compactingModel(
+  summary: string,
+  entries: Array<{ stream: ReadableStream<Chunk> }>,
+): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    doStream: entries,
+    doGenerate: async () => ({
+      content: [{ type: "text" as const, text: summary }],
+      finishReason: { unified: "stop" as const, raw: undefined },
+      usage: usage(),
+      warnings: [],
+    }),
+  });
+}
+
+/** Settings whose cap is small enough for a seeded thread to cross it. */
+function cappedSettings(maxContextTokens: number): Settings {
+  const base = defaultSettings();
+  return { ...base, context: { ...base.context, maxContextTokens } };
+}
+
 function user(id: string, text: string): UIMessage {
   return { id, role: "user", parts: [{ type: "text", text }] };
 }
@@ -259,6 +336,230 @@ describe("chat engine", () => {
     expect(textOf(messages[1])).toBe("Hello");
     expect(messages[1].metadata).toMatchObject({ chatStatus: "done" });
     expect(store.get("th1")?.messages).toHaveLength(2);
+  });
+
+  it("records the turn usage without clobbering the run status", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "Hello")) }]);
+    const { engine, store } = setup({ model });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "hi");
+
+    const assistantMessage = useChatStore.getState().threads["th1"]?.messages[1];
+    // Both fields have to survive: the metadata callback and `setChatStatus`
+    // write to the same object, so one overwriting the other is the failure
+    // mode this asserts against.
+    expect(assistantMessage?.metadata).toMatchObject({
+      chatStatus: "done",
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimated: false },
+    });
+    const persisted = store.get("th1")?.messages[1];
+    expect(persisted?.metadata).toMatchObject({
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+  });
+
+  it("clears the live stream stats when a run ends and never persists them", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "Hello")) }]);
+    const { engine, store } = setup({ model });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "hi");
+
+    expect(useChatStore.getState().liveStats["th1"]).toBeUndefined();
+    expect(JSON.stringify(store.get("th1"))).not.toContain("liveStats");
+  });
+
+  it("records a multi-step turn's context from its final step", async () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(echoProvider());
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStepWithUsage("t1", "echo", '{"value":"x"}', 10, 5)) },
+        { stream: streamOf(textStepWithUsage("t2", "done", 20, 7)) },
+      ],
+    });
+    const { engine } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    const usage = (
+      useChatStore.getState().threads.th1.messages[1].metadata as {
+        usage?: { contextTokens?: number; inputTokens?: number };
+      }
+    ).usage;
+    // The provider sums the prompts across steps (10 + 20 = 30). Only the final
+    // step's 20 + 7 describes the conversation the next request will carry.
+    expect(usage?.inputTokens).toBe(30);
+    expect(usage?.contextTokens).toBe(27);
+  });
+
+  it("does not compact again on the turn after an auto-compaction", async () => {
+    const model = compactingModel("AUTO_SUMMARY", [
+      { stream: streamOf(textStep("t1", "ok")) },
+      { stream: streamOf(textStep("t2", "ok again")) },
+    ]);
+    const { engine } = setup({ model, settings: cappedSettings(1000) });
+    seed("th1", [
+      user("u1", "PRE_COMPACT"),
+      {
+        ...assistant("a1", "OLD_ANSWER"),
+        metadata: {
+          chatStatus: "done",
+          usage: { inputTokens: 900, outputTokens: 100, estimated: false },
+        },
+      },
+    ]);
+
+    await engine.sendTurn("th1", "first question");
+    expect(model.doGenerateCalls).toHaveLength(1);
+
+    // The boundary has to lower the number that triggered it, or every later
+    // turn pays for another summarization call.
+    await engine.sendTurn("th1", "second question");
+    expect(model.doGenerateCalls).toHaveLength(1);
+  });
+
+  it("sends only the messages since the compaction boundary", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "ok")) }]);
+    const { engine } = setup({ model });
+    seed("th1", [
+      user("u1", "PRE_BOUNDARY"),
+      assistant("a1", "ALSO_PRE_BOUNDARY"),
+      {
+        id: "b1",
+        role: "assistant",
+        parts: [{ type: "text", text: "THE_SUMMARY" }],
+        metadata: {
+          chatStatus: "done",
+          compaction: { at: 1, replacedCount: 2, tokensBefore: 50 },
+        },
+      },
+    ]);
+
+    await engine.sendTurn("th1", "POST_BOUNDARY");
+
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).not.toContain("PRE_BOUNDARY");
+    expect(prompt).toContain("THE_SUMMARY");
+    expect(prompt).toContain("POST_BOUNDARY");
+    // The stored transcript is untouched: the boundary changes the request, not
+    // the conversation the user can still scroll through.
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(5);
+  });
+
+  it("auto-compacts before the run once the context reaches the cap", async () => {
+    const model = compactingModel("AUTO_SUMMARY", [
+      { stream: streamOf(textStep("t1", "ok")) },
+    ]);
+    const { engine, store } = setup({ model, settings: cappedSettings(1000) });
+    seed("th1", [
+      user("u1", "PRE_COMPACT"),
+      {
+        ...assistant("a1", "OLD_ANSWER"),
+        metadata: {
+          chatStatus: "done",
+          usage: { inputTokens: 900, outputTokens: 100, estimated: false },
+        },
+      },
+    ]);
+
+    await engine.sendTurn("th1", "NEW_QUESTION");
+
+    expect(model.doGenerateCalls).toHaveLength(1);
+    const messages = useChatStore.getState().threads.th1.messages;
+    const boundaries = messages.filter(
+      (message) =>
+        (message.metadata as { compaction?: unknown } | undefined)?.compaction !==
+        undefined,
+    );
+    expect(boundaries).toHaveLength(1);
+    // The boundary is persisted before the run, so a later failure cannot lose it.
+    expect(
+      store
+        .get("th1")
+        ?.messages.some(
+          (message) =>
+            (message.metadata as { compaction?: unknown } | undefined)
+              ?.compaction !== undefined,
+        ),
+    ).toBe(true);
+
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).not.toContain("PRE_COMPACT");
+    expect(prompt).toContain("AUTO_SUMMARY");
+    // The pending question has to survive the compaction that ran ahead of it.
+    expect(prompt).toContain("NEW_QUESTION");
+  });
+
+  it("runs uncompacted, keeping the user's turn, when the summary call fails", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new Error("summary provider down");
+      },
+      doStream: [{ stream: streamOf(textStep("t1", "ok")) }],
+    });
+    const { engine } = setup({ model, settings: cappedSettings(1000) });
+    seed("th1", [
+      user("u1", "PRE_COMPACT"),
+      {
+        ...assistant("a1", "OLD_ANSWER"),
+        metadata: {
+          chatStatus: "done",
+          usage: { inputTokens: 900, outputTokens: 100, estimated: false },
+        },
+      },
+    ]);
+
+    await engine.sendTurn("th1", "NEW_QUESTION");
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain("NEW_QUESTION");
+    expect(useChatStore.getState().error).toContain("summary provider down");
+  });
+
+  it("does not auto-compact an approval resume", async () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider({ count: 0 }));
+    const model = compactingModel("SHOULD_NOT_HAPPEN", [
+      { stream: streamOf(textStep("t1", "hi")) },
+    ]);
+    const { engine } = setup({
+      model,
+      toolRegistry: registry,
+      settings: cappedSettings(1000),
+    });
+    seed("th1", [
+      {
+        ...assistant("a0", "OLD_ANSWER"),
+        metadata: {
+          chatStatus: "done",
+          usage: { inputTokens: 900, outputTokens: 100, estimated: false },
+        },
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-write_file",
+            toolCallId: "c1",
+            state: "approval-requested",
+            input: { path: "a.txt" },
+            approval: { id: "ap1" },
+          } as unknown as UIMessage["parts"][number],
+        ],
+      },
+    ]);
+
+    await engine.respondToApproval("th1", { approvalId: "ap1", approved: true });
+
+    // Re-slicing the history under a paused tool call would strand it, so the
+    // resume must run on exactly the messages it was given.
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(model.doStreamCalls).toHaveLength(1);
   });
 
   it("forwards the system instruction and model parameters", async () => {
@@ -1050,5 +1351,83 @@ describe("tool approval", () => {
     await engine.sendTurn("th1", "go");
     expect(counter.count).toBe(1);
     expect(textOf(useChatStore.getState().threads.th1.messages[1])).toBe("done");
+  });
+});
+
+describe("compact", () => {
+  it("refuses while a run is in flight, rather than clobbering it", async () => {
+    let release: (() => void) | undefined;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { stream: streamOf(textStep("t1", "hi")) };
+      },
+      doGenerate: async () => ({
+        content: [{ type: "text" as const, text: "SUMMARY" }],
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: usage(),
+        warnings: [],
+      }),
+    });
+    const { engine } = setup({ model });
+    seed("th1", [user("u1", "hi"), assistant("a1", "there")]);
+
+    const run = engine.sendTurn("th1", "go");
+    await vi.waitFor(() => expect(release).toBeDefined());
+
+    await expect(engine.compact("th1")).rejects.toThrow(/run is in flight/);
+    expect(model.doGenerateCalls).toHaveLength(0);
+
+    release?.();
+    await run;
+  });
+
+  it("moves only the messages, leaving the plan and mode intact", async () => {
+    const model = compactingModel("SUMMARY", []);
+    const { engine } = setup({ model });
+    const seeded = seed("th1", [user("u1", "hi"), assistant("a1", "there")]);
+    useChatStore.getState().setThread({
+      ...seeded,
+      mode: "read_only",
+      plan: [{ id: "p1", text: "keep me", status: "pending" }],
+    });
+
+    await engine.compact("th1");
+
+    const thread = useChatStore.getState().threads.th1;
+    expect(thread.mode).toBe("read_only");
+    expect(thread.plan).toEqual([{ id: "p1", text: "keep me", status: "pending" }]);
+    expect(thread.messages).toHaveLength(3);
+  });
+
+  it("aborts an in-flight summarization on cancel", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async ({ abortSignal }) => {
+        await new Promise((resolve, reject) => {
+          abortSignal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+          );
+          setTimeout(resolve, 5000);
+        });
+        return {
+          content: [{ type: "text" as const, text: "SUMMARY" }],
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: usage(),
+          warnings: [],
+        };
+      },
+    });
+    const { engine } = setup({ model });
+    seed("th1", [user("u1", "hi"), assistant("a1", "there")]);
+
+    const compacting = engine.compact("th1");
+    await vi.waitFor(() => expect(model.doGenerateCalls).toHaveLength(1));
+    await engine.cancel("th1");
+
+    await expect(compacting).rejects.toThrow();
+    // Nothing was appended: compaction is transactional.
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
   });
 });

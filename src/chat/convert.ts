@@ -1,5 +1,6 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import type { UIMessage } from 'ai'
+import type { ChatMessageMetadata } from './sanitize'
 
 /**
  * A structural view of an assistant-ui content part. The runtime hands these
@@ -162,10 +163,24 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
       ? content.filter((part) => part.type !== 'reasoning' && part.type !== 'source' && part.type !== 'tool-call')
       : content
 
+  const metadata = message.metadata as ChatMessageMetadata | undefined
+  const directive = metadata?.skillDirective
+  const compaction = metadata?.compaction
+  // The directive and the boundary both cross over because the renderer needs
+  // them to draw a marker instead of an ordinary bubble — a boundary rendered
+  // as a bubble offers Regenerate, which would drop it and silently
+  // un-compact the thread. Usage stays on our side, where the meter reads it
+  // straight from the store.
+  const custom = {
+    ...(directive ? { skillDirective: directive } : {}),
+    ...(compaction ? { compaction } : {}),
+  }
+
   const like: ThreadMessageLike = {
     id: message.id || `message-${index}`,
     role: message.role,
     content: safeContent,
+    ...(Object.keys(custom).length > 0 ? { metadata: { custom } } : {}),
   }
 
   const error = terminalError(message)

@@ -1,13 +1,21 @@
 import { useExternalStoreRuntime } from '@assistant-ui/react'
 import type { AppendMessage } from '@assistant-ui/react'
 import type { UIMessage } from 'ai'
-import { useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import type { AppSession } from '../session/session'
 import { useSession } from '../session/session-context'
 import { useVaultStore } from '../vault/store'
 import { extractText, toThreadMessageLike, toUiParts } from './convert'
 import type { IncomingContent } from './convert'
 import { redactSecrets } from './engine'
+import { ChatThreadNotFoundError } from './errors'
+import { createChatQueue } from './queue'
 import { deleteMessage } from './reducer'
+import {
+  defaultSlashEntries,
+  looksLikeSlashCommand,
+  runSlashCommand,
+} from './slash'
 import { useChatStore } from './store'
 import { ensureActiveThread } from './active-thread'
 
@@ -20,6 +28,29 @@ function describe(error: unknown): string {
 }
 
 type ReloadConfig = { sourceId?: string | null }
+
+/**
+ * The single send path. Slash text runs through the registry and plain text
+ * starts a turn, so a command typed directly and one that arrives later out of
+ * the queue take exactly the same route.
+ */
+export async function dispatchComposerText(
+  session: AppSession,
+  threadId: string,
+  text: string,
+): Promise<void> {
+  if (!looksLikeSlashCommand(text)) {
+    await session.engineFor(threadId).sendTurn(threadId, text)
+    return
+  }
+  const thread = useChatStore.getState().threads[threadId]
+  if (!thread) throw new ChatThreadNotFoundError(threadId)
+  await runSlashCommand(defaultSlashEntries(session.skillRegistry), {
+    session,
+    threadId,
+    thread,
+  }, text)
+}
 
 /**
  * Bridges the engine-owned `useChatStore` thread into an assistant-ui runtime.
@@ -37,6 +68,55 @@ export function useChatRuntime() {
   )
   const settings = useVaultStore((s) => s.settings)
   const providers = settings?.providers ?? EMPTY_PROVIDERS
+
+  const activeThreadId = useChatStore((s) => s.activeThreadId)
+  const [, bumpQueueVersion] = useReducer((version: number) => version + 1, 0)
+
+  const queue = useMemo(
+    () =>
+      createChatQueue({
+        dispatch: async (text) => {
+          const id = await ensureActiveThread(session)
+          if (!id) {
+            useChatStore
+              .getState()
+              .setError('Add a provider in Config before sending a message.')
+            return
+          }
+          await dispatchComposerText(session, id, text)
+        },
+        onError: (error) => useChatStore.getState().setError(describe(error)),
+        externalRunCount: () => {
+          const state = useChatStore.getState()
+          return state.activeThreadId
+            ? (state.runningThreads[state.activeThreadId] ?? 0)
+            : 0
+        },
+      }),
+    [session],
+  )
+
+  // A run started outside the queue (a rerun, an edit, an approval resume)
+  // shows up only in the store, so every store change re-reads it; the queue
+  // settles its own dispatches itself.
+  useEffect(() => {
+    queue.sync()
+    return useChatStore.subscribe(queue.sync)
+  }, [queue])
+
+  // The runtime does not subscribe to the queue, so a lane change has to be
+  // turned into a render here or a removed item lingers on screen.
+  useEffect(() => queue.subscribe(bumpQueueVersion), [queue])
+
+  // Only a real thread-to-thread change drops pending items. The first send of
+  // a session moves `activeThreadId` from null to its new id, and treating that
+  // as a switch would silently discard a message typed during the round trip.
+  const previousThreadId = useRef<string | null>(activeThreadId)
+  useEffect(() => {
+    const previous = previousThreadId.current
+    previousThreadId.current = activeThreadId
+    if (previous !== null && previous !== activeThreadId) queue.reset()
+  }, [queue, activeThreadId])
 
   const setMessages = useCallback((next: readonly UIMessage[]) => {
     const state = useChatStore.getState()
@@ -56,7 +136,7 @@ export function useChatRuntime() {
           useChatStore.getState().setError('Add a provider in Config before sending a message.')
           return
         }
-        await session.engineFor(id).sendTurn(id, text)
+        await dispatchComposerText(session, id, text)
       } catch (error) {
         useChatStore.getState().setError(describe(error))
       }
@@ -113,12 +193,15 @@ export function useChatRuntime() {
   const onCancel = useCallback(async () => {
     const id = useChatStore.getState().activeThreadId
     if (!id) return
+    // Before the abort, so the settle it produces holds the pending items
+    // instead of dispatching the next one at the moment the user stopped.
+    queue.notifyCancelled()
     try {
       await session.engineFor(id).cancel(id)
     } catch (error) {
       useChatStore.getState().setError(describe(error))
     }
-  }, [session])
+  }, [queue, session])
 
   const onDelete = useCallback(
     async (messageId: string) => {
@@ -150,6 +233,7 @@ export function useChatRuntime() {
     isDisabled: settings === null,
     isSendDisabled: providers.length === 0,
     setMessages,
+    queue: queue.adapter,
     onNew,
     onEdit,
     onReload,

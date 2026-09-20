@@ -11,6 +11,7 @@ export interface ConfigDraft {
   topP: string;
   topK: string;
   maxOutputTokens: string;
+  maxContextTokens: string;
   providerOptions: string;
   enabledSkills: SkillRef[];
 }
@@ -20,6 +21,7 @@ const FIELD_KEYS = [
   "topP",
   "topK",
   "maxOutputTokens",
+  "maxContextTokens",
   "providerId",
   "providerOptions",
   "enabledSkills",
@@ -73,6 +75,8 @@ export function threadConfigPatch(draft: ConfigDraft): unknown {
   };
 
   if (draft.modelId.trim() !== "") candidate.modelId = draft.modelId;
+  if (draft.maxContextTokens.trim() !== "")
+    candidate.maxContextTokens = numberOrUndefined(draft.maxContextTokens);
   if (draft.providerOptions.trim() !== "") {
     try {
       candidate.providerOptions = JSON.parse(draft.providerOptions);

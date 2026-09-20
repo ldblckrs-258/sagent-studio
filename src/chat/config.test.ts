@@ -16,6 +16,7 @@ function draft(overrides: Partial<ConfigDraft> = {}): ConfigDraft {
     topP: "0.9",
     topK: "40",
     maxOutputTokens: "1024",
+    maxContextTokens: "",
     providerOptions: '{"openai":{"foo":"bar"}}',
     enabledSkills: [],
     ...overrides,
@@ -75,6 +76,8 @@ describe("validateThreadConfig draft", () => {
     ["topP", draft({ topP: "2" })],
     ["topK", draft({ topK: "0" })],
     ["maxOutputTokens", draft({ maxOutputTokens: "-5" })],
+    ["maxContextTokens", draft({ maxContextTokens: "0" })],
+    ["maxContextTokens", draft({ maxContextTokens: "1.5" })],
   ])("reports exactly one %s field error", (field, value) => {
     const result = validateConfigDraft(threadConfigPatch(value));
     expect(result.config).toBeUndefined();
@@ -110,5 +113,20 @@ describe("validateThreadConfig draft", () => {
       ),
     );
     expect(Object.keys(badSkill.errors)).toEqual(["_form"]);
+  });
+});
+
+describe("maxContextTokens override", () => {
+  it("is absent from the candidate when the field is left blank", () => {
+    const candidate = threadConfigPatch(draft()) as Record<string, unknown>;
+    expect(candidate.maxContextTokens).toBeUndefined();
+  });
+
+  it("survives validation as a number when the field is filled", () => {
+    const result = validateConfigDraft(
+      threadConfigPatch(draft({ maxContextTokens: "200000" })),
+    );
+    expect(result.errors).toEqual({});
+    expect(result.config?.maxContextTokens).toBe(200000);
   });
 });

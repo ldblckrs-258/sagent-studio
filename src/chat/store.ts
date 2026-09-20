@@ -4,6 +4,16 @@ import type { ChatThread } from './types'
 
 export type ChatStoreStatus = 'idle' | 'streaming'
 
+/**
+ * Transient per-run stream progress. Deliberately not part of `ChatThread`: it
+ * exists only to let the meter derive a live rate while a run streams, and it
+ * is dropped the moment the run settles rather than persisted.
+ */
+export interface LiveStreamStats {
+  startedAt: number
+  chars: number
+}
+
 export interface ChatState {
   threads: Record<string, ChatThread>
   activeThreadId: string | null
@@ -12,12 +22,16 @@ export interface ChatState {
   activeRuns: number
   /** Per-thread in-flight run count, so `isRunning` is correct per conversation. */
   runningThreads: Record<string, number>
+  /** Per-thread stream progress for the in-flight run. Never persisted. */
+  liveStats: Record<string, LiveStreamStats>
   error: string | null
   setThread(thread: ChatThread): void
   removeThread(id: string): void
   setActiveThread(id: string | null): void
   beginRun(threadId: string): void
   endRun(threadId: string): void
+  setLiveStats(threadId: string, stats: LiveStreamStats): void
+  clearLiveStats(threadId: string): void
   setError(error: string | null): void
   clear(): void
 }
@@ -28,6 +42,7 @@ export const useChatStore = create<ChatState>((set) => ({
   status: 'idle',
   activeRuns: 0,
   runningThreads: {},
+  liveStats: {},
   error: null,
 
   setThread(thread) {
@@ -67,7 +82,27 @@ export const useChatStore = create<ChatState>((set) => ({
       if (remaining === 0) delete runningThreads[threadId]
       else runningThreads[threadId] = remaining
       const activeRuns = Math.max(0, state.activeRuns - 1)
-      return { activeRuns, runningThreads, status: activeRuns > 0 ? 'streaming' : 'idle' }
+      const liveStats = { ...state.liveStats }
+      delete liveStats[threadId]
+      return {
+        activeRuns,
+        runningThreads,
+        liveStats,
+        status: activeRuns > 0 ? 'streaming' : 'idle',
+      }
+    })
+  },
+
+  setLiveStats(threadId, stats) {
+    set((state) => ({ liveStats: { ...state.liveStats, [threadId]: stats } }))
+  },
+
+  clearLiveStats(threadId) {
+    set((state) => {
+      if (state.liveStats[threadId] === undefined) return {}
+      const liveStats = { ...state.liveStats }
+      delete liveStats[threadId]
+      return { liveStats }
     })
   },
 
@@ -82,6 +117,7 @@ export const useChatStore = create<ChatState>((set) => ({
       status: 'idle',
       activeRuns: 0,
       runningThreads: {},
+      liveStats: {},
       error: null,
     })
   },

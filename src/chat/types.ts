@@ -39,6 +39,8 @@ export interface ThreadConfig {
   params: ModelParams;
   providerOptions?: Record<string, unknown>;
   enabledSkills: SkillRef[];
+  /** Overrides the global context cap for this conversation's model. */
+  maxContextTokens?: number;
 }
 
 export interface ChatThread {
@@ -165,6 +167,7 @@ export function validateThreadConfig(value: unknown): ThreadConfig {
   }
 
   const enabledSkills = validateSkillRefs(value.enabledSkills);
+  assertOptionalPositiveInteger(value.maxContextTokens, "maxContextTokens");
 
   const validated: ThreadConfig = {
     providerId,
@@ -184,5 +187,7 @@ export function validateThreadConfig(value: unknown): ThreadConfig {
   if (modelId !== undefined) validated.modelId = modelId;
   if (providerOptions !== undefined)
     validated.providerOptions = providerOptions;
+  if (value.maxContextTokens !== undefined)
+    validated.maxContextTokens = value.maxContextTokens as number;
   return validated;
 }

@@ -9,6 +9,7 @@ import {
   defaultSettings,
   migrate,
   SETTINGS_VERSION,
+  validateContextSettings,
 } from './settings'
 import { VaultMigrationError } from './errors'
 
@@ -154,5 +155,57 @@ describe('migrate', () => {
     const merged = migrate(1, payload)
     expect((merged as unknown as Record<string, unknown>).injected).toBeUndefined()
     expect(Object.getPrototypeOf(merged)).toBe(Object.prototype)
+  })
+})
+
+describe('context settings', () => {
+  it('defaults to a 128k cap that auto-compacts at 80 percent', () => {
+    expect(defaultSettings().context).toEqual({
+      maxContextTokens: 128_000,
+      autoCompactRatio: 0.8,
+      autoCompactEnabled: true,
+    })
+  })
+
+  it('fills the block for a vault saved before it existed', () => {
+    const migrated = migrate(1, { idleLockMinutes: 30 })
+    expect(migrated.context).toEqual(defaultSettings().context)
+    expect(migrated.idleLockMinutes).toBe(30)
+  })
+
+  it('keeps a stored block that is in range', () => {
+    const migrated = migrate(1, {
+      context: { maxContextTokens: 32_000, autoCompactRatio: 0.5, autoCompactEnabled: false },
+    })
+    expect(migrated.context).toEqual({
+      maxContextTokens: 32_000,
+      autoCompactRatio: 0.5,
+      autoCompactEnabled: false,
+    })
+  })
+
+  it('repairs an out-of-range block instead of refusing to unlock the vault', () => {
+    const migrated = migrate(1, { context: { autoCompactRatio: 5 } })
+    expect(migrated.context).toEqual(defaultSettings().context)
+  })
+
+  it('rejects a non-integer cap with a message naming the field', () => {
+    expect(() =>
+      validateContextSettings({
+        maxContextTokens: 1.5,
+        autoCompactRatio: 0.8,
+        autoCompactEnabled: true,
+      }),
+    ).toThrow(/maxContextTokens must be a positive integer/)
+  })
+
+  it('rejects a ratio outside the usable band with a message naming the bounds', () => {
+    expect(() =>
+      validateContextSettings({
+        maxContextTokens: 1000,
+        autoCompactRatio: 0.99,
+        autoCompactEnabled: true,
+      }),
+    ).toThrow(/autoCompactRatio must be between 0.1 and 0.95/)
   })
 })

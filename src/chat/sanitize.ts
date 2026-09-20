@@ -1,8 +1,17 @@
 import type { UIMessage } from 'ai'
+import type { CompactionMeta } from './boundary'
+import type { SkillDirective } from './skill-invoke'
 import type { ChatThread } from './types'
+import type { TurnUsage } from './usage'
 
 export type ChatMessageMetadata = {
   chatStatus?: 'streaming' | 'done'
+  /** Token accounting for the turn this message completed. */
+  usage?: TurnUsage
+  /** Present only on a compaction boundary, whose text is the summary. */
+  compaction?: CompactionMeta
+  /** Present only on a `/<skill-id>` directive, which renders as a marker. */
+  skillDirective?: SkillDirective
 }
 
 type MessagePart = UIMessage['parts'][number]

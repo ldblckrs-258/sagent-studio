@@ -30,6 +30,7 @@ function toDraft(thread: ChatThread): ConfigDraft {
     topP: config.params.topP?.toString() ?? "",
     topK: config.params.topK?.toString() ?? "",
     maxOutputTokens: config.params.maxOutputTokens?.toString() ?? "",
+    maxContextTokens: config.maxContextTokens?.toString() ?? "",
     providerOptions: config.providerOptions
       ? JSON.stringify(config.providerOptions, null, 2)
       : "",
@@ -192,6 +193,17 @@ function ThreadTab({ thread }: { thread: ChatThread }) {
           size="sm"
           value={draft.maxOutputTokens}
           onChange={(event) => set({ maxOutputTokens: event.target.value })}
+        />
+      </Row>
+      <Row
+        label="Max context tokens"
+        hint="blank uses the global cap"
+        error={errors.maxContextTokens}
+      >
+        <Input
+          size="sm"
+          value={draft.maxContextTokens}
+          onChange={(event) => set({ maxContextTokens: event.target.value })}
         />
       </Row>
       <Row

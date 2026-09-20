@@ -1,4 +1,9 @@
-import type { LanguageModel, UIMessage, UIMessageChunk } from "ai";
+import type {
+  LanguageModel,
+  LanguageModelUsage,
+  UIMessage,
+  UIMessageChunk,
+} from "ai";
 import {
   convertToModelMessages,
   readUIMessageStream,
@@ -25,7 +30,13 @@ import type { ApprovalDecision, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import { createToolApproval } from "./approval";
 import { isAutomaticApproval } from "./approval-pending";
+import {
+  compactThread,
+  messagesSinceBoundary,
+  splitTrailingUserTurn,
+} from "./compact";
 import { clampIndexText, composeSystemPrompt } from "./context";
+import { resolveContextCap, shouldAutoCompact } from "./context-cap";
 import type { ProjectInstruction, ResolvedSkill } from "./context";
 import { ChatError, ChatThreadNotFoundError } from "./errors";
 import type { ThreadSummary } from "./persistence";
@@ -39,6 +50,7 @@ import {
 } from "./reducer";
 import { expireApprovals, rehydrateThread, sanitizePartial, setChatStatus } from "./sanitize";
 import { registerAbortAll, useChatStore } from "./store";
+import { contextTokensOf, outputCharsOf, turnUsageFrom } from "./usage";
 import { patchThreadMode } from "./threads";
 import type { ChatMode, ChatThread, ThreadConfig } from "./types";
 
@@ -92,6 +104,12 @@ export interface ChatEngine {
   rerun(threadId: string, messageId: string): Promise<void>;
   undo(threadId: string): Promise<void>;
   respondToApproval(threadId: string, response: ApprovalResponse): Promise<void>;
+  /**
+   * Compacts on demand. It lives on the engine rather than beside its caller
+   * because the engine owns the provider deps and the thread-write path, and a
+   * second writer would fork persistence.
+   */
+  compact(threadId: string, instructions?: string): Promise<void>;
   cancel(threadId: string): Promise<void>;
   /** Unregisters the global abort callback and aborts any in-flight runs. */
   dispose(): void;
@@ -346,10 +364,16 @@ export async function buildRunStream(
 
   const modelFactory = deps.modelFactory ?? createLLM;
   const model = modelFactory(settings, config.providerId, config.modelId);
-  const modelMessages = await convertToModelMessages(messages, {
-    tools: toolSet,
-    ignoreIncompleteToolCalls: true,
-  });
+  // Only the window since the newest compaction boundary is sent. The stored
+  // array stays whole, which is what keeps a compaction reversible and the UI
+  // transcript complete; `originalMessages` below still needs all of it.
+  const modelMessages = await convertToModelMessages(
+    messagesSinceBoundary(messages),
+    {
+      tools: toolSet,
+      ignoreIncompleteToolCalls: true,
+    },
+  );
 
   const result = streamText({
     model,
@@ -370,11 +394,37 @@ export async function buildRunStream(
       : {}),
   });
 
+  // `start` fires once per turn and `finish-step` once per model step, so the
+  // turn's span is measured from the former and the conversation's real size
+  // read from the latter. `finish.totalUsage.inputTokens` cannot serve: it sums
+  // every step's prompt, which counts the same conversation once per tool call.
+  // Returning undefined except on `finish` leaves the placeholder's metadata
+  // (and its `chatStatus`) untouched.
+  let streamStartedAt = Date.now();
+  let lastStepUsage: LanguageModelUsage | undefined;
   const stream = toUIMessageStream({
     stream: result.stream,
     tools: toolSet,
     originalMessages: messages,
     generateMessageId,
+    messageMetadata: ({ part }) => {
+      if (part.type === "start") {
+        streamStartedAt = Date.now();
+        return undefined;
+      }
+      if (part.type === "finish-step") {
+        lastStepUsage = part.usage;
+        return undefined;
+      }
+      if (part.type !== "finish") return undefined;
+      return {
+        usage: turnUsageFrom(
+          part.totalUsage,
+          Date.now() - streamStartedAt,
+          lastStepUsage,
+        ),
+      };
+    },
     // Preserve the provider's own message (redacted) instead of the SDK's
     // generic "An error occurred.", so the inline error is actionable.
     onError: (error) => redactSecrets(describe(error)),
@@ -518,6 +568,38 @@ class DefaultEngine implements ChatEngine {
     });
   }
 
+  async compact(threadId: string, instructions?: string): Promise<void> {
+    // A run streaming into this thread owns its message array; writing a
+    // boundary underneath it would clobber the streaming message, and the run's
+    // next write would then drop the boundary.
+    if (this.controllers.has(threadId)) {
+      throw new ChatError(
+        "A run is in flight; wait for it to finish before compacting.",
+      );
+    }
+    const thread = await this.requireThread(threadId);
+    // Registered like a run so `cancel` and `dispose` can abort a summarization
+    // in flight, and so a vault lock does not leave one running against a
+    // cleared store.
+    const controller = new AbortController();
+    this.controllers.set(threadId, controller);
+    try {
+      const compacted = await compactThread(
+        this.deps,
+        thread,
+        instructions,
+        controller.signal,
+      );
+      // Only the messages move: a whole-object write would also restore the
+      // `plan`, `mode` and `config` captured before the await.
+      this.setThreadMessages(threadId, compacted.messages);
+      await this.persist(threadId);
+    } finally {
+      if (this.controllers.get(threadId) === controller)
+        this.controllers.delete(threadId);
+    }
+  }
+
   async cancel(threadId: string): Promise<void> {
     const controller = this.controllers.get(threadId);
     if (!controller) return;
@@ -590,6 +672,47 @@ class DefaultEngine implements ChatEngine {
     }
   }
 
+  /**
+   * Compacts before the run when the context has reached the configured share
+   * of the cap. Never called for an approval resume: a resume continues a
+   * paused tool call inside an existing assistant message, and re-slicing the
+   * history under it would strand that call.
+   *
+   * A failure here is reported but not fatal. The alternative — dropping the
+   * user's turn because a summary call failed — loses work, so the run
+   * continues on the uncompacted base and may simply hit the provider's own
+   * limit instead.
+   */
+  private async autoCompact(
+    threadId: string,
+    thread: ChatThread,
+    base: UIMessage[],
+    signal: AbortSignal,
+  ): Promise<UIMessage[]> {
+    const cap = resolveContextCap(this.deps.getSettings(), thread.config);
+    if (!shouldAutoCompact(contextTokensOf(base).tokens, cap)) return base;
+
+    const { history, tail } = splitTrailingUserTurn(base);
+    if (history.length === 0) return base;
+
+    try {
+      const compacted = await compactThread(
+        this.deps,
+        { ...thread, messages: history },
+        undefined,
+        signal,
+      );
+      const next = [...compacted.messages, ...tail];
+      this.setThreadMessages(threadId, next);
+      await this.persist(threadId);
+      return next;
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return base;
+      useChatStore.getState().setError(redactSecrets(messageOf(error)));
+      return base;
+    }
+  }
+
   private async startRun(
     threadId: string,
     baseMessages: UIMessage[],
@@ -609,23 +732,31 @@ class DefaultEngine implements ChatEngine {
     const assistantId = options.resumeAssistantId ?? createMessageId();
     // A non-resume run expires any stale paused approval before it starts; a
     // resume keeps the responded part it was given.
-    const runBase = resume ? baseMessages : baseMessages.map(expireApprovals);
-    if (resume) {
-      this.setThreadMessages(threadId, runBase);
-    } else {
-      this.setThreadMessages(threadId, [
-        ...runBase,
-        {
-          id: assistantId,
-          role: "assistant",
-          parts: [],
-          metadata: { chatStatus: "streaming" },
-        } satisfies UIMessage,
-      ]);
-    }
+    const expired = resume ? baseMessages : baseMessages.map(expireApprovals);
 
+    // Everything after this point lives inside the run promise, which is
+    // registered before any await. Auto-compaction is a model round-trip, and
+    // registering afterwards would leave `this.runs` holding the *previous*
+    // run for seconds: a concurrent `startRun` would abort this controller but
+    // await the wrong promise, and both runs would proceed.
     const run = (async () => {
       try {
+        const runBase = resume
+          ? expired
+          : await this.autoCompact(threadId, thread, expired, controller.signal);
+        if (resume) {
+          this.setThreadMessages(threadId, runBase);
+        } else {
+          this.setThreadMessages(threadId, [
+            ...runBase,
+            {
+              id: assistantId,
+              role: "assistant",
+              parts: [],
+              metadata: { chatStatus: "streaming" },
+            } satisfies UIMessage,
+          ]);
+        }
         await this.executeRun(
           thread,
           runBase,
@@ -725,6 +856,14 @@ class DefaultEngine implements ChatEngine {
     };
     let failure: unknown;
 
+    // A resumed run continues a message that already holds text, so the rate is
+    // measured from what this run adds rather than from the whole message.
+    const charsBefore = existing ? outputCharsOf(existing) : 0;
+    useChatStore.getState().setLiveStats(thread.id, {
+      startedAt: Date.now(),
+      chars: 0,
+    });
+
     try {
       for await (const partial of readUIMessageStream({
         stream: built.stream,
@@ -737,10 +876,20 @@ class DefaultEngine implements ChatEngine {
       })) {
         latest = partial;
         this.setThreadMessages(thread.id, [...siblings, setChatStatus(partial, "streaming")]);
+        const stats = useChatStore.getState().liveStats[thread.id];
+        if (stats)
+          useChatStore
+            .getState()
+            .setLiveStats(thread.id, {
+              ...stats,
+              chars: Math.max(0, outputCharsOf(partial) - charsBefore),
+            });
       }
     } catch (error) {
       failure = error;
     }
+
+    useChatStore.getState().clearLiveStats(thread.id);
 
     const finished = sanitizePartial(latest);
     this.setThreadMessages(thread.id, [...siblings, finished]);

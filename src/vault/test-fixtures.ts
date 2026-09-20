@@ -63,6 +63,11 @@ export const FIXTURE_SETTINGS: Settings = {
     idleTimeoutMs: 300_000,
   },
   approvals: { tools: {} },
+  context: {
+    maxContextTokens: 128_000,
+    autoCompactRatio: 0.8,
+    autoCompactEnabled: true,
+  },
   egressNoticeDismissed: false,
   idleLockMinutes: 15,
 }
