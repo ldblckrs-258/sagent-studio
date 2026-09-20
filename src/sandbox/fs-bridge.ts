@@ -4,16 +4,32 @@ import type { FromWorker, ToWorker } from './protocol'
 
 export type FsCall = Extract<FromWorker, { kind: 'fs.call' }>
 
+/**
+ * A workspace, or a live getter for one. The getter form exists because the
+ * sandbox session is built before the user grants a folder; resolving at call
+ * time keeps the bridge correct instead of permanently binding "no workspace".
+ */
+export type WorkspaceSource = WorkspaceApi | undefined | (() => WorkspaceApi | undefined)
+
 export interface PendingFs {
   cancel(error: Error): void
 }
 
+function resolveWorkspace(source: WorkspaceSource): WorkspaceApi | undefined {
+  return typeof source === 'function' ? source() : source
+}
+
 export function executeFsCall(
-  workspace: WorkspaceApi | undefined,
+  source: WorkspaceSource,
   handle: FsCall,
 ): Promise<string> {
+  const workspace = resolveWorkspace(source)
   if (!workspace) {
-    return Promise.reject(new SandboxError('No workspace is available to the sandbox.'))
+    return Promise.reject(
+      new SandboxError(
+        'No workspace folder is open, so the sandbox has no `fs`/`workspace` bridge. Ask the user to open a workspace folder, then retry.',
+      ),
+    )
   }
   if (handle.op === 'read') return workspace.readFile(handle.path)
   if (handle.op === 'write') {
@@ -23,7 +39,7 @@ export function executeFsCall(
 }
 
 export function attachFsHandler(
-  workspace: WorkspaceApi | undefined,
+  source: WorkspaceSource,
   handle: FsCall,
   pendingFs: Set<PendingFs>,
   safePost: (message: ToWorker) => void,
@@ -31,7 +47,7 @@ export function attachFsHandler(
   let cancel: (error: Error) => void = () => {}
   const deferred = new Promise<string>((resolve, reject) => {
     cancel = reject
-    executeFsCall(workspace, handle).then(resolve, reject)
+    executeFsCall(source, handle).then(resolve, reject)
   })
   const entry: PendingFs = { cancel: (error) => cancel(error) }
   pendingFs.add(entry)

@@ -137,4 +137,41 @@ describe('composeSystemPrompt', () => {
     const second = composeSystemPrompt('base', skills, ['a', 'b'])
     expect(first).toBe(second)
   })
+
+  it('injects the current permission mode when provided', () => {
+    const prompt = composeSystemPrompt('base', [], [], { mode: 'read_only' })
+    expect(prompt).toContain('## Permission mode')
+    expect(prompt).toContain('`read_only` mode')
+    expect(composeSystemPrompt('base', [], [])).not.toContain('## Permission mode')
+  })
+
+  it('announces when no project instruction exists', () => {
+    const prompt = composeSystemPrompt('base', [], [], { projectInstruction: null })
+    expect(prompt).toContain('## Project context')
+    expect(prompt).toContain('No `AGENTS.md` or `README.md` was found')
+  })
+
+  it('renders a project instruction file as untrusted data', () => {
+    const prompt = composeSystemPrompt('base', [], [], {
+      projectInstruction: { path: 'AGENTS.md', text: 'Run `pnpm test`.' },
+    })
+    expect(prompt).toContain('## Project context (Untrusted)')
+    expect(prompt).toContain('From `AGENTS.md`')
+    expect(prompt).toContain('Run `pnpm test`.')
+  })
+
+  it('compacts the skill index and points at search_skills above the threshold', () => {
+    const skills = Array.from({ length: 10 }, (_value, index) =>
+      skill({ id: `s${index}`, name: `Skill ${index}`, description: `desc ${index}` }),
+    )
+    const prompt = composeSystemPrompt('base', skills, ['search_skills'])
+    expect(prompt).toContain('search_skills')
+    expect(prompt).not.toContain('desc 0')
+    expect(prompt).toContain('`s0` — Skill 0')
+  })
+
+  it('keeps full descriptions in a small skill index without search_skills', () => {
+    const prompt = composeSystemPrompt('base', [skill({ id: 's0', description: 'only desc' })], [])
+    expect(prompt).toContain('only desc')
+  })
 })

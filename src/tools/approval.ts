@@ -16,6 +16,7 @@ const GATED_BUILTINS = new Set([
   'remove',
   'edit_file',
   'move',
+  'restore',
   'run_js',
   'run_python',
   'create_skill',
@@ -47,6 +48,7 @@ const EDITING_TOOLS = new Set([
   'make_dir',
   'copy',
   'move',
+  'restore',
   'run_js',
   'run_python',
   'create_skill',
@@ -55,6 +57,19 @@ const EDITING_TOOLS = new Set([
   'create_tool',
   'update_tool',
   'delete_tool',
+])
+
+/**
+ * Gated tools inside the editing ceiling that the mode itself consents to run.
+ * This is the "write files and run code" tier; harness-management mutations and
+ * `remove` stay policy-gated so a delete still asks by default.
+ */
+const MODE_GRANTED_TOOLS = new Set([
+  'write_file',
+  'edit_file',
+  'move',
+  'run_js',
+  'run_python',
 ])
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -75,14 +90,20 @@ export function isGatedTool(tool: string | ToolGateDescriptor): boolean {
   return isUserCodeOrNetwork(tool)
 }
 
+/** The persisted decision for a tool, or `undefined` when no policy was stored. */
+export function persistedDecision(
+  settings: ApprovalSettings | undefined,
+  toolName: string,
+): ApprovalDecision | undefined {
+  const value = settings?.tools?.[toolName]
+  return value === 'allow' || value === 'deny' || value === 'ask' ? value : undefined
+}
+
 export function decisionFor(
   settings: ApprovalSettings | undefined,
   toolName: string,
 ): ApprovalDecision {
-  const value = settings?.tools?.[toolName]
-  return value === 'allow' || value === 'deny' || value === 'ask'
-    ? value
-    : DEFAULT_APPROVAL_DECISION
+  return persistedDecision(settings, toolName) ?? DEFAULT_APPROVAL_DECISION
 }
 
 export function normalizeApprovalSettings(
@@ -115,13 +136,15 @@ export function isWithinCeiling(mode: ChatMode, tool: string | ToolGateDescripto
   const ceiling = modeCeiling(mode)
   if (ceiling === 'all') return true
   if (ceiling.has(nameOf(tool))) return true
-  return isUserCodeOrNetwork(tool)
+  return mode === 'editing' && isUserCodeOrNetwork(tool)
 }
 
 /**
  * `decision = max(modeCeiling, policy)`: a persisted `deny` wins over the mode,
  * `god` auto-approves every gated tool, `change_mode` always asks, and a tool
- * above the mode's ceiling escalates to a per-call accept.
+ * above the mode's ceiling escalates to a per-call accept. Inside the editing
+ * ceiling the file/code tools run without a prompt, while an explicit persisted
+ * `ask` still forces one and an explicit `allow` clears any other tool.
  */
 export function resolveApprovalStatus(
   mode: ChatMode,
@@ -129,10 +152,13 @@ export function resolveApprovalStatus(
   tool: string | ToolGateDescriptor,
 ): ApprovalStatus {
   const name = nameOf(tool)
+  const persisted = persistedDecision(settings, name)
   if (name === 'change_mode') return 'user-approval'
-  if (decisionFor(settings, name) === 'deny') return 'denied'
+  if (persisted === 'deny') return 'denied'
   if (mode === 'god') return 'approved'
   if (!isWithinCeiling(mode, tool)) return 'user-approval'
   if (!isGatedTool(tool)) return 'approved'
-  return decisionFor(settings, name) === 'allow' ? 'approved' : 'user-approval'
+  if (persisted === 'allow') return 'approved'
+  if (persisted === 'ask') return 'user-approval'
+  return MODE_GRANTED_TOOLS.has(name) ? 'approved' : 'user-approval'
 }

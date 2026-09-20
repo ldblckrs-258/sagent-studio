@@ -1,5 +1,5 @@
 import { jsonSchema, tool } from 'ai'
-import { normalizePlanItems, planCounts } from '../../chat/plan'
+import { normalizePlanItems, planCounts, planTextChanges } from '../../chat/plan'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError, ToolRuntimeUnavailableError } from '../types'
 import type { ToolProvider } from '../types'
@@ -15,7 +15,7 @@ export function createPlanToolProvider(): ToolProvider {
         case 'update_plan':
           return tool({
             description:
-              'Replace the conversation plan with a full list of items. Send the entire list every time; the list you send becomes the plan.',
+              'Replace the conversation plan with a full list of items. Send the entire list every time; the list you send becomes the plan. Ids are append-only handles: keep an existing id\'s text stable and give a genuinely new step a new id, or the response reports the retexting as a warning.',
             inputSchema: jsonSchema<{
               items: Array<{ id?: string; text: string; status?: string }>
             }>({
@@ -55,6 +55,8 @@ export function createPlanToolProvider(): ToolProvider {
                     : {}),
                 })
               }
+              const previous = port.get()
+              const changes = planTextChanges(previous, parsed.items)
               try {
                 await port.set(parsed.items)
               } catch (error) {
@@ -63,7 +65,17 @@ export function createPlanToolProvider(): ToolProvider {
                   error instanceof Error ? error.message : 'The plan could not be saved.',
                 )
               }
-              return toolOk({ items: parsed.items, counts: planCounts(parsed.items) })
+              return toolOk({
+                items: parsed.items,
+                counts: planCounts(parsed.items),
+                ...(changes.length > 0
+                  ? {
+                      notice:
+                        'Some item ids have new text; ids are append-only, so use a new id for a new step.',
+                      changes,
+                    }
+                  : {}),
+              })
             }),
           })
         default:

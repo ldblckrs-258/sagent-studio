@@ -11,6 +11,8 @@ export const defaultPyWorkerFactory: WorkerFactory = () =>
 export interface PyRunnerOptions {
   workerFactory?: WorkerFactory
   workspace?: WorkspaceApi
+  /** Resolved per workspace call; preferred over `workspace` when the folder may open later. */
+  getWorkspace?: () => WorkspaceApi | undefined
   defaultTimeoutMs?: number
   idleTimeoutMs?: number
 }
@@ -23,7 +25,10 @@ export class PyRunner implements CodeRunner {
       workerFactory: options.workerFactory ?? defaultPyWorkerFactory,
       language: 'py',
       defaultTimeoutMs: options.defaultTimeoutMs ?? DEFAULT_PY_TIMEOUT_MS,
-      ...(options.workspace ? { workspace: options.workspace } : {}),
+      ...(options.getWorkspace ? { getWorkspace: options.getWorkspace } : {}),
+      ...(options.getWorkspace === undefined && options.workspace
+        ? { workspace: options.workspace }
+        : {}),
       ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
     })
   }

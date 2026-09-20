@@ -68,6 +68,20 @@ describe('createPlanToolProvider', () => {
     expect(port.get()).toEqual([{ id: 'p1', text: 'new', status: 'completed' }])
   })
 
+  it('warns when an existing id is given new text', async () => {
+    const port = recordingPort([{ id: 'p1', text: 'old', status: 'pending' }])
+    const set = build(port)
+    await expect(
+      executor(set, 'update_plan')({ items: [{ id: 'p1', text: 'reworded', status: 'pending' }] }, CALL),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        changes: [{ id: 'p1', from: 'old', to: 'reworded' }],
+        notice: expect.stringContaining('append-only'),
+      },
+    })
+  })
+
   it('returns invalid_input and does not write for malformed input', async () => {
     const port = recordingPort([{ id: 'p1', text: 'existing', status: 'pending' }])
     const set = build(port)

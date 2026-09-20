@@ -1,4 +1,4 @@
-import type { WorkspaceSearchHit, WorkspaceSearchResult } from '../tools/types'
+import type { WorkspaceSearchHit, WorkspaceSearchResult, WorkspaceSearchSkip } from '../tools/types'
 import type { SearchRequest } from './search-protocol'
 import { SearchRequestError } from './search-protocol'
 
@@ -8,6 +8,21 @@ export const MAX_SEARCH_RESULTS = 500
 export const DEFAULT_MAX_FILES_SCANNED = 2000
 export const DEFAULT_MAX_DEPTH = 20
 export const BINARY_PROBE_CHARS = 8 * 1024
+/** Bound on recorded skip reasons; `filesSkipped` still reports the full count. */
+export const MAX_SKIP_REASONS = 50
+/**
+ * Vendor/build directories skipped by default so a workspace search reaches
+ * source files first. Pass `excludedDirs: []` to scan everything.
+ */
+export const DEFAULT_EXCLUDED_DIRS = [
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+  '.turbo',
+]
 
 export function probeBinary(text: string): boolean {
   return text.slice(0, BINARY_PROBE_CHARS).includes('\u0000')
@@ -50,6 +65,11 @@ export function scanText(text: string, matcher: RegExp, maxResults: number): Sca
 
 export type SearchFsCall = (op: 'list' | 'read', path: string) => Promise<string>
 
+function reasonOf(error: unknown): string {
+  if (error instanceof Error && error.message.length > 0) return error.message
+  return String(error)
+}
+
 interface ListEntry {
   path: string
   kind: 'file' | 'directory'
@@ -91,9 +111,15 @@ export async function runSearch(callFs: SearchFsCall, request: SearchRequest): P
   }
 
   const hits: WorkspaceSearchHit[] = []
+  const skipped: WorkspaceSearchSkip[] = []
   let filesScanned = 0
   let filesSkipped = 0
   let truncated = false
+
+  const recordSkip = (path: string, reason: string): void => {
+    filesSkipped += 1
+    if (skipped.length < MAX_SKIP_REASONS) skipped.push({ path, reason })
+  }
 
   const queue: Array<{ path: string; depth: number }> = [{ path: request.rootPath, depth: 0 }]
   while (queue.length > 0) {
@@ -107,8 +133,8 @@ export async function runSearch(callFs: SearchFsCall, request: SearchRequest): P
     let raw: string
     try {
       raw = await callFs('list', directory.path)
-    } catch {
-      filesSkipped += 1
+    } catch (error) {
+      recordSkip(directory.path, reasonOf(error))
       continue
     }
 
@@ -118,6 +144,8 @@ export async function runSearch(callFs: SearchFsCall, request: SearchRequest): P
         break
       }
       if (entry.kind === 'directory') {
+        const name = entry.path.split('/').pop() ?? entry.path
+        if (request.excludedDirs?.includes(name)) continue
         if (directory.depth + 1 <= request.maxDepth) {
           queue.push({ path: entry.path, depth: directory.depth + 1 })
         } else {
@@ -130,12 +158,12 @@ export async function runSearch(callFs: SearchFsCall, request: SearchRequest): P
       let text: string
       try {
         text = await callFs('read', entry.path)
-      } catch {
-        filesSkipped += 1
+      } catch (error) {
+        recordSkip(entry.path, reasonOf(error))
         continue
       }
       if (probeBinary(text)) {
-        filesSkipped += 1
+        recordSkip(entry.path, 'binary content (NUL byte in the first 8KB)')
         continue
       }
       const remaining = request.maxResults - hits.length
@@ -148,5 +176,5 @@ export async function runSearch(callFs: SearchFsCall, request: SearchRequest): P
     }
   }
 
-  return { hits, truncated, filesScanned, filesSkipped }
+  return { hits, truncated, filesScanned, filesSkipped, skipped }
 }

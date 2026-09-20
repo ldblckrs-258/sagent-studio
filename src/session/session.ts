@@ -8,8 +8,10 @@ import { createVaultSkillEnablement } from '../skills/enablement'
 import type { SkillEnablementPort } from '../skills/enablement'
 import { SkillRegistry } from '../skills/registry'
 import { createAdminPorts } from '../tools/admin-ports'
+import { createCheckToolProvider } from '../tools/builtin/check'
 import { createCodeToolProvider } from '../tools/builtin/code'
 import type { CodeRunnerSource } from '../tools/builtin/code'
+import { createHistoryToolProvider } from '../tools/builtin/history'
 import { createModeToolProvider } from '../tools/builtin/mode'
 import { createPlanToolProvider } from '../tools/builtin/plan'
 import { createPreviewToolProvider } from '../tools/builtin/preview'
@@ -28,6 +30,7 @@ import {
 } from '../vault/settings'
 import type { SandboxSettings, Settings } from '../vault/settings'
 import type { WorkspaceFs } from '../workspace/fs'
+import { workspaceJournal } from '../workspace/journal'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -127,21 +130,20 @@ export function createSession(options: SessionOptions = {}): AppSession {
   if (options.runnerSource) {
     manager = null
   } else {
-    manager =
-      options.sandboxManager ??
+    const createManager = () =>
       createSandboxManager({
         settings: currentSandbox(),
-        workspace: getWorkspace() ?? undefined,
+        // A live resolver, not a snapshot: the folder is often granted after
+        // this session is created, and the sandbox bridge must see it.
+        getWorkspace: () => getWorkspace() ?? undefined,
       })
+    manager = options.sandboxManager ?? createManager()
     // Rebuild the workspace-bound pair when the folder changes; apply
     // settings-driven timeout changes without rebuilding on unrelated writes.
     unsubWorkspace = useWorkspaceStore.subscribe((state, previous) => {
       if (state.fs === previous.fs || !manager) return
       manager.dispose()
-      manager = createSandboxManager({
-        settings: currentSandbox(),
-        workspace: state.fs ?? undefined,
-      })
+      manager = createManager()
     })
     unsubVault = useVaultStore.subscribe((state, previous) => {
       const next = state.settings?.sandbox
@@ -185,9 +187,13 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const skillManagementProvider = createSkillManagementProvider()
   const toolManagementProvider = createToolManagementProvider()
   const previewProvider = createPreviewToolProvider()
+  const checkProvider = createCheckToolProvider()
+  const historyProvider = createHistoryToolProvider()
 
   if (!options.toolRegistry) {
     toolRegistry.registerProvider(workspaceToolProvider)
+    toolRegistry.registerProvider(checkProvider)
+    toolRegistry.registerProvider(historyProvider)
     toolRegistry.registerProvider(codeProvider)
     toolRegistry.registerProvider(sandboxControlProvider)
     toolRegistry.registerProvider(modeProvider)
@@ -237,6 +243,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
 
   function dispose(): void {
     for (const threadId of [...engines.keys()]) disposeThread(threadId)
+    workspaceJournal.clear()
     unsubVault?.()
     unsubWorkspace?.()
     unsubVault = null
@@ -254,6 +261,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     dispose,
     getWorkspace,
     setWorkspace(fs) {
+      if (useWorkspaceStore.getState().fs !== fs) workspaceJournal.clear()
       useWorkspaceStore.getState().setFs(fs)
     },
     sandbox: () => manager,
@@ -272,6 +280,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
       }
       return [
         workspaceToolProvider,
+        checkProvider,
+        historyProvider,
         codeProvider,
         sandboxControlProvider,
         modeProvider,

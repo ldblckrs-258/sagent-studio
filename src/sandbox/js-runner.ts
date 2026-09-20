@@ -11,6 +11,8 @@ export const defaultJsWorkerFactory: WorkerFactory = () =>
 export interface SandboxRunnerOptions {
   workerFactory?: WorkerFactory
   workspace?: WorkspaceApi
+  /** Resolved per workspace call; preferred over `workspace` when the folder may open later. */
+  getWorkspace?: () => WorkspaceApi | undefined
   defaultTimeoutMs?: number
   idleTimeoutMs?: number
 }
@@ -23,7 +25,10 @@ export class JsRunner implements CodeRunner {
       workerFactory: options.workerFactory ?? defaultJsWorkerFactory,
       language: 'js',
       defaultTimeoutMs: options.defaultTimeoutMs ?? DEFAULT_JS_TIMEOUT_MS,
-      ...(options.workspace ? { workspace: options.workspace } : {}),
+      ...(options.getWorkspace ? { getWorkspace: options.getWorkspace } : {}),
+      ...(options.getWorkspace === undefined && options.workspace
+        ? { workspace: options.workspace }
+        : {}),
       ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
     })
   }

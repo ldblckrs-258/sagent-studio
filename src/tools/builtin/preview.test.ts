@@ -70,10 +70,14 @@ describe('createPreviewToolProvider', () => {
     const open = vi.fn()
     const workspace = workspaceWith(async (path) => ({ path, kind: 'file', size: 10 }))
     const set = build({ workspace, preview: { open } })
-    await expect(executor(set, 'open_preview')({ path: 'artifacts/report.html' }, CALL)).resolves.toEqual({
+    await expect(executor(set, 'open_preview')({ path: 'artifacts/report.html' }, CALL)).resolves.toMatchObject({
       ok: true,
       code: 'ok',
-      value: { path: 'artifacts/report.html', opened: true },
+      value: {
+        path: 'artifacts/report.html',
+        opened: true,
+        diagnostics: { kind: 'html', ok: true, errors: [], warnings: [] },
+      },
     })
     expect(open).toHaveBeenCalledWith('artifacts/report.html')
   })

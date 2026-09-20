@@ -23,8 +23,9 @@ import { VaultLockedError } from "../vault/errors";
 import type { ApprovalDecision, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import { createToolApproval } from "./approval";
+import { isAutomaticApproval } from "./approval-pending";
 import { clampIndexText, composeSystemPrompt } from "./context";
-import type { ResolvedSkill } from "./context";
+import type { ProjectInstruction, ResolvedSkill } from "./context";
 import { ChatError, ChatThreadNotFoundError } from "./errors";
 import type { ThreadSummary } from "./persistence";
 import {
@@ -104,6 +105,17 @@ const SECRET_PATTERNS = [
   /(api[_-]?key["'\s:=]+)[A-Za-z0-9._-]+/gi,
 ];
 
+/**
+ * Provider retries before the response body begins. Safe with side-effecting
+ * tools because no tool can run until the stream starts; mid-stream failures
+ * are left to the user's inline retry instead of re-running a model step that
+ * may already have executed tools.
+ */
+const MODEL_MAX_RETRIES = 3;
+
+/** Always kept available when skills are enabled, even under allowedTools narrowing. */
+const SKILL_INDEX_TOOLS = ["load_skill", "search_skills"] as const;
+
 export function redactSecrets(text: string): string {
   let output = text;
   for (const pattern of SECRET_PATTERNS)
@@ -113,6 +125,16 @@ export function redactSecrets(text: string): string {
 
 function describe(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
+  return String(error);
+}
+
+/**
+ * A run failure's message. A stream error arrives as an `Error` whose message
+ * was already formatted and redacted by `toUIMessageStream`'s `onError`, so this
+ * reads `.message` directly instead of double-prefixing the error name.
+ */
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
   return String(error);
 }
 
@@ -160,6 +182,9 @@ function collectPendingApprovals(messages: UIMessage[]): PendingApproval[] {
       if (record.state !== "approval-requested") return;
       const approval = record.approval as { id?: unknown } | undefined;
       if (!approval || typeof approval.id !== "string") return;
+      // An automatic (statically approved/denied) or expired request is not the
+      // user's to answer; only a real request may be resumed or expired.
+      if (isAutomaticApproval(approval)) return;
       pending.push({
         messageId: message.id,
         messageIndex,
@@ -190,6 +215,54 @@ export function createSkillLoadPort(skills: readonly ResolvedSkill[]): SkillLoad
       return skill ? { ...describe(skill), instructions: skill.instructions } : null
     },
   }
+}
+
+const PROJECT_INSTRUCTION_CANDIDATES = ["AGENTS.md", "README.md"];
+const MAX_PROJECT_INSTRUCTION_CHARS = 8000;
+
+/**
+ * Loads the workspace's own instruction file so a fresh session is primed with
+ * project conventions instead of inventing them. Returns null when the
+ * workspace has none, which the prompt renders as an explicit "none found".
+ */
+async function loadProjectInstruction(
+  workspace: WorkspaceApi | undefined,
+): Promise<ProjectInstruction | null> {
+  if (!workspace) return null;
+  for (const path of PROJECT_INSTRUCTION_CANDIDATES) {
+    try {
+      const text = await workspace.readFile(path);
+      if (text.trim().length === 0) continue;
+      return {
+        path,
+        text:
+          text.length > MAX_PROJECT_INSTRUCTION_CHARS
+            ? text.slice(0, MAX_PROJECT_INSTRUCTION_CHARS)
+            : text,
+      };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function isFailedAssistantMessage(message: UIMessage): boolean {
+  if (message.role !== "assistant") return false;
+  const metadata = message.metadata as
+    | { error?: unknown; chatStatus?: unknown }
+    | undefined;
+  return (
+    (typeof metadata?.error === "string" && metadata.error.length > 0) ||
+    metadata?.chatStatus === "error"
+  );
+}
+
+/** Clears a prior run error so a resume streams cleanly instead of re-rendering it. */
+function clearRunError(message: UIMessage): UIMessage {
+  const metadata = { ...((message.metadata as Record<string, unknown> | undefined) ?? {}) };
+  delete metadata.error;
+  return { ...message, metadata: { ...metadata, chatStatus: "streaming" } };
 }
 
 async function defaultPersistApproval(
@@ -234,19 +307,30 @@ export async function buildRunStream(
     config.enabledSkills,
     pool,
   );
-  // `load_skill` is unioned in whenever a skill is enabled, because a skill's
-  // `allowedTools` narrowing would otherwise exclude the tool the index needs.
+  // `load_skill` and `search_skills` are unioned in whenever a skill is
+  // enabled, because a skill's `allowedTools` narrowing would otherwise exclude
+  // the tools the index needs.
   const requestedTools =
     narrowed === undefined
       ? undefined
-      : skills.length > 0 && pool.has("load_skill") && !narrowed.includes("load_skill")
-        ? [...narrowed, "load_skill"]
+      : skills.length > 0
+        ? [
+            ...narrowed,
+            ...SKILL_INDEX_TOOLS.filter(
+              (name) => pool.has(name) && !narrowed.includes(name),
+            ),
+          ]
         : narrowed;
   const toolSet = deps.toolRegistry.buildToolSet(requestedTools, ports);
+  const projectInstruction = await loadProjectInstruction(deps.workspace);
   const system = composeSystemPrompt(
     config.systemInstruction,
     skills,
     Object.keys(toolSet),
+    {
+      mode,
+      ...(deps.workspace ? { projectInstruction } : {}),
+    },
   );
 
   const gateTools: ToolGateDescriptor[] = Object.keys(toolSet).map((name) => {
@@ -268,6 +352,7 @@ export async function buildRunStream(
     messages: modelMessages,
     tools: toolSet,
     toolApproval,
+    maxRetries: MODEL_MAX_RETRIES,
     stopWhen: () => false,
     abortSignal: signal,
     ...config.params,
@@ -285,6 +370,9 @@ export async function buildRunStream(
     tools: toolSet,
     originalMessages: messages,
     generateMessageId,
+    // Preserve the provider's own message (redacted) instead of the SDK's
+    // generic "An error occurred.", so the inline error is actionable.
+    onError: (error) => redactSecrets(describe(error)),
   });
 
   return { stream, toolNames: Object.keys(toolSet) };
@@ -338,6 +426,23 @@ class DefaultEngine implements ChatEngine {
   async rerun(threadId: string, messageId: string): Promise<void> {
     const thread = await this.requireThread(threadId);
     if (!canRerun(thread.messages, messageId)) return;
+    const index = thread.messages.findIndex((message) => message.id === messageId);
+    const target = index === -1 ? undefined : thread.messages[index];
+    // Retrying a failed final turn resumes it: the assistant message already
+    // holds the completed tool calls and their results, so continuing from it
+    // avoids replaying (and re-running) every tool the turn had already done.
+    // Regenerating a healthy turn, or an older message, still starts fresh.
+    if (
+      target !== undefined &&
+      isFailedAssistantMessage(target) &&
+      index === thread.messages.length - 1
+    ) {
+      const resumed = thread.messages.map((message) =>
+        message.id === messageId ? clearRunError(message) : message,
+      );
+      await this.startRun(threadId, resumed, { resumeAssistantId: messageId });
+      return;
+    }
     const base = baseForMessage(thread.messages, messageId);
     this.setThreadMessages(threadId, base);
     await this.persist(threadId);
@@ -431,6 +536,37 @@ class DefaultEngine implements ChatEngine {
     useChatStore.getState().setThread({ ...current, messages });
   }
 
+  /**
+   * Marks the run's assistant message as failed in place. Returns false when the
+   * message is gone (a pre-stream failure dropped the placeholder), so the
+   * caller can fall back to the global error banner.
+   */
+  private flagRunFailure(
+    threadId: string,
+    messageId: string,
+    error: string,
+  ): boolean {
+    const current = useChatStore.getState().threads[threadId];
+    if (!current) return false;
+    let found = false;
+    const messages = current.messages.map((message) => {
+      if (message.id !== messageId) return message;
+      found = true;
+      const metadata = (message.metadata as Record<string, unknown> | undefined) ?? {};
+      return {
+        ...message,
+        metadata: { ...metadata, chatStatus: "done", error },
+      };
+    });
+    if (!found) return false;
+    useChatStore.getState().setThread({
+      ...current,
+      messages,
+      updatedAt: Date.now(),
+    });
+    return true;
+  }
+
   private async persist(threadId: string): Promise<void> {
     const thread = useChatStore.getState().threads[threadId];
     if (!thread) return;
@@ -494,7 +630,16 @@ class DefaultEngine implements ChatEngine {
         );
       } catch (error) {
         if (!controller.signal.aborted && !isAbortError(error)) {
-          useChatStore.getState().setError(redactSecrets(describe(error)));
+          const message = redactSecrets(messageOf(error));
+          // A failed run is surfaced on its own assistant message so the error
+          // renders in the conversation next to a Retry action. Only when the
+          // placeholder no longer exists (a pre-stream build failure) does it
+          // fall back to the global banner.
+          if (this.flagRunFailure(threadId, assistantId, message)) {
+            await this.persist(threadId).catch(() => undefined);
+          } else {
+            useChatStore.getState().setError(message);
+          }
         }
       } finally {
         if (this.controllers.get(threadId) === controller)
@@ -577,6 +722,9 @@ class DefaultEngine implements ChatEngine {
         // A resumed run continues the existing assistant message, so the
         // reconstructor needs it as its base to resolve the tool output.
         ...(existing ? { message: existing } : {}),
+        // Without this the SDK swallows provider errors (it only invokes
+        // `onError`), so the run would end silently with no inline error.
+        terminateOnError: true,
       })) {
         latest = partial;
         this.setThreadMessages(thread.id, [...siblings, setChatStatus(partial, "streaming")]);

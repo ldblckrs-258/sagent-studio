@@ -121,6 +121,14 @@ describe('runSearch', () => {
     expect(result.hits.map((hit) => hit.path)).toEqual(['root/sub/b.txt'])
   })
 
+  it('skips excluded directory names', async () => {
+    const result = await runSearch(
+      fsCall({ 'root/node_modules/a.txt': 'world', 'root/src/b.txt': 'world' }),
+      request({ excludedDirs: ['node_modules'] }),
+    )
+    expect(result.hits.map((hit) => hit.path)).toEqual(['root/src/b.txt'])
+  })
+
   it('counts an oversized file in filesSkipped without failing', async () => {
     const result = await runSearch(
       fsCall({ 'root/big.txt': 'world', 'root/small.txt': 'world' }, new Set(['root/big.txt'])),
@@ -128,6 +136,9 @@ describe('runSearch', () => {
     )
     expect(result.filesSkipped).toBe(1)
     expect(result.hits.map((hit) => hit.path)).toEqual(['root/small.txt'])
+    expect(result.skipped).toEqual([
+      { path: 'root/big.txt', reason: 'The workspace entry exceeds the size cap.' },
+    ])
   })
 
   it('skips a NUL-byte file and still returns hits from text files', async () => {
@@ -137,6 +148,8 @@ describe('runSearch', () => {
     )
     expect(result.filesSkipped).toBe(1)
     expect(result.hits.map((hit) => hit.path)).toEqual(['root/a.txt'])
+    expect(result.skipped).toMatchObject([{ path: 'root/bin.txt' }])
+    expect(result.skipped?.[0].reason).toContain('binary')
   })
 
   it('stops at maxResults and reports truncation', async () => {

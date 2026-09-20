@@ -48,13 +48,33 @@ function build(port: SkillLoadPort | undefined) {
 }
 
 describe('createSkillToolProvider', () => {
-  it('contributes exactly load_skill and gates availability on the port', () => {
+  it('contributes load_skill and search_skills and gates availability on the port', () => {
     const provider = createSkillToolProvider({ isEnabled: () => true })
-    expect(provider.names).toEqual(['load_skill'])
+    expect(provider.names).toEqual(['load_skill', 'search_skills'])
     expect(provider.isAvailable({})).toBe(false)
     expect(provider.isAvailable({ skills: { list: () => [], load: () => null } })).toBe(false)
     expect(provider.isAvailable({ skills: samplePort() })).toBe(true)
-    expect(Object.keys(build(samplePort()))).toEqual(['load_skill'])
+    expect(Object.keys(build(samplePort()))).toEqual(['load_skill', 'search_skills'])
+  })
+
+  it('searches the skill index by keyword', async () => {
+    const set = build(samplePort())
+    await expect(executor(set, 'search_skills')({ query: 'd1' }, CALL)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        scanned: 2,
+        matched: 1,
+        matches: [{ id: 's1', source: 'vault' }],
+      },
+    })
+  })
+
+  it('returns every skill for an empty query', async () => {
+    const set = build(samplePort())
+    await expect(executor(set, 'search_skills')({}, CALL)).resolves.toMatchObject({
+      ok: true,
+      value: { scanned: 2, matched: 2, matches: [{ id: 's1' }, { id: 'ws' }] },
+    })
   })
 
   it('loads a vault skill as trusted', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UIMessage } from 'ai'
-import { findPendingApproval } from './approval-pending'
+import { findPendingApproval, isAutomaticApproval } from './approval-pending'
 
 function assistant(parts: unknown[]): UIMessage {
   return { id: 'a1', role: 'assistant', parts: parts as UIMessage['parts'] }
@@ -62,5 +62,30 @@ describe('findPendingApproval', () => {
         assistant([pendingPart({ type: 'dynamic-tool', toolName: 'custom' })]),
       ])?.toolName,
     ).toBe('custom')
+  })
+
+  it('ignores an automatic approval so an auto-approved tool never prompts', () => {
+    expect(isAutomaticApproval({ id: 'ap1', isAutomatic: true })).toBe(true)
+    expect(
+      findPendingApproval([
+        assistant([pendingPart({ approval: { id: 'ap1', isAutomatic: true } })]),
+      ]),
+    ).toBeNull()
+  })
+
+  it('ignores an expired approval', () => {
+    expect(
+      findPendingApproval([
+        assistant([pendingPart({ approval: { id: 'ap1', resolution: 'expired' } })]),
+      ]),
+    ).toBeNull()
+  })
+
+  it('still finds a real pending approval next to an automatic one', () => {
+    const message = assistant([
+      pendingPart({ approval: { id: 'auto', isAutomatic: true } }),
+      pendingPart({ type: 'tool-remove', approval: { id: 'real' }, input: { path: 'b.txt' } }),
+    ])
+    expect(findPendingApproval([message])?.approvalId).toBe('real')
   })
 })

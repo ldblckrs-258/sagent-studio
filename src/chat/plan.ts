@@ -111,7 +111,6 @@ export function normalizePlanItems(value: unknown): PlanParse {
   }
   return { ok: true, items }
 }
-
 export function planCounts(items: readonly PlanItem[]): Record<PlanItemStatus, number> {
   const counts: Record<PlanItemStatus, number> = {
     pending: 0,
@@ -121,4 +120,29 @@ export function planCounts(items: readonly PlanItem[]): Record<PlanItemStatus, n
   }
   for (const item of items) counts[item.status] += 1
   return counts
+}
+
+export interface PlanTextChange {
+  id: string
+  from: string
+  to: string
+}
+
+/**
+ * Plan ids are the stable handle for an item; reusing an id with new text
+ * silently rewrites the item's meaning and breaks cross-turn comparison. This
+ * reports those retextings so the tool can warn the model.
+ */
+export function planTextChanges(
+  previous: readonly PlanItem[],
+  next: readonly PlanItem[],
+): PlanTextChange[] {
+  if (previous.length === 0) return []
+  const before = new Map(previous.map((item) => [item.id, item.text]))
+  const changes: PlanTextChange[] = []
+  for (const item of next) {
+    const from = before.get(item.id)
+    if (from !== undefined && from !== item.text) changes.push({ id: item.id, from, to: item.text })
+  }
+  return changes
 }

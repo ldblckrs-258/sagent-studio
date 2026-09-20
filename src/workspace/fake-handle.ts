@@ -27,6 +27,14 @@ export function createFakeWorkspace(initial: Record<string, string> = {}): FakeW
           size: bytes.byteLength,
           text: async () => node.content,
           arrayBuffer: async () => bytes.buffer,
+          slice: (start = 0, end = bytes.byteLength) => {
+            const slice = bytes.slice(start, end)
+            return {
+              size: slice.byteLength,
+              arrayBuffer: async () => slice.buffer,
+              text: async () => new TextDecoder().decode(slice),
+            }
+          },
         } as unknown as File
       },
       createWritable: async () => {

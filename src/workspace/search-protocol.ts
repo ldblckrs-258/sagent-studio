@@ -9,6 +9,8 @@ export interface SearchRequest {
   maxResults: number
   maxFilesScanned: number
   maxDepth: number
+  /** Directory names to skip entirely (e.g. `node_modules`). */
+  excludedDirs?: string[]
 }
 
 export type SearchWorkerRequest = { kind: 'search' } & SearchRequest

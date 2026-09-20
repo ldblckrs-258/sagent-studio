@@ -29,7 +29,7 @@ export function createSandboxControlProvider(source: SandboxControlSource): Tool
         case 'reset_sandbox':
           return tool({
             description:
-              'Reset the sandbox session, terminating warm JavaScript and Python workers so the next run starts clean.',
+              'Reset the sandbox session, terminating warm JavaScript and Python workers so the next run starts clean. This restarts the execution runtimes only; it never touches workspace files or their contents.',
             inputSchema: jsonSchema<{ language?: Language }>({
               type: 'object',
               properties: { language: { type: 'string', enum: ['js', 'python'] } },

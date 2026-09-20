@@ -9,6 +9,7 @@ export type ToolResultCode =
   | 'limit_exceeded'
   | 'no_match'
   | 'multiple_matches'
+  | 'stale_write'
   | 'conflict'
   | 'approval_required'
   | 'denied'

@@ -43,12 +43,13 @@ describe("workspaceToolProvider", () => {
     );
   });
 
-  it("contributes the eleven system tools", async () => {
+  it("contributes the twelve system tools", async () => {
     const { toolSet } = await build();
     expect(Object.keys(toolSet)).toEqual([
       "copy",
       "edit_file",
       "file_info",
+      "find_lines",
       "list_dir",
       "make_dir",
       "move",
@@ -366,6 +367,39 @@ describe("workspaceToolProvider", () => {
     });
   });
 
+  it("rejects a file as the search path and points at find_lines", async () => {
+    const { toolSet } = await build({ "a.txt": "hello" });
+    await expect(
+      executor(toolSet, "search")({ pattern: "hello", path: "a.txt" }, CALL),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "invalid_input",
+      hint: expect.stringContaining("find_lines"),
+    });
+  });
+
+  it("skips vendor directories by default and can include them", async () => {
+    const { toolSet } = await build({
+      "src/a.txt": "needle",
+      "node_modules/pkg/b.txt": "needle",
+    });
+    await expect(
+      executor(toolSet, "search")({ pattern: "needle" }, CALL),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { hits: [{ path: "src/a.txt" }] },
+    });
+    const included = await executor(toolSet, "search")(
+      { pattern: "needle", include_excluded: true },
+      CALL,
+    );
+    expect(
+      (included as { value: { hits: Array<{ path: string }> } }).value.hits
+        .map((hit) => hit.path)
+        .sort(),
+    ).toEqual(["node_modules/pkg/b.txt", "src/a.txt"]);
+  });
+
   it("moves and copies entries and reports conflict on an existing destination", async () => {
     const { toolSet } = await build({ "a.txt": "hello", "b.txt": "other" });
     await expect(
@@ -395,6 +429,166 @@ describe("workspaceToolProvider", () => {
     ).resolves.toMatchObject({
       ok: false,
       code: "invalid_input",
+    });
+  });
+
+  it("serializes concurrent edits to one path so no write is lost", async () => {
+    const { toolSet } = await build({ "a.txt": "alpha\nbeta\ngamma" });
+    await Promise.all([
+      executor(toolSet, "edit_file")(
+        { path: "a.txt", old_string: "alpha", new_string: "ALPHA" },
+        CALL,
+      ),
+      executor(toolSet, "edit_file")(
+        { path: "a.txt", old_string: "gamma", new_string: "GAMMA" },
+        CALL,
+      ),
+    ]);
+    await expect(
+      executor(toolSet, "read_file")({ path: "a.txt" }, CALL),
+    ).resolves.toMatchObject({
+      value: { content: "ALPHA\nbeta\nGAMMA" },
+    });
+  });
+
+  it("applies a batch of hunks atomically against one revision", async () => {
+    const { toolSet } = await build({ "a.txt": "one two three four" });
+    await expect(
+      executor(toolSet, "edit_file")(
+        {
+          path: "a.txt",
+          edits: [
+            { old_string: "one", new_string: "1" },
+            { old_string: "three", new_string: "3" },
+          ],
+        },
+        CALL,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { applied: true, replacements: 2 },
+    });
+    await expect(
+      executor(toolSet, "read_file")({ path: "a.txt" }, CALL),
+    ).resolves.toMatchObject({ value: { content: "1 two 3 four" } });
+  });
+
+  it("leaves the file unchanged when one hunk in a batch fails", async () => {
+    const { toolSet } = await build({ "a.txt": "one two" });
+    await expect(
+      executor(toolSet, "edit_file")(
+        {
+          path: "a.txt",
+          edits: [
+            { old_string: "one", new_string: "1" },
+            { old_string: "missing", new_string: "x" },
+          ],
+        },
+        CALL,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: "no_match",
+      value: { failedIndex: 1 },
+    });
+    await expect(
+      executor(toolSet, "read_file")({ path: "a.txt" }, CALL),
+    ).resolves.toMatchObject({ value: { content: "one two" } });
+  });
+
+  it("reports already_satisfied when the new text is already present", async () => {
+    const { toolSet } = await build({ "a.txt": "hello world" });
+    await expect(
+      executor(toolSet, "edit_file")(
+        { path: "a.txt", old_string: "goodbye", new_string: "world" },
+        CALL,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { applied: false, replacements: 0, reason: "already_satisfied" },
+    });
+  });
+
+  it("treats a fully applied hunk batch as already_satisfied", async () => {
+    const { toolSet } = await build({ "a.txt": "BETA GAMMA" });
+    await expect(
+      executor(toolSet, "edit_file")(
+        {
+          path: "a.txt",
+          edits: [
+            { old_string: "beta", new_string: "BETA" },
+            { old_string: "gamma", new_string: "GAMMA" },
+          ],
+        },
+        CALL,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { applied: false, replacements: 0, reason: "already_satisfied" },
+    });
+  });
+
+  it("rejects a stale write when expect_revision does not match", async () => {
+    const { toolSet } = await build({ "a.txt": "hello" });
+    await expect(
+      executor(toolSet, "edit_file")(
+        { path: "a.txt", old_string: "hello", new_string: "hi", expect_revision: "deadbeef" },
+        CALL,
+      ),
+    ).resolves.toMatchObject({ ok: false, code: "stale_write" });
+  });
+
+  it("returns a content revision and optional line gutter on read", async () => {
+    const { toolSet } = await build({ "a.txt": "a\nb\nc" });
+    const read = await executor(toolSet, "read_file")(
+      { path: "a.txt", offset: 2, limit: 1, line_numbers: true },
+      CALL,
+    );
+    expect(read).toMatchObject({
+      ok: true,
+      value: {
+        content: "2: b",
+        firstLine: 2,
+        lastLine: 2,
+      },
+    });
+    expect(typeof (read as { value: { revision: string } }).value.revision).toBe("string");
+  });
+
+  it("finds lines in a file without loading it whole", async () => {
+    const { toolSet } = await build({ "big.txt": "alpha\nbeta\ngamma" });
+    await expect(
+      executor(toolSet, "find_lines")({ path: "big.txt", pattern: "beta" }, CALL),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { path: "big.txt", hits: [{ path: "big.txt", line: 2, text: "beta" }] },
+    });
+  });
+
+  it("finds a multibyte character that straddles the chunk boundary", async () => {
+    const prefix = "a".repeat(1024 * 1024 - 1);
+    const { toolSet } = await build({ "big.txt": `${prefix}\u20ac\nsecond` });
+    await expect(
+      executor(toolSet, "find_lines")({ path: "big.txt", pattern: "\u20ac" }, CALL),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { hits: [{ path: "big.txt", line: 1 }] },
+    });
+  });
+
+  it("reports why search files were skipped instead of returning a bare empty result", async () => {
+    const { toolSet } = await build({
+      "bin.txt": "a\u0000world",
+      "clean.txt": "world",
+    });
+    await expect(
+      executor(toolSet, "search")({ pattern: "world" }, CALL),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        filesSkipped: 1,
+        skipped: [{ path: "bin.txt", reason: expect.stringContaining("binary") }],
+      },
     });
   });
 });

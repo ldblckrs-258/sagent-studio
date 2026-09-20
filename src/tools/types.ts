@@ -38,6 +38,7 @@ export interface WorkspaceSearchOptions {
   maxResults?: number
   maxFilesScanned?: number
   maxDepth?: number
+  excludedDirs?: string[]
 }
 
 export interface WorkspaceSearchHit {
@@ -46,11 +47,30 @@ export interface WorkspaceSearchHit {
   text: string
 }
 
+export interface WorkspaceSearchSkip {
+  path: string
+  reason: string
+}
+
 export interface WorkspaceSearchResult {
   hits: WorkspaceSearchHit[]
   truncated: boolean
   filesScanned: number
   filesSkipped: number
+  /** Per-file reasons for `filesSkipped`, so empty hits never reads as "no match". */
+  skipped?: WorkspaceSearchSkip[]
+}
+
+export interface WorkspaceFindLinesOptions {
+  pattern: string
+  ignoreCase?: boolean
+  maxResults?: number
+}
+
+export interface WorkspaceFindLinesResult {
+  path: string
+  hits: WorkspaceSearchHit[]
+  truncated: boolean
 }
 
 export interface WorkspaceApi {
@@ -63,6 +83,12 @@ export interface WorkspaceApi {
   move(from: string, to: string): Promise<WorkspaceTransferResult>
   copy(from: string, to: string): Promise<WorkspaceTransferResult>
   search(options: WorkspaceSearchOptions): Promise<WorkspaceSearchResult>
+  /**
+   * Scans one file for matching lines without loading the whole file, so a
+   * large artifact stays searchable past `readFile`'s size cap. Optional so
+   * existing workspace mocks stay valid.
+   */
+  findLines?(path: string, options: WorkspaceFindLinesOptions): Promise<WorkspaceFindLinesResult>
 }
 
 export interface SandboxJsToolDefinition {

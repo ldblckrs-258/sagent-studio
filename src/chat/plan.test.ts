@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizePlanItems, parsePlanItems, planCounts, validatePlanItems } from './plan'
+import { normalizePlanItems, parsePlanItems, planCounts, planTextChanges, validatePlanItems } from './plan'
 import { MAX_PLAN_ITEMS, MAX_PLAN_TEXT_LENGTH } from './types'
 import type { PlanItem } from './types'
 
@@ -65,5 +65,26 @@ describe('planCounts', () => {
         item({ status: 'completed' }),
       ]),
     ).toEqual({ pending: 2, in_progress: 0, completed: 1, cancelled: 0 })
+  })
+})
+
+describe('planTextChanges', () => {
+  it('reports an id whose text changed and ignores stable ids', () => {
+    const previous: PlanItem[] = [
+      { id: '1', text: 'Build the parser', status: 'pending' },
+      { id: '2', text: 'Wire the UI', status: 'pending' },
+    ]
+    const next: PlanItem[] = [
+      { id: '1', text: 'Rework the parser', status: 'pending' },
+      { id: '2', text: 'Wire the UI', status: 'completed' },
+      { id: '3', text: 'Ship it', status: 'pending' },
+    ]
+    expect(planTextChanges(previous, next)).toEqual([
+      { id: '1', from: 'Build the parser', to: 'Rework the parser' },
+    ])
+  })
+
+  it('returns nothing for an empty previous plan', () => {
+    expect(planTextChanges([], [{ id: '1', text: 'x', status: 'pending' }])).toEqual([])
   })
 })

@@ -10,7 +10,7 @@ import {
 
 describe('isGatedTool', () => {
   it('gates each named destructive built-in', () => {
-    for (const name of ['write_file', 'remove', 'edit_file', 'move', 'run_js', 'run_python']) {
+    for (const name of ['write_file', 'remove', 'edit_file', 'move', 'restore', 'run_js', 'run_python']) {
       expect(isGatedTool(name), name).toBe(true)
     }
   })
@@ -143,7 +143,41 @@ describe('modeCeiling and resolveApprovalStatus', () => {
     expect(resolveApprovalStatus('editing', { tools: { remove: 'allow' } }, 'remove')).toBe(
       'user-approval',
     )
-    expect(resolveApprovalStatus('editing', { tools: {} }, 'write_file')).toBe('user-approval')
+  })
+
+  it('runs the editing tier file/code tools without a prompt', () => {
+    for (const name of ['write_file', 'edit_file', 'move', 'run_js', 'run_python']) {
+      expect(resolveApprovalStatus('editing', { tools: {} }, name), name).toBe('approved')
+    }
+    expect(resolveApprovalStatus('read_only', { tools: {} }, 'write_file')).toBe('user-approval')
+    expect(resolveApprovalStatus('editing', { tools: {} }, 'remove')).toBe('user-approval')
+  })
+
+  it('always asks before restoring the workspace', () => {
+    expect(resolveApprovalStatus('editing', { tools: {} }, 'restore')).toBe('user-approval')
+    expect(resolveApprovalStatus('editing', { tools: { restore: 'allow' } }, 'restore')).toBe(
+      'approved',
+    )
+    expect(resolveApprovalStatus('read_only', { tools: {} }, 'restore')).toBe('user-approval')
+    expect(resolveApprovalStatus('god', { tools: {} }, 'restore')).toBe('approved')
+  })
+
+  it('honors an explicit per-tool ask or deny over the editing tier grant', () => {
+    expect(resolveApprovalStatus('editing', { tools: { write_file: 'ask' } }, 'write_file')).toBe(
+      'user-approval',
+    )
+    expect(resolveApprovalStatus('editing', { tools: { run_js: 'deny' } }, 'run_js')).toBe('denied')
+  })
+
+  it('escalates user code/network tools in read_only but keeps them asking in editing', () => {
+    expect(isWithinCeiling('read_only', { name: 'my_tool', kind: 'sandbox-js' })).toBe(false)
+    expect(isWithinCeiling('editing', { name: 'my_tool', kind: 'sandbox-js' })).toBe(true)
+    expect(
+      resolveApprovalStatus('editing', { tools: {} }, { name: 'fetch_it', kind: 'http' }),
+    ).toBe('user-approval')
+    expect(
+      resolveApprovalStatus('god', { tools: {} }, { name: 'fetch_it', kind: 'http' }),
+    ).toBe('approved')
   })
 
   it('auto-approves gated tools in god but never change_mode', () => {

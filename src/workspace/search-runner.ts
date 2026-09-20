@@ -40,6 +40,7 @@ export function toSearchRequest(options: WorkspaceSearchOptions): SearchWorkerRe
     maxResults: Math.max(1, Math.min(requested, MAX_SEARCH_RESULTS)),
     maxFilesScanned: options.maxFilesScanned ?? DEFAULT_MAX_FILES_SCANNED,
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
+    ...(options.excludedDirs === undefined ? {} : { excludedDirs: options.excludedDirs }),
   }
 }
 

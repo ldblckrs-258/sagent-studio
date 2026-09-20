@@ -44,6 +44,12 @@ export interface SandboxManager {
 export interface SandboxManagerOptions {
   settings: SandboxSettings
   workspace?: WorkspaceApi
+  /**
+   * Live workspace resolver for the model-facing tool pair. Preferred over
+   * `workspace` so a folder granted after the manager was created still reaches
+   * the sandbox bridge.
+   */
+  getWorkspace?: () => WorkspaceApi | undefined
   workerFactory?: { js?: WorkerFactory; python?: WorkerFactory }
 }
 
@@ -55,18 +61,21 @@ function describe(error: unknown): string {
 function buildPair(
   settings: SandboxSettings,
   workspace: WorkspaceApi | undefined,
+  getWorkspace: (() => WorkspaceApi | undefined) | undefined,
   factories: { js?: WorkerFactory; python?: WorkerFactory },
 ): SandboxRunnerPair {
   return {
     js: new JsRunner({
       ...(factories.js ? { workerFactory: factories.js } : {}),
-      ...(workspace ? { workspace } : {}),
+      ...(getWorkspace === undefined && workspace ? { workspace } : {}),
+      ...(getWorkspace === undefined ? {} : { getWorkspace }),
       defaultTimeoutMs: settings.jsTimeoutMs,
       idleTimeoutMs: settings.idleTimeoutMs,
     }),
     python: new PyRunner({
       ...(factories.python ? { workerFactory: factories.python } : {}),
-      ...(workspace ? { workspace } : {}),
+      ...(getWorkspace === undefined && workspace ? { workspace } : {}),
+      ...(getWorkspace === undefined ? {} : { getWorkspace }),
       defaultTimeoutMs: settings.pyTimeoutMs,
       idleTimeoutMs: settings.idleTimeoutMs,
     }),
@@ -120,8 +129,8 @@ export function createSandboxManager(options: SandboxManagerOptions): SandboxMan
     }
   }
 
-  let toolPair = buildPair(settings, options.workspace, factories)
-  let consolePair = buildPair(settings, undefined, factories)
+  let toolPair = buildPair(settings, options.workspace, options.getWorkspace, factories)
+  let consolePair = buildPair(settings, undefined, undefined, factories)
   let toolView = accountPair(toolPair, beginRun, endRun)
 
   function rebuild(): void {
@@ -129,8 +138,8 @@ export function createSandboxManager(options: SandboxManagerOptions): SandboxMan
     toolPair.python.dispose()
     consolePair.js.dispose()
     consolePair.python.dispose()
-    toolPair = buildPair(settings, options.workspace, factories)
-    consolePair = buildPair(settings, undefined, factories)
+    toolPair = buildPair(settings, options.workspace, options.getWorkspace, factories)
+    consolePair = buildPair(settings, undefined, undefined, factories)
     toolView = accountPair(toolPair, beginRun, endRun)
   }
 

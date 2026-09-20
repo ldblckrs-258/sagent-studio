@@ -1,5 +1,7 @@
 import type {
   WorkspaceEntry,
+  WorkspaceFindLinesOptions,
+  WorkspaceFindLinesResult,
   WorkspaceListOptions,
   WorkspaceSearchOptions,
   WorkspaceSearchResult,
@@ -17,6 +19,14 @@ import {
 import { compileGlob } from "./glob";
 import type { SearchRunner } from "./search-runner";
 import { createSearchRunner } from "./search-runner";
+import {
+  DEFAULT_MAX_SEARCH_RESULTS,
+  MAX_HIT_CHARS,
+  MAX_SEARCH_RESULTS,
+  isCatastrophicPattern,
+  probeBinary,
+} from "./search";
+import { SearchRequestError } from "./search-protocol";
 
 export {
   DEFAULT_MAX_DEPTH,
@@ -118,6 +128,10 @@ export interface WorkspaceFs {
   ensurePermission(mode: PermissionMode): Promise<void>;
   list(path: string, options?: WorkspaceListOptions): Promise<WorkspaceEntry[]>;
   readFile(path: string): Promise<string>;
+  findLines?(
+    path: string,
+    options: WorkspaceFindLinesOptions,
+  ): Promise<WorkspaceFindLinesResult>;
   writeFile(path: string, content: string): Promise<void>;
   makeDir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
@@ -253,6 +267,92 @@ class FileWorkspaceFs implements WorkspaceFs {
       throw new WorkspaceLimitError(path);
     }
     return text;
+  }
+
+  async findLines(
+    path: string,
+    options: WorkspaceFindLinesOptions,
+  ): Promise<WorkspaceFindLinesResult> {
+    if (isCatastrophicPattern(options.pattern)) {
+      throw new SearchRequestError(
+        "invalid_input",
+        "The search pattern can cause catastrophic backtracking.",
+        { hint: "Remove nested quantifiers or backreferences and retry." },
+      );
+    }
+    let matcher: RegExp;
+    try {
+      matcher = new RegExp(options.pattern, options.ignoreCase ? "i" : "");
+    } catch (cause) {
+      throw new SearchRequestError(
+        "invalid_input",
+        "The search pattern is not a valid regular expression.",
+        { hint: "Fix the pattern syntax and retry.", cause },
+      );
+    }
+
+    const { file } = await this.fileFor(path, resolveSegments(path));
+    const requested = options.maxResults ?? DEFAULT_MAX_SEARCH_RESULTS;
+    const maxResults = Math.max(1, Math.min(requested, MAX_SEARCH_RESULTS));
+    const chunkSize = 1024 * 1024;
+    const hits: WorkspaceFindLinesResult["hits"] = [];
+    let truncated = false;
+    let lineNumber = 1;
+    let remainder = "";
+    let first = true;
+    // One streaming decoder keeps a multibyte character that straddles a chunk
+    // boundary intact instead of splitting it into replacement characters.
+    const decoder = new TextDecoder();
+
+    for (let start = 0; start < file.size; start += chunkSize) {
+      const end = Math.min(start + chunkSize, file.size);
+      const buffer = await file.slice(start, end).arrayBuffer();
+      const text = decoder.decode(buffer, { stream: end < file.size });
+      if (first) {
+        first = false;
+        if (probeBinary(text)) {
+          throw new WorkspaceInvalidInputError(
+            `The file "${path}" looks binary and cannot be scanned line by line.`,
+          );
+        }
+      }
+      const pieces = `${remainder}${text}`.split("\n");
+      remainder = pieces.pop() ?? "";
+      for (const piece of pieces) {
+        if (hits.length >= maxResults) {
+          truncated = true;
+          return { path, hits, truncated };
+        }
+        const line = piece.endsWith("\r") ? piece.slice(0, -1) : piece;
+        matcher.lastIndex = 0;
+        if (matcher.test(line)) {
+          hits.push({
+            path,
+            line: lineNumber,
+            text: line.length > MAX_HIT_CHARS ? line.slice(0, MAX_HIT_CHARS) : line,
+          });
+        }
+        lineNumber += 1;
+      }
+    }
+
+    if (remainder.length > 0) {
+      if (hits.length < maxResults) {
+        const line = remainder.endsWith("\r") ? remainder.slice(0, -1) : remainder;
+        matcher.lastIndex = 0;
+        if (matcher.test(line)) {
+          hits.push({
+            path,
+            line: lineNumber,
+            text: line.length > MAX_HIT_CHARS ? line.slice(0, MAX_HIT_CHARS) : line,
+          });
+        }
+      } else {
+        truncated = true;
+      }
+    }
+
+    return { path, hits, truncated };
   }
 
   async writeFile(path: string, content: string): Promise<void> {

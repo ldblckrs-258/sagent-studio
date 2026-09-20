@@ -1,6 +1,6 @@
 import type { WorkspaceApi } from '../tools/types'
 import { attachFsHandler } from './fs-bridge'
-import type { PendingFs } from './fs-bridge'
+import type { PendingFs, WorkspaceSource } from './fs-bridge'
 import { SandboxTimeoutError, parseInbound, truncateOutput } from './protocol'
 import type { ToWorker } from './protocol'
 import type { RunOptions, RunResult } from './types'
@@ -13,6 +13,8 @@ export interface WorkerSessionOptions {
   language: 'js' | 'py'
   defaultTimeoutMs: number
   workspace?: WorkspaceApi
+  /** Resolved per `fs.call`, so a folder granted after the session opened still works. */
+  getWorkspace?: () => WorkspaceApi | undefined
   idleTimeoutMs?: number
 }
 
@@ -29,7 +31,7 @@ export class WorkerSession {
   private readonly workerFactory: WorkerFactory
   private readonly language: 'js' | 'py'
   private readonly defaultTimeoutMs: number
-  private readonly workspace?: WorkspaceApi
+  private readonly workspace: WorkspaceSource
   private readonly idleTimeoutMs: number
   private worker: Worker | null = null
   private port: MessagePort | null = null
@@ -42,7 +44,7 @@ export class WorkerSession {
     this.workerFactory = options.workerFactory
     this.language = options.language
     this.defaultTimeoutMs = options.defaultTimeoutMs
-    this.workspace = options.workspace
+    this.workspace = options.getWorkspace ?? options.workspace
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   }
 

@@ -4,15 +4,21 @@ import { createToolApproval } from './approval'
 describe('createToolApproval', () => {
   const gated = [{ name: 'write_file' }, { name: 'make_dir' }]
 
-  it('maps ask to user-approval, allow to approved, and deny to denied', () => {
+  it('grants editing-tier writes and maps allow/ask/deny to the SDK status', () => {
     expect(createToolApproval('editing', { tools: {} }, gated)).toEqual({
-      write_file: 'user-approval',
+      write_file: 'approved',
     })
     expect(createToolApproval('editing', { tools: { write_file: 'allow' } }, gated)).toEqual({
       write_file: 'approved',
     })
+    expect(createToolApproval('editing', { tools: { write_file: 'ask' } }, gated)).toEqual({
+      write_file: 'user-approval',
+    })
     expect(createToolApproval('editing', { tools: { write_file: 'deny' } }, gated)).toEqual({
       write_file: 'denied',
+    })
+    expect(createToolApproval('read_only', { tools: {} }, gated)).toEqual({
+      write_file: 'user-approval',
     })
   })
 

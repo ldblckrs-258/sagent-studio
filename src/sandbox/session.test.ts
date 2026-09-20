@@ -291,4 +291,33 @@ describe('WorkerSession workspace bridge', () => {
     await expect(pending).resolves.toMatchObject({ stdout: 'content' })
     active.dispose()
   })
+
+  it('resolves a live getWorkspace when the folder is granted after the run starts', async () => {
+    const fake = createFakeWorkspace({ 'a.txt': 'late' })
+    const holder: { workspace?: WorkspaceApi } = {}
+    const { factory, workers } = makeFactory()
+    const active = session(factory, { getWorkspace: () => holder.workspace })
+    const pending = active.run('x')
+    await tick()
+    holder.workspace = createWorkspaceFs(fake.handle)
+    let activeRunId = ''
+    workers[0].setHandler((message, target) => {
+      if (kindOf(message) === 'run') {
+        activeRunId = runIdOf(message)
+        target.emit({ kind: 'fs.call', runId: activeRunId, requestId: 'q1', op: 'read', path: 'a.txt' })
+        return
+      }
+      if (kindOf(message) === 'fs.result') {
+        target.emit({
+          kind: 'result',
+          runId: activeRunId,
+          stdout: (message as { data: string }).data,
+          stderr: '',
+          result: null,
+        })
+      }
+    })
+    await expect(pending).resolves.toMatchObject({ stdout: 'late' })
+    active.dispose()
+  })
 })

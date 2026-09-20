@@ -26,7 +26,7 @@ export function createModeToolProvider(): ToolProvider {
         case 'change_mode':
           return tool({
             description:
-              'Request a change of the conversation permission mode. This always requires user approval.',
+              'Request a change of the conversation permission mode. This always requires user approval. The current mode is stated in the system prompt under "Permission mode".',
             inputSchema: jsonSchema<{ mode: ChatMode }>({
               type: 'object',
               properties: { mode: { type: 'string', enum: ['read_only', 'editing', 'god'] } },

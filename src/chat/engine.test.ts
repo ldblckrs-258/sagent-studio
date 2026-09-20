@@ -1,5 +1,5 @@
 import type { LanguageModel, UIMessage } from "ai";
-import { jsonSchema, tool } from "ai";
+import { APICallError, jsonSchema, tool } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillStore } from "../skills/registry";
@@ -7,14 +7,14 @@ import { SkillRegistry } from "../skills/registry";
 import { createPlanToolProvider } from "../tools/builtin/plan";
 import { createSkillToolProvider } from "../tools/builtin/skills";
 import { ToolRegistry } from "../tools/registry";
-import type { ToolProvider } from "../tools/types";
+import type { ToolProvider, WorkspaceApi } from "../tools/types";
 import type { Settings } from "../vault/settings";
 import { defaultSettings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import type { EngineDeps } from "./engine";
 import { createEngine } from "./engine";
 import { abortersCount, useChatStore } from "./store";
-import type { ChatThread } from "./types";
+import type { ChatMode, ChatThread } from "./types";
 import { defaultThreadConfig } from "./types";
 
 type Usage = {
@@ -197,6 +197,7 @@ function setup(options: {
   store?: MemoryStore;
   modelFactory?: EngineDeps["modelFactory"];
   persistApproval?: EngineDeps["persistApproval"];
+  workspace?: EngineDeps["workspace"];
 }) {
   const store = options.store ?? memoryStore();
   const toolRegistry = options.toolRegistry ?? new ToolRegistry();
@@ -209,6 +210,7 @@ function setup(options: {
     threadStore: store,
     modelFactory: options.modelFactory ?? (() => options.model),
     ...(options.persistApproval ? { persistApproval: options.persistApproval } : {}),
+    ...(options.workspace ? { workspace: options.workspace } : {}),
   };
   return { engine: createEngine(deps), store, toolRegistry, skillRegistry };
 }
@@ -217,6 +219,7 @@ function seed(
   id: string,
   messages: UIMessage[],
   config = defaultThreadConfig("p1", "m1"),
+  mode?: ChatMode,
 ): ChatThread {
   const thread: ChatThread = {
     id,
@@ -225,6 +228,7 @@ function seed(
     config,
     createdAt: 1,
     updatedAt: 1,
+    ...(mode ? { mode } : {}),
   };
   useChatStore.getState().setThread(thread);
   return thread;
@@ -276,6 +280,94 @@ describe("chat engine", () => {
     expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain(
       "SYSTEM_MARKER",
     );
+  });
+
+  it("injects the permission mode and the workspace project instruction", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "done")) }]);
+    const workspace = {
+      list: async () => [],
+      readFile: async (path: string) =>
+        path === "AGENTS.md" ? "PROJECT_RULE" : (() => { throw new Error("nope") })(),
+      writeFile: async () => {},
+      makeDir: async () => {},
+      remove: async () => {},
+      stat: async (path: string) => ({ path, kind: "file" as const, size: 0 }),
+      move: async () => ({ from: "", to: "", kind: "file" as const, size: 0 }),
+      copy: async () => ({ from: "", to: "", kind: "file" as const, size: 0 }),
+      search: async () => ({ hits: [], truncated: false, filesScanned: 0, filesSkipped: 0 }),
+    } as WorkspaceApi;
+    const { engine } = setup({ model, workspace });
+    seed("th1", [], defaultThreadConfig("p1", "m1"), "read_only");
+
+    await engine.sendTurn("th1", "go");
+
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain("## Permission mode");
+    expect(prompt).toContain("`read_only` mode");
+    expect(prompt).toContain("PROJECT_RULE");
+  });
+
+  it("retries a failed turn by resuming it instead of replaying its tools", async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.registerProvider({
+      names: ["test_tool"],
+      isAvailable: () => true,
+      create: () =>
+        tool({
+          description: "Echo a value.",
+          inputSchema: jsonSchema<{ value: string }>({
+            type: "object",
+            properties: { value: { type: "string" } },
+          }),
+          execute: async (input) => {
+            executions += 1;
+            return `echo:${String((input as { value?: unknown }).value ?? "")}`;
+          },
+        }),
+    });
+    const model = makeModel([{ stream: streamOf(textStep("t2", "resumed")) }]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    const failed = {
+      id: "a1",
+      role: "assistant" as const,
+      parts: [
+        { type: "text" as const, text: "checking" },
+        {
+          type: "tool-test_tool" as const,
+          toolCallId: "c1",
+          state: "output-available" as const,
+          input: { value: "1" },
+          output: "echo:1",
+        },
+      ],
+      metadata: { chatStatus: "done", error: "provider exploded" },
+    };
+    seed("th1", [user("u1", "go"), failed]);
+
+    await engine.rerun("th1", "a1");
+
+    // The completed tool call was reused, not executed again.
+    expect(executions).toBe(0);
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain("echo:1");
+    const messages = useChatStore.getState().threads.th1.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[1].id).toBe("a1");
+    expect(textOf(messages[1])).toContain("resumed");
+    expect((messages[1].metadata as { error?: unknown }).error).toBeUndefined();
+  });
+
+  it("regenerates a healthy turn from the user message", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t2", "again")) }]);
+    const { engine } = setup({ model });
+    seed("th1", [user("u1", "go"), assistant("a1", "first")]);
+
+    await engine.rerun("th1", "a1");
+
+    const messages = useChatStore.getState().threads.th1.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[0].id).toBe("u1");
+    expect(textOf(messages[1])).toBe("again");
   });
 
   it("keeps running tool steps until the model stops calling tools", async () => {
@@ -384,6 +476,57 @@ describe("chat engine", () => {
       "user",
     ]);
     expect(useChatStore.getState().error).toContain("bad provider config");
+  });
+
+  it("retries a transient provider error before giving up", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new APICallError({
+            message: "Service Unavailable",
+            url: "https://example.com/v1/chat",
+            requestBodyValues: {},
+            statusCode: 503,
+            responseHeaders: { "retry-after": "0" },
+            isRetryable: true,
+          });
+        }
+        return { stream: streamOf(textStep("t1", "recovered")) };
+      },
+    });
+    const { engine } = setup({ model });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "hi");
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(textOf(useChatStore.getState().threads.th1.messages[1])).toBe(
+      "recovered",
+    );
+  });
+
+  it("surfaces a failed run on the assistant message, not the global banner", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        throw new Error("provider exploded");
+      },
+    });
+    const { engine, store } = setup({ model });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "hi");
+
+    const messages = useChatStore.getState().threads.th1.messages;
+    expect(messages).toHaveLength(2);
+    expect(messages[1].metadata).toMatchObject({
+      error: "Error: provider exploded",
+    });
+    expect(useChatStore.getState().error).toBeNull();
+    expect(store.get("th1")?.messages[1].metadata).toMatchObject({
+      error: "Error: provider exploded",
+    });
   });
 
   it("removes a skill prompt block when the skill is not enabled", async () => {
@@ -721,6 +864,11 @@ function pausedPart(messages: UIMessage[], id: string): Record<string, unknown> 
   return part as unknown as Record<string, unknown>;
 }
 
+/** A `read_only` thread is the mode where a write is above the ceiling and asks. */
+function seedReadOnly(id: string, messages: UIMessage[]): ChatThread {
+  return seed(id, messages, defaultThreadConfig("p1", "m1"), "read_only");
+}
+
 describe("tool approval", () => {
   it("requests approval without executing, then executes once after approval", async () => {
     const counter = { count: 0 };
@@ -731,7 +879,7 @@ describe("tool approval", () => {
       { stream: streamOf(textStep("t2", "done")) },
     ]);
     const { engine, store } = setup({ model, toolRegistry: registry });
-    seed("th1", []);
+    seedReadOnly("th1", []);
 
     await engine.sendTurn("th1", "go");
     let messages = useChatStore.getState().threads.th1.messages;
@@ -759,7 +907,7 @@ describe("tool approval", () => {
       { stream: streamOf(textStep("t2", "done")) },
     ]);
     const { engine } = setup({ model, toolRegistry: registry });
-    seed("th1", []);
+    seedReadOnly("th1", []);
 
     await engine.sendTurn("th1", "go");
     const messages = useChatStore.getState().threads.th1.messages;
@@ -826,7 +974,7 @@ describe("tool approval", () => {
         persisted.push([name, decision]);
       },
     });
-    seed("th1", []);
+    seedReadOnly("th1", []);
 
     await engine.sendTurn("th1", "go");
     const messages = useChatStore.getState().threads.th1.messages;
@@ -854,7 +1002,7 @@ describe("tool approval", () => {
         persisted.push([name, decision]);
       },
     });
-    seed("th1", []);
+    seedReadOnly("th1", []);
 
     await engine.sendTurn("th1", "go");
     const messages = useChatStore.getState().threads.th1.messages;
@@ -865,6 +1013,23 @@ describe("tool approval", () => {
       optionId: "allow-always",
     });
     expect(persisted).toEqual([["write_file", "allow"]]);
+  });
+
+  it("runs an editing-tier write without prompting", async () => {
+    const counter = { count: 0 };
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider(counter));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({ model, toolRegistry: registry });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+    expect(counter.count).toBe(1);
+    const messages = useChatStore.getState().threads.th1.messages;
+    expect(pausedPart(messages, messages[1].id).state).toBe("output-available");
   });
 
   it("auto-approves a gated tool in god mode", async () => {
