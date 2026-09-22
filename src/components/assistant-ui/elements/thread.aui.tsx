@@ -23,6 +23,7 @@ import {
   threadGroupBy,
 } from "@/components/assistant-ui/elements/tool-view/grouping";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { SubAgentReport } from "@/components/assistant-ui/elements/sub-agent-report.aui";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -41,6 +42,7 @@ import { CompactionIndicator } from "@/ui/compaction-indicator";
 import { ComposerControls } from "@/ui/composer-controls";
 import { ContextMeter } from "@/ui/context-meter";
 import type { AttachmentRecord } from "@/chat/attachments";
+import type { AgentNoticeMeta } from "@/chat/types";
 import { ComposerHighlight } from "@/ui/composer-highlight";
 import { MentionSuggestions } from "@/ui/mention-suggestions";
 import { SlashSuggestions } from "@/ui/slash-suggestions";
@@ -115,10 +117,9 @@ export type ThreadComponents = {
 };
 
 /**
- * The grouping policy lives in `tool-view/grouping`: a file preview, a plan, a
- * mode change, or a call waiting on the user renders on its own; every other
- * tool call coalesces into the "N tool calls" disclosure with the surrounding
- * reasoning.
+ * The grouping policy lives in `tool-view/grouping`: tool calls are never
+ * folded into a disclosure, so every call renders on its own in order. Only
+ * reasoning coalesces.
  */
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
@@ -255,16 +256,19 @@ const ThreadMessage: FC = () => {
         | {
             skillDirective?: { name: string };
             compaction?: { replacedCount: number };
+            agentReport?: AgentNoticeMeta;
           }
         | undefined,
   );
   const skillDirective = custom?.skillDirective;
   const compaction = custom?.compaction;
+  const agentReport = custom?.agentReport;
 
   if (isEditing) return <EditComposer />;
   if (isSpoken) return <SpokenMessage />;
   if (skillDirective) return <SkillDirectiveMarker name={skillDirective.name} />;
   if (compaction) return <CompactionMarker replacedCount={compaction.replacedCount} />;
+  if (agentReport) return <SubAgentReport report={agentReport} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
 };

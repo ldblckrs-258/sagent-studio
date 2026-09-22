@@ -7,7 +7,6 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import type { ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { createLLM } from "../ai/llm";
 import { ModelManager } from "../ai/model-manager";
@@ -17,6 +16,7 @@ import { SecretField } from "../ai/secret-field";
 import { Button, Input, Row } from "../ui/primitives";
 import type { ProviderConfig, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
+import { SectionHeader } from "./SectionHeader";
 
 function emptyProvider(): ProviderConfig {
   return {
@@ -34,26 +34,6 @@ type ConnectionState = {
   status: "idle" | "testing" | "ok" | "error";
   message?: string;
 };
-
-function SectionHeader({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <header className="flex items-start justify-between gap-2">
-      <div className="min-w-0">
-        <h2 className="text-sm font-medium text-ink">{title}</h2>
-        <p className="mt-1 text-xs leading-relaxed text-muted">{description}</p>
-      </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
-    </header>
-  );
-}
 
 function ProviderEntry({
   provider,

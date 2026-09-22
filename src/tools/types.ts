@@ -1,4 +1,9 @@
 import type { Tool } from 'ai'
+import type {
+  AgentRequest,
+  AgentSpawnOptions,
+  AgentSpawnOutcome,
+} from '../agents/types'
 import type { RagPort } from '../rag/port'
 import type { CodeRunner } from '../sandbox/types'
 import type { WorkspaceJournal } from '../workspace/journal'
@@ -217,6 +222,15 @@ export interface ApprovalPolicyPort {
   decision(toolName: string): ApprovalDecision
 }
 
+/**
+ * Lets `spawn_agent` hand a bounded task to a delegated agent. The port holds a
+ * mutable parent context filled with the final tool names after the toolset is
+ * built, so a delegated agent may only draw from the parent's own tools.
+ */
+export interface AgentSpawnPort {
+  spawn(request: AgentRequest, options?: AgentSpawnOptions): Promise<AgentSpawnOutcome>
+}
+
 export interface ToolRuntimePorts {
   rag?: RagPort
   codeRunner?: CodeRunner
@@ -232,6 +246,7 @@ export interface ToolRuntimePorts {
   skillAdmin?: SkillAdminPort
   toolAdmin?: ToolAdminPort
   approvals?: ApprovalPolicyPort
+  agents?: AgentSpawnPort
 }
 
 export interface ToolProvider {

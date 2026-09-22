@@ -2,6 +2,7 @@ import { jsonSchema, tool } from 'ai'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError } from '../types'
 import type { ToolProvider } from '../types'
+import agentsGuide from './guides/agents.md?raw'
 import checkpointsGuide from './guides/checkpoints.md?raw'
 import customToolsGuide from './guides/custom-tools.md?raw'
 import ragGuide from './guides/rag.md?raw'
@@ -54,6 +55,12 @@ const ENTRIES: readonly ToolGuideEntry[] = [
     summary: 'Searching the encrypted document library and verifying citations.',
     covers: ['list_documents', 'search_documents', 'get_chunk', 'get_neighbors', 'verify_citation'],
     guide: ragGuide,
+  },
+  {
+    topic: 'agents',
+    summary: 'Delegating a bounded task to a nested sub-agent, inline or in the background.',
+    covers: ['spawn_agent'],
+    guide: agentsGuide,
   },
 ]
 

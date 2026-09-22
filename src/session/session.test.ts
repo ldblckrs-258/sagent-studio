@@ -75,10 +75,11 @@ describe('createSession', () => {
 
     expect(session.engineFor('t1')).toBe(first)
     expect(session.engineFor('t2')).not.toBe(first)
-    expect(abortersCount()).toBe(before + 2)
+    // Two engines plus the session-scoped agent runtime's global abort.
+    expect(abortersCount()).toBe(before + 3)
 
     session.disposeThread('t1')
-    expect(abortersCount()).toBe(before + 1)
+    expect(abortersCount()).toBe(before + 2)
 
     session.dispose()
     expect(abortersCount()).toBe(before)
@@ -92,6 +93,7 @@ describe('createSession', () => {
       'reset_sandbox',
       'run_js',
       'run_python',
+      'spawn_agent',
     ])
 
     await session.toolRegistry.hydrate()
@@ -102,6 +104,7 @@ describe('createSession', () => {
       'reset_sandbox',
       'run_js',
       'run_python',
+      'spawn_agent',
     ])
 
     session.dispose()
@@ -120,9 +123,14 @@ describe('createSession', () => {
       'reset_sandbox',
       'run_js',
       'run_python',
+      'spawn_agent',
     ])
     enabled = false
-    expect(session.toolRegistry.availableNames({})).toEqual(['change_mode', 'read_tool_guide'])
+    expect(session.toolRegistry.availableNames({})).toEqual([
+      'change_mode',
+      'read_tool_guide',
+      'spawn_agent',
+    ])
 
     session.dispose()
   })

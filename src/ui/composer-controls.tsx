@@ -17,6 +17,7 @@ import { modelSupportsVision } from "../ai/model-caps";
 import { ensureActiveThread } from "../chat/active-thread";
 import { composerThreadKey } from "../chat/attachment-store";
 import { isImagePath } from "../chat/attachments";
+import { rememberLastModel } from "../chat/last-model";
 import { useChatStore } from "../chat/store";
 import {
   DEFAULT_CHAT_MODE,
@@ -564,6 +565,12 @@ export function ComposerControls() {
       useChatStore.getState().setThread(next);
       await session.threadStore.saveThread(next);
       useChatStore.getState().setError(null);
+      if (patch.providerId !== undefined || patch.modelId !== undefined) {
+        rememberLastModel({
+          providerId: next.config.providerId,
+          modelId: next.config.modelId,
+        });
+      }
     } catch (cause) {
       useChatStore
         .getState()

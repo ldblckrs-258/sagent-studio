@@ -14,9 +14,10 @@ import { createToolManagementProvider } from "@/tools/builtin/tool-management";
 import { createPreviewToolProvider } from "@/tools/builtin/preview";
 import { createToolGuideProvider } from "@/tools/builtin/tool-guide";
 import { createRagToolProvider } from "@/tools/builtin/rag";
+import { createAgentsToolProvider } from "@/tools/builtin/agents";
 import { TOOL_VIEWS, ToolCallView, toolViewNames } from "./registry";
 import { GenericDetail, type ToolDetailProps } from "./primitives";
-import { isStandaloneToolCall, threadGroupBy } from "./grouping";
+import { taskAwareGroupBy, threadGroupBy } from "./grouping";
 import {
   basename,
   formatBytes,
@@ -47,6 +48,7 @@ const BUILTIN_NAMES = [
   createPreviewToolProvider(),
   createToolGuideProvider(),
   createRagToolProvider(() => undefined),
+  createAgentsToolProvider(),
 ].flatMap((provider: ToolProvider) => [...provider.names]);
 
 function renderDetail(
@@ -185,53 +187,69 @@ describe("ToolCallView dispatch", () => {
     expect(html).toContain("reports/q3.html");
     expect(html).toContain("Open");
   });
+
+  it("headers a delegation with its label, tier, and mode", () => {
+    const html = renderToStaticMarkup(
+      <ToolCallView
+        {...PART}
+        toolName="spawn_agent"
+        args={{ prompt: "Map every caller.", mode: "editing", tier: "high", label: "scout" }}
+        status={{ type: "complete" }}
+        result={{
+          ok: true,
+          code: "ok",
+          value: {
+            status: "completed",
+            label: "scout",
+            result: "Four call sites.",
+            runStatus: "completed",
+            toolCalls: 3,
+            usage: { totalTokens: 1280 },
+            untrusted: true,
+          },
+        }}
+      />,
+    );
+    expect(html).toContain("Delegated to scout");
+    expect(html).toContain("Prime");
+    expect(html).toContain("Editing");
+    expect(html).toContain("3 calls");
+    expect(html).not.toContain("Used tool");
+  });
 });
 
-describe("standalone tool-call policy", () => {
-  it("surfaces a preview, a plan, and a mode change on their own", () => {
-    for (const name of ["open_preview", "update_plan", "change_mode"]) {
+describe("tool call grouping", () => {
+  it("never groups a tool call, whatever its name or status", () => {
+    for (const name of ["read_file", "open_preview", "update_plan", "change_mode", "search"]) {
       expect(
-        isStandaloneToolCall({ type: "tool-call", toolName: name, status: { type: "complete" } }),
-      ).toBe(true);
+        threadGroupBy({ type: "tool-call", toolName: name, status: { type: "complete" } }),
+      ).toEqual([]);
     }
-  });
-
-  it("surfaces any call that is waiting on the user", () => {
     expect(
-      isStandaloneToolCall({
+      threadGroupBy({
         type: "tool-call",
-        toolName: "read_file",
+        toolName: "write_file",
         status: { type: "requires-action" },
       }),
-    ).toBe(true);
-  });
-
-  it("keeps an ordinary completed call in the group", () => {
-    expect(
-      isStandaloneToolCall({
-        type: "tool-call",
-        toolName: "read_file",
-        status: { type: "complete" },
-      }),
-    ).toBe(false);
-    expect(isStandaloneToolCall({ type: "text" })).toBe(false);
-  });
-
-  it("produces an empty group path for a standalone call", () => {
-    expect(
-      threadGroupBy({
-        type: "tool-call",
-        toolName: "open_preview",
-        status: { type: "complete" },
-      }),
     ).toEqual([]);
+  });
+
+  it("still coalesces reasoning", () => {
+    expect(threadGroupBy({ type: "reasoning" })).toEqual([
+      "group-chainOfThought",
+      "group-reasoning",
+    ]);
+  });
+
+  it("routes a nested-conversation call to the task group only when a host asks", () => {
     expect(
-      threadGroupBy({
+      taskAwareGroupBy({
         type: "tool-call",
-        toolName: "read_file",
+        toolName: "task",
         status: { type: "complete" },
+        messages: [],
       }),
-    ).toEqual(["group-chainOfThought", "group-tool"]);
+    ).toEqual(["group-chainOfThought", "group-task"]);
   });
 });
 
@@ -339,6 +357,57 @@ describe("tool view details", () => {
     expect(html).toContain("fetch_thing");
     expect(html).toContain("echoed");
     expect(html).not.toContain("&quot;ok&quot;");
+  });
+
+  it("frames a delegation as a brief and a returned reply", () => {
+    const html = renderDetail(
+      "spawn_agent",
+      {
+        prompt: "Map every caller of the vault store.",
+        mode: "editing",
+        tier: "high",
+        label: "scout",
+        skills: ["scout"],
+        excludeTools: ["remove"],
+      },
+      {
+        ok: true,
+        code: "ok",
+        value: {
+          status: "completed",
+          label: "scout",
+          result: "Four call sites, all in the vault layer.",
+          runStatus: "completed",
+          toolCalls: 3,
+          usage: { totalTokens: 1280 },
+          untrusted: true,
+        },
+      },
+    );
+    expect(html).toContain("Brief");
+    expect(html).toContain("Map every caller of the vault store.");
+    expect(html).toContain("scout");
+    expect(html).toContain("withheld");
+    expect(html).toContain("Returned");
+    expect(html).toContain("Four call sites, all in the vault layer.");
+    expect(html).toContain("3 tool calls");
+    expect(html).toContain("1,280 tokens");
+    expect(html).toContain("untrusted");
+  });
+
+  it("reports a detached delegation as dispatched with its run id", () => {
+    const html = renderDetail(
+      "spawn_agent",
+      { prompt: "Audit the sandbox bridge.", background: true, tier: "max" },
+      {
+        ok: true,
+        code: "ok",
+        value: { status: "running", runId: "run-7c21", label: "audit" },
+      },
+    );
+    expect(html).toContain("Dispatched");
+    expect(html).toContain("Running in the background.");
+    expect(html).toContain("run-7c21");
   });
 
   it("renders every registered detail with no result without throwing", () => {

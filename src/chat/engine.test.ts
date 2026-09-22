@@ -339,6 +339,79 @@ describe("chat engine", () => {
     expect(store.get("th1")?.messages).toHaveLength(2);
   });
 
+  it("names a new conversation from the first reply", async () => {
+    const model = compactingModel("Vault Key Derivation", [
+      { stream: streamOf(textStep("t1", "The vault derives a key from your password.")) },
+    ]);
+    const { engine, store } = setup({ model });
+    seed("th1", []);
+    useChatStore.getState().setThread({
+      ...useChatStore.getState().threads.th1,
+      title: "New chat",
+    });
+
+    await engine.sendTurn("th1", "How does the vault work?");
+
+    await vi.waitFor(() =>
+      expect(store.get("th1")?.title).toBe("Vault Key Derivation"),
+    );
+    expect(useChatStore.getState().threads.th1.title).toBe("Vault Key Derivation");
+  });
+
+  it("never overwrites a conversation the user already named", async () => {
+    const model = compactingModel("Ignored", [
+      { stream: streamOf(textStep("t1", "Hello")) },
+    ]);
+    const { engine, store } = setup({ model });
+    seed("th1", [], defaultThreadConfig("p1", "m1"));
+    useChatStore.getState().setThread({
+      ...useChatStore.getState().threads.th1,
+      title: "My own title",
+    });
+
+    await engine.sendTurn("th1", "hi");
+
+    expect(store.get("th1")?.title).toBe("My own title");
+    expect(model.doGenerateCalls).toHaveLength(0);
+  });
+
+  it("re-names the conversation every fifth user turn", async () => {
+    const model = compactingModel("Updated Title", [
+      { stream: streamOf(textStep("t1", "Reply")) },
+    ]);
+    const { engine, store } = setup({ model });
+    seed("th1", [user("u1", "a"), user("u2", "b"), user("u3", "c"), user("u4", "d")]);
+    useChatStore.getState().setThread({
+      ...useChatStore.getState().threads.th1,
+      title: "Old title",
+      titleSource: "auto",
+    });
+
+    await engine.sendTurn("th1", "fifth");
+
+    await vi.waitFor(() => expect(store.get("th1")?.title).toBe("Updated Title"));
+    expect(store.get("th1")?.titleSource).toBe("auto");
+    expect(store.get("th1")?.titleUserCount).toBe(5);
+  });
+
+  it("never re-names a user title, even at the cadence", async () => {
+    const model = compactingModel("Ignored", [
+      { stream: streamOf(textStep("t1", "Reply")) },
+    ]);
+    const { engine, store } = setup({ model });
+    seed("th1", [user("u1", "a"), user("u2", "b"), user("u3", "c"), user("u4", "d")]);
+    useChatStore.getState().setThread({
+      ...useChatStore.getState().threads.th1,
+      title: "Mine",
+      titleSource: "user",
+    });
+
+    await engine.sendTurn("th1", "fifth");
+
+    expect(store.get("th1")?.title).toBe("Mine");
+    expect(model.doGenerateCalls).toHaveLength(0);
+  });
+
   it("carries resolved attachments and records what it inlined", async () => {
     const model = makeModel([{ stream: streamOf(textStep("t1", "Hello")) }]);
     const { engine } = setup({ model });
@@ -1505,5 +1578,85 @@ describe("compact", () => {
     await expect(compacting).rejects.toThrow();
     // Nothing was appended: compaction is transactional.
     expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
+  });
+});
+
+function isAgentNotice(message: UIMessage): boolean {
+  return (message.metadata as { agentNotice?: unknown } | undefined)?.agentNotice === true;
+}
+
+describe("chat engine agent notices", () => {
+  beforeEach(() => {
+    useChatStore.getState().clear();
+  });
+
+  it("appends and persists a background notice when idle", async () => {
+    const { engine, store } = setup({ model: makeModel([]) });
+    seed("th1", [user("u1", "hi")]);
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-1");
+
+    await vi.waitFor(() => expect(useChatStore.getState().threads.th1.messages).toHaveLength(2));
+    const notice = useChatStore.getState().threads.th1.messages[1];
+    expect(notice.metadata).toMatchObject({
+      agentNotice: true,
+      untrusted: true,
+      runId: "run-1",
+    });
+    await vi.waitFor(async () =>
+      expect((await store.loadThread("th1"))?.messages).toHaveLength(2),
+    );
+  });
+
+  it("carries a structured report so the notice can render as a sub-agent card", async () => {
+    const { engine } = setup({ model: makeModel([]) });
+    seed("th1", [user("u1", "hi")]);
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-3", {
+      label: "audit",
+      status: "completed",
+      response: "Four call sites.",
+    });
+
+    await vi.waitFor(() => expect(useChatStore.getState().threads.th1.messages).toHaveLength(2));
+    const notice = useChatStore.getState().threads.th1.messages[1];
+    expect(notice.metadata).toMatchObject({
+      agentReport: {
+        runId: "run-3",
+        label: "audit",
+        status: "completed",
+        response: "Four call sites.",
+      },
+    });
+  });
+
+  it("queues a notice during a run and flushes it once the run settles", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async ({ abortSignal }) => ({
+        stream: new ReadableStream<Chunk>({
+          start(controller) {
+            const onAbort = () =>
+              controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            if (abortSignal?.aborted) onAbort();
+            else abortSignal?.addEventListener("abort", onAbort, { once: true });
+          },
+        }),
+      }),
+    });
+    const { engine } = setup({ model });
+    seed("th1", [user("u1", "hi")]);
+
+    const running = engine.sendTurn("th1", "do it");
+    await vi.waitFor(() => expect(useChatStore.getState().status).toBe("streaming"));
+
+    engine.appendAgentNotice("th1", "arrived mid-run", "run-2");
+    // The in-flight run owns the message array, so the notice is not visible yet.
+    expect(useChatStore.getState().threads.th1.messages.some(isAgentNotice)).toBe(false);
+
+    await engine.cancel("th1");
+    await running;
+    await vi.waitFor(() =>
+      expect(useChatStore.getState().threads.th1.messages.some(isAgentNotice)).toBe(true),
+    );
   });
 });

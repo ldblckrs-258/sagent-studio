@@ -78,6 +78,20 @@ describe('joinTextItems', () => {
   it('falls back to a single space when geometry is missing', () => {
     expect(joinTextItems([{ str: 'first' }, { str: 'second' }])).toBe('first second')
   })
+
+  it('separates a raised footnote marker from the article number', () => {
+    const items = [
+      textItem('Điều 110', 0, 100, 60, 10),
+      textItem('4', 62, 103, 4, 6),
+      textItem('Chủ tịch nước', 70, 100, 70, 10),
+    ]
+    expect(joinTextItems(items)).toBe('Điều 110 4 Chủ tịch nước')
+  })
+
+  it('does not treat a same-baseline short item as a superscript', () => {
+    const items = [textItem('tr', 0, 100, 10, 10), textItem('ở', 10, 100, 6, 6)]
+    expect(joinTextItems(items)).toBe('trở')
+  })
 })
 
 function linedDoc(pages: string[][]): PdfDocumentLike {
@@ -139,6 +153,26 @@ describe('extractText', () => {
       destroy: vi.fn(async () => undefined),
     }
     await expect(extractText(doc)).resolves.toBe('QUỐC HỘI Luật số:')
+  })
+
+  it('drops a page whose text layer is font-garbled', async () => {
+    const garbled =
+      "ho(lc lam đc;li biiu' ' H9i dong nhan don tie hinh thanh H(Ji dong nhan dan lam thai iJ cac phuang 'dang th(1'C hi¢nn10hinh chinh quyen i16 thi kh6ng t6 chu·c H(Jit16ng nhan dan"
+    const doc = fakeDoc([garbled, 'trang sạch với nội dung đọc được'])
+    await expect(extractText(doc)).resolves.toBe('trang sạch với nội dung đọc được')
+  })
+
+  it('returns no text when every page is garbled', async () => {
+    const garbled =
+      "ho(lc lam đc;li biiu' ' H9i dong nhan don tie hinh thanh H(Ji dong nhan dan lam thai iJ cac phuang 'dang th(1'C hi¢nn10hinh chinh quyen i16 thi kh6ng t6 chu·c H(Jit16ng nhan dan"
+    await expect(extractText(fakeDoc([garbled]))).resolves.toBe('')
+  })
+
+  it('keeps a clean page that contains an isolated stray glyph', async () => {
+    const doc = fakeDoc([
+      'Ngày Pháp luật nước Cộng hòa xã hội chủ nghĩa Việt Nam được tổ chức hằng năm theo quy định của pháp luật hiện hành về ngày pháp luật.',
+    ])
+    await expect(extractText(doc)).resolves.toContain('Ngày Pháp luật')
   })
 
   it('stops and destroys the document on an aborted signal', async () => {

@@ -22,11 +22,15 @@ import type { RagPort } from "../rag/port";
 import type { CodeRunner } from "../sandbox/types";
 import type { WorkspaceJournal } from "../workspace/journal";
 import type { SkillRegistry } from "../skills/registry";
+import type { AgentParentContext } from "../agents/types";
 import { createAdminPorts } from "../tools/admin-ports";
 import type { ToolRegistry } from "../tools/registry";
+import { redactSecrets } from "../tools/redact";
+import { resolveRunToolNames } from "../tools/selection";
 import { decisionFor } from "../tools/approval";
 import type { ToolGateDescriptor } from "../tools/approval";
 import type {
+  AgentSpawnPort,
   SandboxControlPort,
   SkillLoadPort,
   ThreadModePort,
@@ -60,8 +64,9 @@ import {
 import { expireApprovals, rehydrateThread, sanitizePartial, setChatStatus } from "./sanitize";
 import { registerAbortAll, useChatStore } from "./store";
 import { contextTokensOf, outputCharsOf, turnUsageFrom } from "./usage";
-import { patchThreadMode } from "./threads";
-import type { ChatMode, ChatThread, ThreadConfig } from "./types";
+import { normalizeTitle, patchThreadMode } from "./threads";
+import { countUserMessages, generateConversationTitle, shouldGenerateTitle } from "./title";
+import type { AgentNoticeReport, ChatMode, ChatThread, ThreadConfig } from "./types";
 
 export interface PipelineDeps {
   getSettings(): Settings | null;
@@ -84,6 +89,11 @@ export interface PipelineDeps {
     providerId: string,
     modelId?: string,
   ): LanguageModel;
+  /**
+   * Built before the toolset exists so `spawn_agent` is available; the context's
+   * `toolNames` is filled in afterward with the final parent tool names.
+   */
+  agentPortsFor?(context: AgentParentContext): AgentSpawnPort | undefined;
 }
 
 export interface ApprovalResponse {
@@ -126,6 +136,19 @@ export interface ChatEngine {
    */
   compact(threadId: string, instructions?: string): Promise<void>;
   cancel(threadId: string): Promise<void>;
+  /**
+   * Appends a background-agent notice. When a run or a compaction is in flight
+   * for the thread the notice is queued and flushed once it settles, so it can
+   * never be clobbered by the run's own message writes. The optional `report`
+   * carries the run's identity and response so the transcript can render the
+   * notice as a sub-agent card; the `text` stays the model-visible framing.
+   */
+  appendAgentNotice(
+    threadId: string,
+    text: string,
+    runId?: string,
+    report?: AgentNoticeReport,
+  ): void;
   /** Unregisters the global abort callback and aborts any in-flight runs. */
   dispose(): void;
 }
@@ -135,12 +158,6 @@ export interface BuiltRun {
   toolNames: string[];
 }
 
-const SECRET_PATTERNS = [
-  /sk-[A-Za-z0-9_-]{8,}/g,
-  /Bearer\s+[A-Za-z0-9._-]+/gi,
-  /(api[_-]?key["'\s:=]+)[A-Za-z0-9._-]+/gi,
-];
-
 /**
  * Provider retries before the response body begins. Safe with side-effecting
  * tools because no tool can run until the stream starts; mid-stream failures
@@ -149,17 +166,7 @@ const SECRET_PATTERNS = [
  */
 const MODEL_MAX_RETRIES = 3;
 
-/** Always kept available when skills are enabled, even under allowedTools narrowing. */
-const SKILL_INDEX_TOOLS = ["load_skill", "search_skills"] as const;
-
-const GUIDE_TOOLS = ["read_tool_guide"] as const;
-
-export function redactSecrets(text: string): string {
-  let output = text;
-  for (const pattern of SECRET_PATTERNS)
-    output = output.replace(pattern, "[redacted]");
-  return output;
-}
+export { redactSecrets };
 
 function describe(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
@@ -322,12 +329,14 @@ export async function buildRunStream(
   modePort?: ThreadModePort,
   planPort?: ThreadPlanPort,
   journal?: WorkspaceJournal,
+  agentContext?: AgentParentContext,
 ): Promise<BuiltRun> {
   const settings = deps.getSettings();
   if (!settings)
     throw new ChatError("The vault is locked; the chat cannot run.");
 
   const skills = deps.skillRegistry.resolve(config.enabledSkills);
+  const agents = agentContext ? deps.agentPortsFor?.(agentContext) : undefined;
   const ports = {
     rag: deps.rag,
     workspace: deps.workspace,
@@ -338,6 +347,7 @@ export async function buildRunStream(
     skills: createSkillLoadPort(skills),
     plan: planPort,
     journal,
+    ...(agents ? { agents } : {}),
     approvals: {
       decision: (toolName: string) => decisionFor(settings.approvals, toolName),
     },
@@ -346,26 +356,20 @@ export async function buildRunStream(
       toolRegistry: deps.toolRegistry,
     }),
   };
-  const pool = new Set(deps.toolRegistry.availableNames(ports));
-  const narrowed = deps.skillRegistry.toolNamesFor(
-    config.enabledSkills,
-    pool,
-  );
-  // `load_skill` and `search_skills` are unioned in whenever a skill is
-  // enabled, because a skill's `allowedTools` narrowing would otherwise exclude
-  // the tools the index needs.
-  const kept = [
-    ...(skills.length > 0 ? SKILL_INDEX_TOOLS : []),
-    ...GUIDE_TOOLS,
-  ] as readonly string[];
-  const requestedTools =
-    narrowed === undefined
-      ? undefined
-      : [
-          ...narrowed,
-          ...kept.filter((name) => pool.has(name) && !narrowed.includes(name)),
-        ];
+  // The parent passes no pool (every available tool) and no block list, so this
+  // shares one resolver with a delegated agent that narrows and blocks.
+  const requestedTools = resolveRunToolNames({
+    toolRegistry: deps.toolRegistry,
+    skillRegistry: deps.skillRegistry,
+    ports,
+    enabledSkills: config.enabledSkills,
+    resolvedSkills: skills,
+    blocked: [],
+  });
   const toolSet = deps.toolRegistry.buildToolSet(requestedTools, ports);
+  // Fill the parent context now that the final toolset exists; a delegated
+  // agent may only draw from these names.
+  if (agentContext) agentContext.toolNames = Object.keys(toolSet);
   const projectInstruction = await loadProjectInstruction(deps.workspace);
   const system = composeSystemPrompt(
     config.systemInstruction,
@@ -459,6 +463,14 @@ class DefaultEngine implements ChatEngine {
   private readonly controllers = new Map<string, AbortController>();
   private readonly runs = new Map<string, Promise<void>>();
   private readonly unregisterAbort: () => void;
+  /** Runs plus compactions in flight for this engine's thread. */
+  private inFlight = 0;
+  private noticeQueue: Array<{
+    threadId: string;
+    text: string;
+    runId?: string;
+    report?: AgentNoticeReport;
+  }> = [];
 
   constructor(deps: EngineDeps) {
     this.deps = deps;
@@ -621,6 +633,7 @@ class DefaultEngine implements ChatEngine {
     // cleared store.
     const controller = new AbortController();
     this.controllers.set(threadId, controller);
+    this.inFlight += 1;
     useChatStore.getState().beginCompaction(threadId);
     try {
       const compacted = await compactThread(
@@ -637,6 +650,8 @@ class DefaultEngine implements ChatEngine {
       useChatStore.getState().endCompaction(threadId);
       if (this.controllers.get(threadId) === controller)
         this.controllers.delete(threadId);
+      this.inFlight = Math.max(0, this.inFlight - 1);
+      this.flushNotices();
     }
   }
 
@@ -645,6 +660,71 @@ class DefaultEngine implements ChatEngine {
     if (!controller) return;
     controller.abort();
     await this.runs.get(threadId);
+  }
+
+  appendAgentNotice(
+    threadId: string,
+    text: string,
+    runId?: string,
+    report?: AgentNoticeReport,
+  ): void {
+    if (this.inFlight > 0) {
+      this.noticeQueue.push({
+        threadId,
+        text,
+        ...(runId !== undefined ? { runId } : {}),
+        ...(report !== undefined ? { report } : {}),
+      });
+      return;
+    }
+    void this.writeNotice(threadId, text, runId, report);
+  }
+
+  private async writeNotice(
+    threadId: string,
+    text: string,
+    runId?: string,
+    report?: AgentNoticeReport,
+  ): Promise<void> {
+    const thread = useChatStore.getState().threads[threadId];
+    if (!thread) return;
+    const message: UIMessage = {
+      id: createMessageId(),
+      role: "assistant",
+      parts: [{ type: "text", text }],
+      metadata: {
+        chatStatus: "done",
+        agentNotice: true,
+        untrusted: true,
+        ...(runId !== undefined ? { runId } : {}),
+        ...(report !== undefined
+          ? { agentReport: { ...report, ...(runId !== undefined ? { runId } : {}) } }
+          : {}),
+      },
+    };
+    const next: ChatThread = {
+      ...thread,
+      messages: [...thread.messages, message],
+      updatedAt: Date.now(),
+    };
+    useChatStore.getState().setThread(next);
+    try {
+      await this.deps.threadStore.saveThread(next);
+    } catch (error) {
+      // Notices are fire-and-forget; a failed write must never surface as an
+      // unhandled rejection. A lock drops the thread the same way a run's own
+      // persist does.
+      if (error instanceof VaultLockedError) useChatStore.getState().removeThread(threadId);
+    }
+  }
+
+  private flushNotices(): void {
+    if (this.noticeQueue.length === 0) return;
+    const queued = this.noticeQueue;
+    this.noticeQueue = [];
+    for (const notice of queued) {
+      void this.writeNotice(notice.threadId, notice.text, notice.runId, notice.report);
+    }
   }
 
   private async requireThread(id: string): Promise<ChatThread> {
@@ -768,6 +848,7 @@ class DefaultEngine implements ChatEngine {
     const thread = await this.requireThread(threadId);
     const controller = new AbortController();
     this.controllers.set(threadId, controller);
+    this.inFlight += 1;
     useChatStore.getState().beginRun(threadId);
     useChatStore.getState().setError(null);
 
@@ -824,6 +905,8 @@ class DefaultEngine implements ChatEngine {
         if (this.controllers.get(threadId) === controller)
           this.controllers.delete(threadId);
         useChatStore.getState().endRun(threadId);
+        this.inFlight = Math.max(0, this.inFlight - 1);
+        this.flushNotices();
       }
     })();
 
@@ -864,6 +947,16 @@ class DefaultEngine implements ChatEngine {
         }
       },
     };
+    const agentContext: AgentParentContext = {
+      parentThreadId: thread.id,
+      mode,
+      providerId: thread.config.providerId,
+      ...(thread.config.modelId !== undefined
+        ? { modelId: thread.config.modelId }
+        : {}),
+      systemInstruction: thread.config.systemInstruction,
+      toolNames: [],
+    };
     const built = await (async () => {
       try {
         const journal = this.deps.journalFor
@@ -879,6 +972,7 @@ class DefaultEngine implements ChatEngine {
           modePort,
           planPort,
           journal,
+          agentContext,
         );
       } catch (error) {
         // A pre-stream failure (bad provider config, conversion error) must not
@@ -940,6 +1034,49 @@ class DefaultEngine implements ChatEngine {
 
     if (failure && !controller.signal.aborted && !isAbortError(failure))
       throw failure;
+
+    // A successful turn names the conversation on its first user message and
+    // re-names it every fifth one afterwards. A title the user set manually is
+    // never touched. Fire-and-forget: naming must not delay the run from
+    // settling, and its failure must not reach the chat as an error.
+    void this.maybeNameConversation(thread.id, controller.signal);
+  }
+
+  private async maybeNameConversation(
+    threadId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      const current = useChatStore.getState().threads[threadId];
+      if (!current || !shouldGenerateTitle(current)) return;
+      const userCount = countUserMessages(current);
+      const settings = this.deps.getSettings();
+      if (!settings) return;
+      const title = await generateConversationTitle({
+        settings,
+        thread: current,
+        ...(this.deps.modelFactory ? { factory: this.deps.modelFactory } : {}),
+        signal,
+      });
+      if (!title) return;
+      // Re-check before writing: the user may have renamed during the round trip.
+      const latest = useChatStore.getState().threads[threadId];
+      if (!latest || !shouldGenerateTitle(latest)) return;
+      const named: ChatThread = {
+        ...latest,
+        title: normalizeTitle(title),
+        titleSource: "auto",
+        titleUserCount: userCount,
+        updatedAt: Date.now(),
+      };
+      // Persist first: the conversations list re-reads storage when the store
+      // changes, so updating the store before the write would race the refresh
+      // and briefly (or lastingly, if nothing else changes) show the old title.
+      await this.deps.threadStore.saveThread(named);
+      useChatStore.getState().setThread(named);
+    } catch {
+      // Best-effort: a vault lock, abort, or provider error is not a chat error.
+    }
   }
 }
 

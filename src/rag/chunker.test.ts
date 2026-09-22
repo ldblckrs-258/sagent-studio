@@ -79,6 +79,31 @@ describe('chunkText', () => {
     expect(chunks.some((chunk) => chunk.text.includes('Điều 33'))).toBe(true)
   })
 
+  it('separates a mid-line article heading from the sentence before it', () => {
+    const sentence =
+      'Nội dung này được viết đủ dài để tạo ra số lượng token cần thiết cho phép thử phân đoạn. '
+    let filler = ''
+    while (encode(filler).length < 50) filler += sentence
+    const text = `Điều 96. ${filler}Điều 97\nNhiệm kỳ của Chính phủ là năm năm.`
+    const chunks = chunkText(text, { chunkSize: 64, overlap: 0 })
+    const article97 = chunks.find((chunk) => chunk.text.includes('Nhiệm kỳ'))
+    expect(article97?.text.trimStart().startsWith('Điều 97')).toBe(true)
+  })
+
+  it('does not repeat a consolidated heading line', () => {
+    const text = 'Điều 95. Nội dung.\nĐiều 95. Nội dung.\nĐiều 96. Khác.'
+    const chunks = chunkText(text, { chunkSize: 256, overlap: 0 })
+    const joined = chunks.map((chunk) => chunk.text).join('\n')
+    expect(joined.match(/Điều 95/g)?.length).toBe(1)
+  })
+
+  it('keeps a reference to an article mid-sentence intact', () => {
+    const text = 'Khoản này được quy định tại Điều 97 của Luật này.\nĐiều 98. Hiệu lực.'
+    const chunks = chunkText(text, { chunkSize: 256, overlap: 0 })
+    const joined = chunks.map((chunk) => chunk.text).join('\n')
+    expect(joined).toContain('tại Điều 97')
+  })
+
   it('cuts an oversized block on sentence boundaries, never mid-sentence', () => {
     const sentences = Array.from(
       { length: 60 },

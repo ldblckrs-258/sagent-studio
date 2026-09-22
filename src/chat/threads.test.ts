@@ -14,6 +14,7 @@ import {
   normalizeTitle,
   patchThreadMode,
   renameConversation,
+  resolveLastModel,
   withEnabledSkills,
 } from './threads'
 import { defaultThreadConfig } from './types'
@@ -128,6 +129,56 @@ describe('conversation helpers', () => {
     })
     expect(defaultProviderFor(settings)).toEqual({ providerId: 'p1', modelId: 'm2' })
     expect(defaultProviderFor(defaultSettings())).toBeNull()
+  })
+})
+
+function twoProviders() {
+  return deepMerge(defaultSettings(), {
+    providers: [
+      { id: 'p1', label: 'One', kind: 'openai-compatible', baseURL: '', apiKey: '', models: [{ id: 'm1' }, { id: 'm2' }], defaultModel: 'm2' },
+      { id: 'p2', label: 'Two', kind: 'openai-compatible', baseURL: '', apiKey: '', models: [{ id: 'm3' }], defaultModel: 'm3' },
+    ],
+  })
+}
+
+describe('resolveLastModel', () => {
+  it('is null without a stored preference or provider', () => {
+    expect(resolveLastModel(null)).toBeNull()
+    expect(resolveLastModel(twoProviders())).toBeNull()
+    expect(resolveLastModel(deepMerge(twoProviders(), { lastModel: { providerId: 'gone' } }))).toBeNull()
+  })
+
+  it('resolves the remembered provider and model', () => {
+    const settings = deepMerge(twoProviders(), {
+      lastModel: { providerId: 'p2', modelId: 'm3' },
+    })
+    expect(resolveLastModel(settings)).toEqual({ providerId: 'p2', modelId: 'm3' })
+  })
+
+  it('falls back to the provider default when the model no longer exists', () => {
+    const settings = deepMerge(twoProviders(), {
+      lastModel: { providerId: 'p1', modelId: 'retired' },
+    })
+    expect(resolveLastModel(settings)).toEqual({ providerId: 'p1', modelId: 'm2' })
+  })
+
+  it('supports a provider-only preference', () => {
+    const settings = deepMerge(twoProviders(), { lastModel: { providerId: 'p2' } })
+    expect(resolveLastModel(settings)).toEqual({ providerId: 'p2', modelId: 'm3' })
+  })
+
+  it('is preferred by defaultProviderFor when it resolves', () => {
+    const settings = deepMerge(twoProviders(), {
+      lastModel: { providerId: 'p2', modelId: 'm3' },
+    })
+    expect(defaultProviderFor(settings)).toEqual({ providerId: 'p2', modelId: 'm3' })
+  })
+
+  it('falls back to the first provider when the remembered provider is gone', () => {
+    const settings = deepMerge(twoProviders(), {
+      lastModel: { providerId: 'gone', modelId: 'm3' },
+    })
+    expect(defaultProviderFor(settings)).toEqual({ providerId: 'p1', modelId: 'm2' })
   })
 })
 

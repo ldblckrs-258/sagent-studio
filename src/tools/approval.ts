@@ -36,6 +36,9 @@ const READ_ONLY_TOOLS = new Set([
   'search',
   'open_preview',
   'load_skill',
+  'search_skills',
+  'read_tool_guide',
+  'spawn_agent',
   'update_plan',
   'change_mode',
   'list_skills',
@@ -130,6 +133,23 @@ export function normalizeApprovalSettings(
     tools[name] = decision
   }
   return { tools }
+}
+
+/** The permission modes from least to most permissive; the delegation ladder. */
+export const MODE_ORDER: readonly ChatMode[] = ['read_only', 'editing', 'god']
+
+/** The index of a mode in the ladder, so two modes can be compared. */
+export function modeRank(mode: ChatMode): number {
+  return MODE_ORDER.indexOf(mode)
+}
+
+/**
+ * Caps `requested` at `parent`: a delegated agent may never widen the
+ * conversation's permission mode, so a request above the parent's is clamped
+ * down to it rather than rejected.
+ */
+export function clampMode(parent: ChatMode, requested: ChatMode): ChatMode {
+  return modeRank(requested) > modeRank(parent) ? parent : requested
 }
 
 /** The exact tool-name set a mode permits; `'all'` for `god`. */

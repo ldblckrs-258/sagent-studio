@@ -24,6 +24,7 @@ import { workspaceViews } from "./details/workspace";
 import { runtimeViews } from "./details/runtime";
 import { knowledgeViews } from "./details/knowledge";
 import { toolsAdminViews } from "./details/tools-admin";
+import { agentsViews } from "./details/agents";
 
 /**
  * Tailored transcript views for every built-in tool. Keyed by the tool name the
@@ -40,6 +41,7 @@ export const TOOL_VIEWS: Record<string, ToolViewSpec> = {
   ...runtimeViews,
   ...knowledgeViews,
   ...toolsAdminViews,
+  ...agentsViews,
 };
 
 export const toolViewNames: readonly string[] = Object.keys(TOOL_VIEWS);
@@ -100,12 +102,19 @@ function SpecializedToolView({
 
   const label = spec.label(record, envelope);
   const meta = spec.meta?.(record, envelope);
+  const chips = spec.chips?.(record, envelope);
   const Detail = spec.Detail ?? GenericDetail;
   const detailProps: ToolDetailProps = { args: record, envelope, status };
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolViewTrigger icon={spec.icon} label={label} meta={meta} status={status} />
+      <ToolViewTrigger
+        icon={spec.icon}
+        label={label}
+        meta={meta}
+        {...(chips !== undefined ? { chips } : {})}
+        status={status}
+      />
       <ToolFallbackContent>
         <ToolFailure envelope={envelope} status={status} />
         {shouldRenderApproval && (

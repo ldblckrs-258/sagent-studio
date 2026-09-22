@@ -2,10 +2,13 @@ import { db } from '../vault/db'
 import { VaultLockedError } from '../vault/errors'
 import { decryptRecord, encryptRecord } from '../vault/records'
 import { vaultWriteQueue } from '../vault/write-queue'
+import { MODEL_TIERS } from '../vault/settings'
+import type { ModelTier } from '../vault/settings'
 import { ChatConfigError, ChatError } from './errors'
 import { validatePlanItems } from './plan'
-import { isChatMode, validateThreadConfig } from './types'
-import type { ChatThread } from './types'
+import { rehydrateThread } from './sanitize'
+import { isAgentRunStatus, isChatMode, validateThreadConfig } from './types'
+import type { AgentThreadMeta, ChatThread } from './types'
 
 export const THREAD_ENVELOPE_VERSION = 1
 
@@ -60,7 +63,41 @@ function validateThread(value: unknown): ChatThread {
   if (isChatMode(candidate.mode)) thread.mode = candidate.mode
   const plan = validatePlanItems(candidate.plan)
   if (plan !== undefined) thread.plan = plan
+  if (candidate.titleSource === 'auto' || candidate.titleSource === 'user') {
+    thread.titleSource = candidate.titleSource
+  }
+  if (
+    typeof candidate.titleUserCount === 'number' &&
+    Number.isInteger(candidate.titleUserCount) &&
+    candidate.titleUserCount >= 0
+  ) {
+    thread.titleUserCount = candidate.titleUserCount
+  }
+  const agent = validateAgentMeta(candidate.agent)
+  if (agent) thread.agent = agent
   return thread
+}
+
+/** Reads the child-run metadata tolerantly; a malformed block is dropped. */
+function validateAgentMeta(value: unknown): AgentThreadMeta | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.runId !== 'string' || candidate.runId.length === 0) return undefined
+  if (typeof candidate.parentThreadId !== 'string' || candidate.parentThreadId.length === 0) {
+    return undefined
+  }
+  if (!isChatMode(candidate.mode)) return undefined
+  if (!isAgentRunStatus(candidate.status)) return undefined
+  if (!(MODEL_TIERS as readonly string[]).includes(candidate.tier as string)) return undefined
+  const meta: AgentThreadMeta = {
+    runId: candidate.runId,
+    parentThreadId: candidate.parentThreadId,
+    mode: candidate.mode,
+    tier: candidate.tier as ModelTier,
+    status: candidate.status,
+  }
+  if (typeof candidate.label === 'string') meta.label = candidate.label
+  return meta
 }
 
 function parseEnvelope(raw: string): ChatThread {
@@ -120,6 +157,9 @@ export async function listThreadSummaries(): Promise<ThreadSummaryResult> {
   for (const row of rows) {
     try {
       const thread = parseEnvelope(await decryptRecord(row.blob, `thread:${row.id}`))
+      // A child agent thread is not a conversation; it surfaces in the Agents
+      // panel via `listAgentRuns`.
+      if (thread.agent) continue
       summaries.push({
         id: thread.id,
         title: thread.title,
@@ -142,9 +182,38 @@ export async function listThreads(): Promise<ThreadSummary[]> {
   return (await listThreadSummaries()).summaries
 }
 
+/**
+ * Loads persisted child agent threads, newest first, optionally limited to one
+ * parent conversation. A corrupt or locked row is skipped rather than hiding
+ * the rest, matching `listThreadSummaries`.
+ */
+export async function listAgentRuns(parentThreadId?: string): Promise<ChatThread[]> {
+  const rows = await db.threads.orderBy('updatedAt').reverse().toArray()
+  const runs: ChatThread[] = []
+  for (const row of rows) {
+    try {
+      const thread = parseEnvelope(await decryptRecord(row.blob, `thread:${row.id}`))
+      if (!thread.agent) continue
+      if (parentThreadId !== undefined && thread.agent.parentThreadId !== parentThreadId) continue
+      // A reload cannot resume a detached run, so a persisted `running` child is
+      // reconciled to `interrupted` here, where the panel reads it.
+      runs.push(rehydrateThread(thread))
+    } catch {
+      // A locked vault or a corrupt row simply yields no run for that id.
+    }
+  }
+  return runs
+}
+
+/** Deletes every child agent thread of a parent conversation. */
+export async function deleteAgentRunsForParent(parentThreadId: string): Promise<void> {
+  const runs = await listAgentRuns(parentThreadId)
+  for (const run of runs) await deleteThread(run.id)
+}
+
 async function patchThread(
   id: string,
-  patch: Partial<Pick<ChatThread, 'title' | 'workspaceName'>>,
+  patch: Partial<Pick<ChatThread, 'title' | 'titleSource' | 'titleUserCount' | 'workspaceName'>>,
 ): Promise<void> {
   // One queued read-modify-write: re-reading inside the task removes the window
   // where a delete could be overwritten, and the tombstone guard prevents a
@@ -163,7 +232,8 @@ async function patchThread(
 }
 
 export async function renameThread(id: string, title: string): Promise<void> {
-  await patchThread(id, { title })
+  // A manual rename claims the title: the naming task must never overwrite it.
+  await patchThread(id, { title, titleSource: 'user' })
 }
 
 export async function setThreadWorkspaceLabel(

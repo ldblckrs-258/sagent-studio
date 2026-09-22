@@ -265,3 +265,62 @@ describe('provider migration', () => {
     expect(migrated.providers[0].models).toEqual([{ id: 'ok' }])
   })
 })
+
+describe('model tiers settings', () => {
+  it('is absent by default', () => {
+    expect(defaultSettings().modelTiers).toBeUndefined()
+  })
+
+  it('migrates a legacy subModel into the cheap tier and drops the raw key', () => {
+    const migrated = migrate(1, { subModel: { providerId: ' p1 ', modelId: ' m2 ' } })
+    expect(migrated.modelTiers).toEqual({ cheap: { providerId: 'p1', modelId: 'm2' } })
+    expect('subModel' in migrated).toBe(false)
+  })
+
+  it('keeps an explicit cheap tier over a legacy subModel', () => {
+    const migrated = migrate(1, {
+      subModel: { providerId: 'legacy' },
+      modelTiers: { cheap: { providerId: 'p1', modelId: 'm1' }, max: { providerId: 'p1' } },
+    })
+    expect(migrated.modelTiers).toEqual({
+      cheap: { providerId: 'p1', modelId: 'm1' },
+      max: { providerId: 'p1' },
+    })
+  })
+
+  it('keeps non-cheap tiers and sanitizes each one', () => {
+    const migrated = migrate(1, {
+      modelTiers: {
+        cheap: { providerId: ' p1 ', modelId: ' m1 ' },
+        medium: { providerId: 7 },
+        bogus: { providerId: 'p1' },
+      },
+    })
+    expect(migrated.modelTiers).toEqual({ cheap: { providerId: 'p1', modelId: 'm1' } })
+  })
+
+  it('drops non-string fields and a selection that sanitizes to nothing', () => {
+    expect(migrate(1, { subModel: { providerId: 7, modelId: {} } }).modelTiers).toBeUndefined()
+    expect(
+      migrate(1, { subModel: { providerId: '   ', modelId: '' } }).modelTiers,
+    ).toBeUndefined()
+    expect(migrate(1, { modelTiers: { cheap: { providerId: '  ' } } }).modelTiers).toBeUndefined()
+  })
+})
+
+describe('last-used model settings', () => {
+  it('is absent by default', () => {
+    expect(defaultSettings().lastModel).toBeUndefined()
+  })
+
+  it('keeps a well-formed selection through migrate and trims it', () => {
+    const migrated = migrate(1, { lastModel: { providerId: ' p1 ', modelId: ' m2 ' } })
+    expect(migrated.lastModel).toEqual({ providerId: 'p1', modelId: 'm2' })
+  })
+
+  it('drops a selection that sanitizes to nothing', () => {
+    expect(migrate(1, { lastModel: { providerId: 7, modelId: {} } }).lastModel).toBeUndefined()
+    expect(migrate(1, { lastModel: { providerId: '  ', modelId: '' } }).lastModel).toBeUndefined()
+    expect('lastModel' in migrate(1, { lastModel: { providerId: '' } })).toBe(false)
+  })
+})

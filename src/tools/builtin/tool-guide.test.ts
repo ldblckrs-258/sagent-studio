@@ -9,6 +9,7 @@ import {
   DEFAULT_SANDBOX_PY_TIMEOUT_MS,
 } from '../../vault/settings'
 import type { CodeRunner } from '../../sandbox/types'
+import { createAgentsToolProvider } from './agents'
 import { createCodeToolProvider } from './code'
 import { createHistoryToolProvider } from './history'
 import { createRagToolProvider } from './rag'
@@ -52,6 +53,7 @@ const COVERED_BY_PROVIDERS = new Set(
     createToolManagementProvider(),
     createToolGuideProvider(),
     createRagToolProvider(() => undefined),
+    createAgentsToolProvider(),
   ].flatMap((provider) => [...provider.names]),
 )
 

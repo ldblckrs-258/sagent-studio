@@ -53,6 +53,17 @@ const MARKDOWN_HEADING = /^#{1,6}\s/
  */
 const LEGAL_HEADING = /^\s*(Điều|Dieu|Chương|Chuong|Phần|Phan|Mục|Muc)\b/iu
 
+/**
+ * A legal heading that follows a sentence on the same line. PDF extraction
+ * rarely leaves the heading at a line start: a page arrives as
+ * `…của mình. Điều 97` and the line-anchored `LEGAL_HEADING` never fires, so the
+ * article fuses with the previous one. Inserting a break before such a heading
+ * lets the normal block splitter see it. A mid-sentence reference (`tại Điều 97`)
+ * is preceded by a word, not sentence punctuation, so it is left intact.
+ */
+const MID_LINE_HEADING =
+  /([.!?;:…]["”’»)\]]?)[ \t]+(?=(?:Điều|Dieu|Chương|Chuong|Phần|Phan|Mục|Muc)\s+\d)/giu
+
 function isHeading(line: string): boolean {
   const trimmed = line.trim()
   if (trimmed.length === 0 || trimmed.length > 120) return false
@@ -62,10 +73,12 @@ function isHeading(line: string): boolean {
 /**
  * Splits text into structural blocks on headings and blank lines. A heading
  * governs every block until the next heading, and the first block under it
- * begins with the heading so a passage always carries its section title.
+ * begins with the heading so a passage always carries its section title. A
+ * consolidated document repeats a heading (the same `Điều 95` twice); the repeat
+ * is skipped rather than starting an empty section.
  */
 function splitBlocks(text: string): Block[] {
-  const normalized = text.replace(/\r\n?/g, '\n')
+  const normalized = text.replace(/\r\n?/g, '\n').replace(MID_LINE_HEADING, '$1\n')
   const blocks: Block[] = []
   let current: string[] = []
   let section: string | null = null
@@ -87,6 +100,8 @@ function splitBlocks(text: string): Block[] {
       continue
     }
     if (isHeading(line)) {
+      const heading = line.trim()
+      if (heading === section && current.length === 0) continue
       if (current.length > 0) {
         flush()
       } else if (section !== null && lastEmitted !== section) {
@@ -95,7 +110,7 @@ function splitBlocks(text: string): Block[] {
         blocks.push({ body: section })
         lastEmitted = section
       }
-      section = line.trim()
+      section = heading
       continue
     }
     if (current.length === 0 && section !== null) current.push(section)

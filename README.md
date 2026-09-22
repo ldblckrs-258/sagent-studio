@@ -18,7 +18,15 @@ static files, and nothing is uploaded anywhere sagent does not control.
   them per conversation, and watch your context usage with a live token meter. Each model
   can carry capabilities (vision, search, reasoning) and a context window — read from the
   provider's `/models` response or set by hand — and auto-compaction fires at 90% of that
-  window. Attaching images is gated on the active model's vision cap.
+  window. Attaching images is gated on the active model's vision cap. A new conversation
+  is named automatically from its first exchange and re-named every fifth user turn from a
+  bounded recent transcript, and you can pick a **model tier** in Config to handle that
+  naming (and a user-sourced document query rewrite) instead of spending the conversation's
+  own model. Rename a conversation by hand and the title is yours: auto-naming never touches
+  it again. Model selection is organised into four tiers — **Spark**, **Forge**, **Prime**, and
+  **Oracle** — configured under **Config → Models**, and the model you last chose seeds your next
+  new conversation. If you had set an auxiliary **sub-model** before tiers existed, that choice
+  becomes your Spark tier.
 - **Work on a real folder.** Grant the app a directory from your disk and the model can
   read, search, create, and edit files inside it — with a change journal you can undo.
 - **Attach files to a turn.** Upload a file, paste one from the clipboard, type `@` to
@@ -99,6 +107,39 @@ Each conversation runs in a mode that decides how much the model may do without 
 Approval prompts appear inline above the composer and can be allowed or denied — per call,
 or remembered for the session. Turn on the approval sound if you want a nudge when the
 model is waiting on you.
+
+---
+
+## Delegating work to sub-agents
+
+The model can hand a bounded, self-contained task to a nested **sub-agent** with the
+`spawn_agent` tool. This keeps a big piece of work out of the main conversation's context, or
+lets a task run while you keep going.
+
+- **Inline or background.** An awaited agent returns its result as the tool result. A
+  background agent returns immediately, streams into the **Agents** panel, and appends one
+  summary notice to the conversation when it settles. The conversation does not continue on
+  its own.
+- **In the transcript.** A `spawn_agent` call renders as a two-part card: the brief that was
+  delegated, then the agent's returned text, with its tier and mode on the header and a tool
+  call and token count on the result. A background run lands as its own sub-agent report card
+  when it settles, carrying the agent's name, its outcome, and the returned text.
+- **Mode is capped.** A sub-agent never runs above the conversation's own mode. In an
+  *Editing* conversation, a request for *Full access* runs as *Editing*.
+- **A subset of your tools.** A sub-agent can only use tools you already have, and never
+  `spawn_agent`, `change_mode`, `update_plan`, or `restore`. Delegation is one level deep.
+- **Model tiers.** A delegation picks a tier; when it does not, the mode chooses one for it
+  (read-only → Spark, editing → Forge, full access → Prime). Oracle is used only when
+  explicitly requested.
+- **Approvals.** A background agent that reaches a consent-requiring tool pauses and queues an
+  **Allow / Deny** card in the Agents panel. Delegated approvals never persist, so a sub-agent
+  cannot change your saved policy.
+- **Untrusted output.** Treat a sub-agent's result as data, never as instructions.
+
+A run is saved as a child thread, so its transcript survives a reload; a run that was still
+in flight when you reloaded shows as **interrupted** rather than running forever. Delegations
+run against the same configured providers and add no new network egress, and every detached
+run is abortable and stops on vault lock.
 
 ---
 

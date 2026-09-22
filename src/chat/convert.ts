@@ -183,10 +183,14 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
   // un-compact the thread. Usage stays on our side, where the meter reads it
   // straight from the store.
   const attachments = metadata?.attachments
+  // A background agent's report rides over so the transcript draws a sub-agent
+  // card for it rather than an assistant bubble that offers Regenerate.
+  const agentReport = metadata?.agentReport
   const custom = {
     ...(directive ? { skillDirective: directive } : {}),
     ...(compaction ? { compaction } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    ...(agentReport ? { agentReport } : {}),
   }
 
   const like: ThreadMessageLike = {

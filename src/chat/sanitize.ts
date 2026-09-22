@@ -2,7 +2,7 @@ import type { UIMessage } from 'ai'
 import type { AttachmentRecord } from './attachments'
 import type { CompactionMeta } from './boundary'
 import type { SkillDirective } from './skill-invoke'
-import type { ChatThread } from './types'
+import type { AgentNoticeMeta, ChatThread } from './types'
 import type { TurnUsage } from './usage'
 
 export type ChatMessageMetadata = {
@@ -15,6 +15,8 @@ export type ChatMessageMetadata = {
   skillDirective?: SkillDirective
   /** What this user turn attached, so a later turn can skip re-inlining it. */
   attachments?: AttachmentRecord[]
+  /** The structured report on a background sub-agent's notice message. */
+  agentReport?: AgentNoticeMeta
 }
 
 type MessagePart = UIMessage['parts'][number]
@@ -88,6 +90,25 @@ export function sanitizePartial(
   )
 }
 
+/**
+ * Rewrites a `running` background delegation result to `interrupted`. A reload
+ * cannot resume a detached run, so leaving it `running` would show a phantom
+ * forever; the matching child thread is reconciled the same way.
+ */
+function reconcileAgentResultPart(part: MessagePart): MessagePart {
+  const type = partType(part)
+  if (type !== 'dynamic-tool' && type !== 'tool-spawn_agent') return part
+  const record = part as Record<string, unknown>
+  if (type === 'dynamic-tool' && record.toolName !== 'spawn_agent') return part
+  const output = record.output as { ok?: unknown; value?: { status?: unknown } } | undefined
+  const value = output?.value
+  if (output?.ok !== true || value === undefined || value.status !== 'running') return part
+  return {
+    ...record,
+    output: { ...output, value: { ...value, status: 'interrupted' } },
+  } as unknown as MessagePart
+}
+
 export function rehydrateThread(thread: ChatThread): ChatThread {
   const messages = thread.messages.map((message) => {
     const status = (message.metadata as ChatMessageMetadata | undefined)?.chatStatus
@@ -96,10 +117,15 @@ export function rehydrateThread(thread: ChatThread): ChatThread {
     )
     // A reload cannot resume a stream, so a persisted paused approval is expired
     // rather than left to poison the next request.
+    const reconciled = message.parts.map((part) => reconcileAgentResultPart(part))
     if (status === 'streaming' || hasNonTerminalTool) {
-      return sanitizePartial(message, { expireApprovals: true })
+      return sanitizePartial({ ...message, parts: reconciled }, { expireApprovals: true })
     }
-    return message
+    return { ...message, parts: reconciled }
   })
-  return { ...thread, messages }
+  const agent =
+    thread.agent?.status === 'running'
+      ? { ...thread.agent, status: 'interrupted' as const }
+      : thread.agent
+  return { ...thread, messages, ...(agent ? { agent } : {}) }
 }

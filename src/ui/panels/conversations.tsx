@@ -53,9 +53,16 @@ export function Conversations({
   const settings = useVaultStore((s) => s.settings)
   const activeThreadId = useChatStore((s) => s.activeThreadId)
   const runningThreads = useChatStore((s) => s.runningThreads)
-  // Re-list when the in-memory thread set changes, so a conversation created
-  // from the composer (first send) appears without reopening the panel.
-  const knownThreadIds = useChatStore((s) => Object.keys(s.threads).sort().join(','))
+  // Re-list when the in-memory thread set or any label changes, so a
+  // conversation created from the composer (first send) appears without
+  // reopening the panel, and an auto-generated or renamed title shows up.
+  // `updatedAt` is deliberately excluded: it churns on every streamed chunk.
+  const threadSignature = useChatStore((s) =>
+    Object.values(s.threads)
+      .map((thread) => `${thread.id}\u0000${thread.title}\u0000${thread.workspaceName ?? ''}`)
+      .sort()
+      .join('\n'),
+  )
 
   const [summaries, setSummaries] = useState<ThreadSummary[]>([])
   const [failures, setFailures] = useState(0)
@@ -81,7 +88,7 @@ export function Conversations({
     return () => {
       cancelled = true
     }
-  }, [knownThreadIds])
+  }, [threadSignature])
 
   const provider = defaultProviderFor(settings)
 
@@ -114,7 +121,7 @@ export function Conversations({
     if (!editingId) return
     const title = normalizeTitle(draft)
     const current = useChatStore.getState().threads[editingId]
-    if (current) useChatStore.getState().setThread({ ...current, title })
+    if (current) useChatStore.getState().setThread({ ...current, title, titleSource: 'user' })
     setEditingId(null)
     await renameConversation(editingId, title)
     await refresh()

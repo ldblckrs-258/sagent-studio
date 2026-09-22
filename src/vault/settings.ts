@@ -41,6 +41,45 @@ export interface TypeSafeSettings {
   baseURL?: string;
 }
 
+/**
+ * A capability tier for delegated and auxiliary work. Ordered from cheapest to
+ * most capable: `cheap` names conversations and rewrites user-sourced RAG
+ * queries, `medium` and `high` back delegated agents, and `max` is reserved for
+ * explicit advisory or planning delegations.
+ */
+export type ModelTier = "cheap" | "medium" | "high" | "max";
+
+export const MODEL_TIERS: readonly ModelTier[] = [
+  "cheap",
+  "medium",
+  "high",
+  "max",
+];
+
+/**
+ * One tier's model selection. Optional and absent by default: a tier with no
+ * provider resolves to no model, and the caller falls back to the
+ * conversation's own model, so the features work unconfigured.
+ */
+export interface TierModelSettings {
+  /** Provider of the tier's model. Absent means "not configured". */
+  providerId?: string;
+  /** Model id; absent uses the provider's `defaultModel`. */
+  modelId?: string;
+}
+
+export type TierModelsSettings = Partial<Record<ModelTier, TierModelSettings>>;
+
+/**
+ * The provider/model the user last chose, so a new conversation opens on it
+ * instead of the first configured provider. Optional and absent by default;
+ * a selection whose provider no longer resolves is ignored.
+ */
+export interface LastModelSettings {
+  providerId?: string;
+  modelId?: string;
+}
+
 export interface RagSettings {
   embedModel: string;
   /**
@@ -120,6 +159,13 @@ export interface Settings {
   context: ContextSettings;
   egressNoticeDismissed: boolean;
   idleLockMinutes: number;
+  /**
+   * The per-tier model selections for delegated and auxiliary work; absent
+   * means "not configured".
+   */
+  modelTiers?: TierModelsSettings;
+  /** The last model the user chose; absent means "no preference yet". */
+  lastModel?: LastModelSettings;
   /**
    * Optional and deliberately absent by default: an absent policy means
    * "enable every vault skill", so existing vaults keep working. Adding it to
@@ -303,6 +349,43 @@ export function normalizeProviders(value: unknown): ProviderConfig[] {
   return providers;
 }
 
+/**
+ * Keeps only string, non-empty, trimmed `providerId`/`modelId` fields so a
+ * hand-edited vault cannot smuggle a non-string past `createLLM`. Returns
+ * `undefined` when nothing usable is left, matching "not configured".
+ */
+export function normalizeTierModel(value: unknown): TierModelSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const providerId =
+    typeof value.providerId === "string" ? value.providerId.trim() : "";
+  const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
+  if (providerId === "" && modelId === "") return undefined;
+  const tier: TierModelSettings = {};
+  if (providerId !== "") tier.providerId = providerId;
+  if (modelId !== "") tier.modelId = modelId;
+  return tier;
+}
+
+/**
+ * Normalizes a tier map to the four known tiers, dropping unknown keys and
+ * malformed selections. Returns `undefined` when nothing usable survives, which
+ * keeps `Settings.modelTiers` absent rather than an empty object.
+ */
+export function normalizeTierModels(value: unknown): TierModelsSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const tiers: TierModelsSettings = {};
+  for (const tier of MODEL_TIERS) {
+    const normalized = normalizeTierModel(value[tier]);
+    if (normalized) tiers[tier] = normalized;
+  }
+  return Object.keys(tiers).length > 0 ? tiers : undefined;
+}
+
+/** Normalizes the last-used selection; same field hygiene as a tier selection. */
+export function normalizeLastModel(value: unknown): LastModelSettings | undefined {
+  return normalizeTierModel(value);
+}
+
 export function deepMerge<T>(base: T, patch: unknown): T {
   if (!isPlainObject(patch)) {
     return patch === undefined ? base : (patch as T);
@@ -351,9 +434,34 @@ export function migrate(version: number, data: unknown): Settings {
   } catch {
     context = defaultSettings().context;
   }
+  // A vault written before tiers existed stored a single `subModel`; it becomes
+  // the cheap tier without overwriting an explicit cheap selection. Both raw
+  // keys are destructured out so neither survives into `rest`.
+  // `subModel` is a legacy key absent from the current `Settings` shape but still
+  // present at runtime after `deepMerge`, so it is destructured through an
+  // intersection to strip it without a type error.
+  const {
+    subModel: rawSubModel,
+    modelTiers: rawModelTiers,
+    lastModel: rawLastModel,
+    ...rest
+  } = merged as typeof merged & {
+    subModel?: unknown;
+    lastModel?: unknown;
+  };
+  let tiers = normalizeTierModels(rawModelTiers);
+  if (tiers?.cheap === undefined) {
+    const legacyCheap = normalizeTierModel(rawSubModel);
+    if (legacyCheap) {
+      tiers = { ...tiers, cheap: legacyCheap };
+    }
+  }
+  const lastModel = normalizeLastModel(rawLastModel);
   return {
-    ...merged,
+    ...rest,
     providers: normalizeProviders(merged.providers),
     context,
+    ...(tiers ? { modelTiers: tiers } : {}),
+    ...(lastModel ? { lastModel } : {}),
   };
 }

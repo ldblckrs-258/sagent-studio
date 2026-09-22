@@ -30,6 +30,11 @@ export interface ToolViewSpec {
   /** Short right-aligned summary, e.g. "128 lines" or "3 hits". */
   meta?: (args: Record<string, unknown>, envelope: ToolEnvelope | null) => string | undefined;
   /**
+   * Identity chips for the collapsed header, so a call's kind reads before it is
+   * expanded. Rendered between the label and the meta summary.
+   */
+  chips?: (args: Record<string, unknown>, envelope: ToolEnvelope | null) => ReactNode;
+  /**
    * When true the body opens itself, for a view the user should see at a glance
    * (a file preview) rather than one they must expand. A failure or a pending
    * decision always opens regardless.
@@ -321,11 +326,13 @@ export function ToolViewTrigger({
   icon: DomainIcon,
   label,
   meta,
+  chips,
   status,
 }: {
   icon: LucideIcon;
   label: string;
   meta?: string | undefined;
+  chips?: ReactNode;
   status?: { type: string; reason?: string } | undefined;
 }) {
   const statusType = status?.type ?? "complete";
@@ -371,6 +378,11 @@ export function ToolViewTrigger({
       >
         {label}
       </span>
+      {chips !== undefined && (
+        <span data-slot="tool-view-chips" className="flex shrink-0 items-center gap-1">
+          {chips}
+        </span>
+      )}
       {meta !== undefined && meta.length > 0 && (
         <span
           data-slot="tool-view-meta"

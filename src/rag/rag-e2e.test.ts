@@ -1,6 +1,6 @@
 import type { EmbeddingModel, LanguageModel } from 'ai'
 import { MockEmbeddingModelV4, MockLanguageModelV4 } from 'ai/test'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SkillRegistry } from '../skills/registry'
 import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
@@ -129,6 +129,20 @@ function fileOf(title: string, text: string): IngestFile {
     text: async () => text,
     arrayBuffer: async () => bytes.buffer,
   }
+}
+
+function rewriteReply(text: string): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    doGenerate: async () => ({
+      content: text.length > 0 ? [{ type: 'text' as const, text }] : [],
+      finishReason: { unified: 'stop' as const, raw: undefined },
+      usage: {
+        inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 5, text: 5, reasoning: 0 },
+      },
+      warnings: [],
+    }),
+  })
 }
 
 function memoryStore(): ThreadStore {
@@ -369,5 +383,47 @@ describe('RAG end-to-end', () => {
       const filtered = grade.decision === 'exclude' && grade.answers.contains_injection > 0.7
       expect(!filtered).toBe(testCase.expectedPassesFilter)
     })
+  })
+})
+
+describe('RAG query rewrite', () => {
+  it('rewrites a user-sourced query but never an agent query', async () => {
+    const { embedder } = await setupPipeline()
+    const rewriteModel = vi.fn(
+      () => rewriteReply('ngày pháp luật Việt Nam') as unknown as LanguageModel,
+    )
+    const port = createRagPort({
+      getSettings: () => useVaultStore.getState().settings,
+      embedderFor: () => embedder as unknown as EmbeddingModel,
+      typesafe: createAdversarialTypeSafe(),
+      rewriteModel,
+      cache: createJevCache(),
+    })
+
+    const userResult = await port.search('luật', { source: 'user' })
+    expect(rewriteModel).toHaveBeenCalledTimes(1)
+    expect(userResult.query).toBe('ngày pháp luật Việt Nam')
+
+    await port.search('luật', { source: 'agent' })
+    expect(rewriteModel).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the original query when the rewriter fails', async () => {
+    const { embedder } = await setupPipeline()
+    const failing = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new Error('rewriter offline')
+      },
+    })
+    const port = createRagPort({
+      getSettings: () => useVaultStore.getState().settings,
+      embedderFor: () => embedder as unknown as EmbeddingModel,
+      typesafe: createAdversarialTypeSafe(),
+      rewriteModel: () => failing as unknown as LanguageModel,
+      cache: createJevCache(),
+    })
+
+    const result = await port.search('câu hỏi gốc', { source: 'user' })
+    expect(result.query).toBe('câu hỏi gốc')
   })
 })

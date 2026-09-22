@@ -1,7 +1,13 @@
 import type { Settings } from '../vault/settings'
 import { clearWorkspaceHandle, threadHandleId } from '../workspace/handle'
 import { workspaceJournalStore } from '../workspace/journal-store'
-import { createThread, deleteThread, renameThread, setThreadWorkspaceLabel } from './persistence'
+import {
+  createThread,
+  deleteAgentRunsForParent,
+  deleteThread,
+  renameThread,
+  setThreadWorkspaceLabel,
+} from './persistence'
 import type { ThreadSummary } from './persistence'
 import type { ChatMode, ChatThread, SkillRef, ThreadConfig } from './types'
 
@@ -29,10 +35,30 @@ export interface ProviderSelection {
 }
 
 /**
- * The single default-provider rule: the first configured provider with its
- * `defaultModel`. Deterministic because array order is the only tie-break.
+ * Resolves the remembered last-used model against the configured providers.
+ * Returns null when no preference exists or its provider is gone. A model id
+ * that no longer names a listed model falls back to that provider's default
+ * rather than dropping the whole selection.
+ */
+export function resolveLastModel(settings: Settings | null): ProviderSelection | null {
+  const providerId = settings?.lastModel?.providerId
+  if (!settings || !providerId) return null
+  const provider = settings.providers.find((entry) => entry.id === providerId)
+  if (!provider) return null
+  const requested = settings.lastModel?.modelId?.trim()
+  const known = requested && provider.models.some((model) => model.id === requested)
+  const modelId = known ? requested : provider.defaultModel || provider.models[0]?.id
+  return modelId ? { providerId: provider.id, modelId } : { providerId: provider.id }
+}
+
+/**
+ * The default-provider rule: the last model the user chose when it still
+ * resolves, otherwise the first configured provider with its `defaultModel`.
+ * Deterministic because array order is the only tie-break.
  */
 export function defaultProviderFor(settings: Settings | null): ProviderSelection | null {
+  const remembered = resolveLastModel(settings)
+  if (remembered) return remembered
   const provider = settings?.providers[0]
   if (!provider) return null
   const modelId = provider.defaultModel || provider.models[0]?.id
@@ -93,6 +119,9 @@ export async function renameConversation(id: string, title: string): Promise<voi
 
 export async function deleteConversation(id: string): Promise<void> {
   await deleteThread(id)
+  // Delegated runs are children of the conversation and have no meaning without
+  // it, so they are deleted with it.
+  await deleteAgentRunsForParent(id)
   // The journal and the folder handle are scoped to the conversation, so they
   // go with it.
   await workspaceJournalStore.remove(id)

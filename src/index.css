@@ -53,6 +53,15 @@
   --color-file-media: oklch(0.52 0.105 315);
   --color-file-sheet: oklch(0.48 0.1 152);
 
+  /*
+    Tier label hues for the delegation view. Each is a file-kind hue mixed 80%
+    toward ink: at their raw lightness the hues land near 3.4:1 on paper, under
+    the 4.5:1 floor for text, so they are darkened while keeping their identity.
+  */
+  --color-tier-spark: color-mix(in oklab, var(--color-file-data) 80%, var(--color-ink));
+  --color-tier-forge: color-mix(in oklab, var(--color-file-code) 80%, var(--color-ink));
+  --color-tier-prime: color-mix(in oklab, var(--color-file-media) 80%, var(--color-ink));
+
   --radius-sm: 2px;
   --radius-md: 3px;
 

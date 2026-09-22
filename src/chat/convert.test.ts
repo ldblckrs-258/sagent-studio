@@ -389,4 +389,24 @@ describe('attachment parts in the transcript', () => {
     } as UIMessage
     expect(toThreadMessageLike(message, 0).content).toHaveLength(1)
   })
+
+  it('carries a background agent report onto the thread message', () => {
+    const message: UIMessage = {
+      id: 'n1',
+      role: 'assistant',
+      parts: [{ type: 'text', text: 'Sub-agent "audit" finished: done' }],
+      metadata: {
+        chatStatus: 'done',
+        agentNotice: true,
+        untrusted: true,
+        runId: 'run-3',
+        agentReport: { runId: 'run-3', label: 'audit', status: 'completed', response: 'done' },
+      },
+    } as UIMessage
+
+    const like = toThreadMessageLike(message, 0)
+    expect(
+      (like.metadata?.custom as { agentReport?: { label?: string } } | undefined)?.agentReport,
+    ).toMatchObject({ label: 'audit', status: 'completed', response: 'done' })
+  })
 })

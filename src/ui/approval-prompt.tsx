@@ -3,6 +3,7 @@
 import { findPendingApproval } from "@/chat/approval-pending";
 import { useChatStore } from "@/chat/store";
 import { useSession } from "@/session/session-context";
+import { redactForDisplay, redactSecrets } from "@/tools/redact";
 import { Button } from "@/ui/primitives";
 import { installApprovalSoundUnlock, playApprovalChime } from "@/ui/approval-sound";
 import { ShieldAlert } from "lucide-react";
@@ -48,14 +49,15 @@ export function ApprovalPrompt() {
   };
 
   const detail =
-    pending.prompt ??
-    (() => {
-      try {
-        return JSON.stringify(pending.input ?? {}, null, 2);
-      } catch {
-        return String(pending.input);
-      }
-    })();
+    pending.prompt !== undefined
+      ? redactSecrets(pending.prompt)
+      : (() => {
+          try {
+            return JSON.stringify(redactForDisplay(pending.input ?? {}), null, 2);
+          } catch {
+            return "[unserializable]";
+          }
+        })();
 
   const isChangeMode = pending.toolName === "change_mode";
 

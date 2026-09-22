@@ -2,21 +2,24 @@ import type { KeyboardEvent } from "react";
 import { useState } from "react";
 import type { ConfigDraft } from "../../chat/config";
 import { threadConfigPatch, validateConfigDraft } from "../../chat/config";
+import { rememberLastModel } from "../../chat/last-model";
 import { useChatStore } from "../../chat/store";
 import type { ChatThread, SkillRef } from "../../chat/types";
 import { useSession } from "../../session/session-context";
 import { DataEgressNotice } from "../../settings/DataEgressNotice";
+import { ModelTiersPanel } from "../../settings/ModelTiersPanel";
 import { ProvidersPanel } from "../../settings/ProvidersPanel";
 import { StorageWarning } from "../../settings/StorageWarning";
 import { useVaultStore } from "../../vault/store";
 import { Button, Input, Row, Select, Textarea } from "../primitives";
 
-export type ConfigTab = "thread" | "providers" | "vault";
+export type ConfigTab = "thread" | "providers" | "models" | "vault";
 
-const TABS: readonly ConfigTab[] = ["thread", "providers", "vault"];
+const TABS: readonly ConfigTab[] = ["thread", "providers", "models", "vault"];
 const TAB_LABEL: Record<ConfigTab, string> = {
   thread: "Thread",
   providers: "Providers",
+  models: "Models",
   vault: "Vault",
 };
 
@@ -91,6 +94,10 @@ function ThreadTab({ thread }: { thread: ChatThread }) {
     try {
       await session.threadStore.saveThread(next);
       setSavedAt(Date.now());
+      rememberLastModel({
+        providerId: next.config.providerId,
+        modelId: next.config.modelId,
+      });
     } catch (error) {
       // Keep the draft; surface the failure instead of claiming success.
       setErrors({
@@ -330,6 +337,7 @@ export function ChatConfig({
           )
         ) : null}
         {tab === "providers" ? <ProvidersPanel /> : null}
+        {tab === "models" ? <ModelTiersPanel /> : null}
         {tab === "vault" ? (
           <div className="flex flex-col gap-2 p-3">
             <StorageWarning />

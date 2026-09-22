@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { ModelTier } from "../vault/settings";
 import { ChatConfigError } from "./errors";
 
 export type ModelParams = {
@@ -26,6 +27,62 @@ export const MAX_PLAN_TEXT_LENGTH = 500;
 
 export type ChatMode = "read_only" | "editing" | "god";
 
+export type AgentRunStatus =
+  | "running"
+  | "completed"
+  | "denied"
+  | "aborted"
+  | "error"
+  | "interrupted"
+  | "limit_exceeded"
+  | "invalid_input";
+
+/**
+ * A thread that records a delegated agent run. Present only on child agent
+ * threads, which are excluded from the conversations list and shown in the
+ * Agents panel instead.
+ */
+export interface AgentThreadMeta {
+  runId: string;
+  parentThreadId: string;
+  label?: string;
+  mode: ChatMode;
+  tier: ModelTier;
+  status: AgentRunStatus;
+}
+
+/**
+ * A settled background run's report, carried on its notice message. The notice
+ * text stays the model-visible framing; this is the structured form the
+ * transcript renders as a sub-agent card instead of a bare assistant line.
+ */
+export interface AgentNoticeReport {
+  label?: string;
+  status: AgentRunStatus;
+  /** The run's result summary, rendered as the report body. */
+  response: string;
+}
+
+export type AgentNoticeMeta = AgentNoticeReport & { runId?: string };
+
+const AGENT_RUN_STATUSES: readonly AgentRunStatus[] = [
+  "running",
+  "completed",
+  "denied",
+  "aborted",
+  "error",
+  "interrupted",
+  "limit_exceeded",
+  "invalid_input",
+];
+
+export function isAgentRunStatus(value: unknown): value is AgentRunStatus {
+  return (
+    typeof value === "string" &&
+    (AGENT_RUN_STATUSES as readonly string[]).includes(value)
+  );
+}
+
 export const DEFAULT_CHAT_MODE: ChatMode = "editing";
 
 export function isChatMode(value: unknown): value is ChatMode {
@@ -46,6 +103,18 @@ export interface ThreadConfig {
 export interface ChatThread {
   id: string;
   title: string;
+  /**
+   * How the title was set: `auto` by the naming task, `user` by a manual
+   * rename. Absent (an older thread, or one still titled "New chat") is treated
+   * as auto-namable. A `user` title is never overwritten by the naming task.
+   */
+  titleSource?: "auto" | "user";
+  /**
+   * User-message count at the last auto-naming. The naming task re-runs every
+   * fifth user message; this marker keeps a non-user run (a rerun, an approval
+   * resume) from re-naming the same turn twice.
+   */
+  titleUserCount?: number;
   messages: UIMessage[];
   config: ThreadConfig;
   createdAt: number;
@@ -56,6 +125,11 @@ export interface ChatThread {
   mode?: ChatMode;
   /** Thread-scoped todo list written by `update_plan`. */
   plan?: PlanItem[];
+  /**
+   * Present only on a delegated run's child thread. Its presence excludes the
+   * thread from the conversations list.
+   */
+  agent?: AgentThreadMeta;
 }
 
 export function defaultThreadConfig(

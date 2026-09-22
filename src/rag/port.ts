@@ -1,4 +1,4 @@
-import type { EmbeddingModel } from 'ai'
+import type { EmbeddingModel, LanguageModel } from 'ai'
 import type { TypeSafeClient } from '@typesafe-ai/sdk'
 import { LLMConfigError } from '../ai/providers'
 import type { Settings } from '../vault/settings'
@@ -16,6 +16,7 @@ import {
 } from './jev'
 import type { CitationVerdict, GradeResult, JevCache } from './jev'
 import { embedQuery } from './retrieval'
+import { rewriteQuery } from './query-rewrite'
 import { getChunkInfo, getChunkText, listDocuments, readDocumentChunkTexts } from './store'
 import type { DocumentKind } from './types'
 
@@ -64,6 +65,7 @@ export type SearchReason =
  * survivors of Jev grading, not the scan size.
  */
 export interface RagSearchResult {
+  /** The query that was actually routed and graded (the rewritten form when one was produced). */
   query: string
   reason: SearchReason
   passages: RagPassage[]
@@ -95,11 +97,28 @@ export interface RagCitationResult {
   span?: string
 }
 
+/**
+ * The origin of a search query. A `user` query is the raw user message and is a
+ * candidate for LLM rewriting; an `agent` query was authored by the model via
+ * `search_documents` and is already well-formed, so it is left alone.
+ */
+export type RagQuerySource = 'user' | 'agent'
+
 export interface RagPort {
   listDocuments(): Promise<RagDocumentSummary[]>
   search(
     query: string,
-    options?: { topK?: number; context?: string; signal?: AbortSignal },
+    options?: {
+      topK?: number
+      context?: string
+      /**
+       * Where the query came from. `user` marks a raw user-message query, which
+       * may be rewritten by the auxiliary model first; `agent` (the default)
+       * marks an LLM-authored tool query, which is never rewritten.
+       */
+      source?: RagQuerySource
+      signal?: AbortSignal
+    },
   ): Promise<RagSearchResult>
   getChunk(id: string, options?: { signal?: AbortSignal }): Promise<RagChunk | null>
   /**
@@ -122,6 +141,12 @@ export interface RagPortDeps {
   getSettings(): Settings | null
   embedderFor(settings: Settings): EmbeddingModel
   typesafe: TypeSafeClient
+  /**
+   * The auxiliary model used to rewrite a user-sourced query. Optional: absent
+   * (or returning undefined) leaves the query untouched. The agent/tool path
+   * never calls it.
+   */
+  rewriteModel?: (settings: Settings) => LanguageModel | undefined
   /** The vector index; defaults to the phase 2 module singleton. */
   index?: {
     requireIndex(): void
@@ -254,7 +279,12 @@ export function createRagPort(deps: RagPortDeps): RagPort {
 
   async function search(
     query: string,
-    options: { topK?: number; context?: string; signal?: AbortSignal } = {},
+    options: {
+      topK?: number
+      context?: string
+      source?: RagQuerySource
+      signal?: AbortSignal
+    } = {},
   ): Promise<RagSearchResult> {
     const settings = deps.getSettings()
     if (!settings) throw new Error('The vault is locked.')
@@ -262,22 +292,41 @@ export function createRagPort(deps: RagPortDeps): RagPort {
     const thresholds = resolveThresholds(settings.rag.thresholds, settings.rag.concurrency)
     const topK = options.topK ?? settings.rag.topK
 
+    // A user-sourced query may be rewritten by the auxiliary model before any
+    // routing. Best-effort: a missing model, an empty reply, or a failure keeps
+    // the original query. An agent query skips this entirely.
+    let effectiveQuery = query
+    if (options.source === 'user' && deps.rewriteModel) {
+      const model = deps.rewriteModel(settings)
+      if (model) {
+        try {
+          const rewritten = await rewriteQuery(model, query, {
+            ...(options.context !== undefined ? { context: options.context } : {}),
+            ...(options.signal ? { signal: options.signal } : {}),
+          })
+          if (rewritten !== '') effectiveQuery = rewritten
+        } catch {
+          effectiveQuery = query
+        }
+      }
+    }
+
     // `context` is the conversation turn the query came from, when the caller
     // has it. The tool path has none, so `premise_valid` stays indecisive and
     // `gradePair`'s `contradicts_premise` is the effective false-premise path.
     const routed = await routeQuery(
       deps.typesafe,
-      { query, context: options.context },
+      { query: effectiveQuery, context: options.context },
       { signal: options.signal, thresholds },
     )
 
-    if (routed.decision === 'skip') return emptyResult(query, 'skipped')
+    if (routed.decision === 'skip') return emptyResult(effectiveQuery, 'skipped')
     if (routed.decision === 'conflicting_evidence') {
-      return emptyResult(query, 'premise_conflict')
+      return emptyResult(effectiveQuery, 'premise_conflict')
     }
 
     const embedder = deps.embedderFor(settings)
-    const selected = await selectQuery(deps.typesafe, query, undefined, {
+    const selected = await selectQuery(deps.typesafe, effectiveQuery, undefined, {
       signal: options.signal,
       thresholds,
     })
@@ -292,7 +341,7 @@ export function createRagPort(deps: RagPortDeps): RagPort {
       if (text !== null) candidates.push({ id: hit.id, text })
     }
 
-    const { grades } = await gradePairs(deps.typesafe, query, candidates, {
+    const { grades } = await gradePairs(deps.typesafe, effectiveQuery, candidates, {
       signal: options.signal,
       thresholds,
       cache: deps.cache,
@@ -322,7 +371,7 @@ export function createRagPort(deps: RagPortDeps): RagPort {
     else if (injectionWithheld) reason = 'injection_filtered'
 
     return {
-      query,
+      query: effectiveQuery,
       reason,
       passages,
       conflicting: conflicts,

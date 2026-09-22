@@ -150,4 +150,31 @@ describe('rehydrateThread', () => {
     const rehydrated = rehydrateThread(original)
     expect(rehydrated.messages).toEqual(original.messages)
   })
+
+  it('reconciles a running child agent thread to interrupted', () => {
+    const child: ChatThread = {
+      ...thread(assistant([{ type: 'text', text: 'x' }], { chatStatus: 'done' })),
+      agent: { runId: 'r1', parentThreadId: 'p0', mode: 'editing', tier: 'medium', status: 'running' },
+    }
+    expect(rehydrateThread(child).agent?.status).toBe('interrupted')
+  })
+
+  it('rewrites a running spawn_agent result to interrupted', () => {
+    const message = assistant(
+      [
+        {
+          type: 'tool-spawn_agent',
+          toolCallId: 'c1',
+          state: 'output-available',
+          input: {},
+          output: { ok: true, code: 'ok', value: { status: 'running', runId: 'r1' } },
+        } as unknown as UIMessage['parts'][number],
+      ],
+      { chatStatus: 'done' },
+    )
+    const part = rehydrateThread(thread(message)).messages[0].parts[0] as unknown as {
+      output: { value: { status: string } }
+    }
+    expect(part.output.value.status).toBe('interrupted')
+  })
 })

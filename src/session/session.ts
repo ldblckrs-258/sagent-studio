@@ -1,10 +1,17 @@
 import type { ChatEngine, EngineDeps, ThreadStore } from '../chat/engine'
 import { createEngine, createSkillLoadPort } from '../chat/engine'
-import type { ThreadConfig } from '../chat/types'
+import type { AgentParentContext } from '../agents/types'
+import { summarizeAgentResult } from '../agents/types'
+import { createAgentRuntime } from '../agents/runtime'
+import type { AgentRunPersistence, AgentRunSnapshot } from '../agents/runtime'
+import { agentRunStore } from '../agents/store'
+import type { ChatThread, ThreadConfig } from '../chat/types'
+import { defaultThreadConfig } from '../chat/types'
 import { deleteThread, listThreads, loadThread, saveThread } from '../chat/persistence'
 import { useChatStore } from '../chat/store'
 import { labelConversation } from '../chat/threads'
 import { createEmbedder } from '../ai/embedder'
+import { createTierModel } from '../ai/model-tier'
 import { createTypeSafe } from '../ai/typesafe'
 import { createRagPort, resolveEmbedProviderId } from '../rag/port'
 import type { RagPort } from '../rag/port'
@@ -15,6 +22,7 @@ import { createVaultSkillEnablement } from '../skills/enablement'
 import type { SkillEnablementPort } from '../skills/enablement'
 import { SkillRegistry } from '../skills/registry'
 import { createAdminPorts } from '../tools/admin-ports'
+import { createAgentsToolProvider } from '../tools/builtin/agents'
 import { createCheckToolProvider } from '../tools/builtin/check'
 import { createCodeToolProvider } from '../tools/builtin/code'
 import type { CodeRunnerSource } from '../tools/builtin/code'
@@ -28,7 +36,7 @@ import { createSkillManagementProvider } from '../tools/builtin/skill-management
 import { createSkillToolProvider } from '../tools/builtin/skills'
 import { createToolGuideProvider } from '../tools/builtin/tool-guide'
 import { createToolManagementProvider } from '../tools/builtin/tool-management'
-import type { JsonSchemaObject, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
+import type { AgentSpawnPort, JsonSchemaObject, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
 import { ToolRegistry } from '../tools/registry'
 import { useVaultStore } from '../vault/store'
@@ -90,6 +98,8 @@ export interface AppSession {
   engineFor(threadId: string): ChatEngine
   disposeThread(threadId: string): void
   dispose(): void
+  /** Aborts one delegated run by id. */
+  cancelAgentRun(runId: string): void
   getWorkspace(): WorkspaceFs | null
   setWorkspace(fs: WorkspaceFs | null): void
   /** Builtin tools with availability and introspection details for the given thread config's ports. */
@@ -116,6 +126,27 @@ function currentSandbox(): SandboxSettings {
       idleTimeoutMs: DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
     }
   )
+}
+
+/** Builds the durable child agent thread for one delegated run. */
+function agentThreadFrom(snapshot: AgentRunSnapshot): ChatThread {
+  return {
+    id: snapshot.runId,
+    title: snapshot.label?.trim() || 'Agent run',
+    messages: snapshot.messages,
+    config: defaultThreadConfig(snapshot.providerId, snapshot.modelId),
+    mode: snapshot.mode,
+    createdAt: snapshot.startedAt,
+    updatedAt: Date.now(),
+    agent: {
+      runId: snapshot.runId,
+      parentThreadId: snapshot.parentThreadId,
+      ...(snapshot.label !== undefined ? { label: snapshot.label } : {}),
+      mode: snapshot.mode,
+      tier: snapshot.tier,
+      status: snapshot.status,
+    },
+  }
 }
 
 export function createSession(options: SessionOptions = {}): AppSession {
@@ -239,6 +270,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         getSettings,
         embedderFor: (current) => createEmbedder(current, resolveEmbedProviderId(current)),
         typesafe: createTypeSafe(settings, { timeoutMs: SYSTEM_ONE_TIMEOUT_MS }),
+        rewriteModel: (current) => createTierModel(current, 'cheap') ?? undefined,
         cache: createJevCache(),
       })
     } catch {
@@ -257,6 +289,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const previewProvider = createPreviewToolProvider()
   const checkProvider = createCheckToolProvider()
   const historyProvider = createHistoryToolProvider()
+  const agentsProvider = createAgentsToolProvider()
 
   if (!options.toolRegistry) {
     toolRegistry.registerProvider(workspaceToolProvider)
@@ -272,13 +305,66 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(previewProvider)
     toolRegistry.registerProvider(toolGuideProvider)
     toolRegistry.registerProvider(ragProvider)
+    toolRegistry.registerProvider(agentsProvider)
   }
+
+  // The session-scoped agent runtime owns every detached run: caps, per-run
+  // controllers, and the global abort. Its ports mirror `buildRunStream` so a
+  // delegated tool does not silently disappear.
+  const agentPersistence: AgentRunPersistence = {
+    create: async (snapshot) => {
+      await saveThread(agentThreadFrom(snapshot))
+    },
+    save: async (snapshot) => {
+      await saveThread(agentThreadFrom(snapshot))
+    },
+  }
+  const agentRuntime = createAgentRuntime({
+    getSettings,
+    skillRegistry,
+    toolRegistry,
+    store: agentRunStore,
+    persistence: agentPersistence,
+    portsFor: async (context) => ({
+      rag: ragPort(),
+      workspace: getWorkspace() ?? undefined,
+      codeRunner: runnerSource.getRunners().js,
+      sandbox: sandboxControlPort(),
+      preview: previewPort(),
+      // The parent thread's journal, so a sub-agent's writes are recorded with
+      // the parent's and stay undoable from the conversation.
+      journal: await workspaceJournalStore.forThread(context.parentThreadId),
+      skills: createSkillLoadPort(skillRegistry.resolve(skillRegistry.snapshotEnabled())),
+      plan: { get: () => [], set: async () => {} },
+      ...createAdminPorts({ skillRegistry, toolRegistry }),
+    }),
+    onSettle: (run) => {
+      const parentThreadId = run.parentThreadId;
+      if (!useChatStore.getState().threads[parentThreadId]) return;
+      const engine = engines.get(parentThreadId);
+      if (!engine) return;
+      const status = run.result?.status ?? run.status;
+      const response = run.result
+        ? summarizeAgentResult(run.result)
+        : `The agent ${run.status}.`;
+      const label = run.label ? ` "${run.label}"` : "";
+      engine.appendAgentNotice(
+        parentThreadId,
+        `Sub-agent${label} finished: ${response}`,
+        run.runId,
+        { status, response, ...(run.label ? { label: run.label } : {}) },
+      );
+    },
+  })
 
   const deps: EngineDeps = {
     getSettings,
     skillRegistry,
     toolRegistry,
     threadStore,
+    agentPortsFor: (context: AgentParentContext): AgentSpawnPort => ({
+      spawn: (request, spawnOptions) => agentRuntime.spawn(context, request, spawnOptions),
+    }),
     get workspace() {
       return getWorkspace() ?? undefined
     },
@@ -309,6 +395,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   }
 
   function disposeThread(threadId: string): void {
+    agentRuntime.abortThread(threadId)
     const engine = engines.get(threadId)
     if (!engine) return
     engine.dispose()
@@ -316,6 +403,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   }
 
   function dispose(): void {
+    agentRuntime.dispose()
     for (const threadId of [...engines.keys()]) disposeThread(threadId)
     // Persist any debounced journal writes before the session tears down.
     void workspaceJournalStore.flushAll()
@@ -341,6 +429,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     engineFor,
     disposeThread,
     dispose,
+    cancelAgentRun: (runId) => agentRuntime.cancel(runId),
     getWorkspace,
     setWorkspace(fs) {
       useWorkspaceStore.getState().setFs(fs)
@@ -374,6 +463,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         previewProvider,
         toolGuideProvider,
         ragProvider,
+        agentsProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

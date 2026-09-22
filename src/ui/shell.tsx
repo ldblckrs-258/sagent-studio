@@ -1,6 +1,7 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import {
   BookOpen,
+  Bot,
   Boxes,
   FileText,
   FolderTree,
@@ -22,6 +23,7 @@ import type {
   RefObject,
 } from "react";
 import { useEffect, useRef, useState } from "react";
+import { agentRunStore } from "../agents/store";
 import { listThreadSummaries } from "../chat/persistence";
 import { rehydrateThread } from "../chat/sanitize";
 import { useChatStore } from "../chat/store";
@@ -31,6 +33,7 @@ import { useMediaQuery } from "../hooks/use-media-query";
 import { useFileViewStore } from "../session/file-view-state";
 import { useSession } from "../session/session-context";
 import { useVaultStore } from "../vault/store";
+import { AgentsPanel } from "./panels/agents";
 import { ApprovalsPanel } from "./panels/approvals";
 import type { ConfigTab } from "./panels/chat-config";
 import { ChatConfig } from "./panels/chat-config";
@@ -45,6 +48,7 @@ import { PlanPanel } from "./plan-panel";
 import { Button } from "./primitives";
 import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from "./resize";
 import { ResizeHandle } from "./resize-handle";
+import { useRegistryVersion } from "./use-registry-version";
 
 export type RailPanelId =
   | "config"
@@ -54,6 +58,7 @@ export type RailPanelId =
   | "skills"
   | "tools"
   | "sandbox"
+  | "agents"
   | "approvals";
 
 const RAIL_IDS: readonly RailPanelId[] = [
@@ -64,6 +69,7 @@ const RAIL_IDS: readonly RailPanelId[] = [
   "skills",
   "tools",
   "sandbox",
+  "agents",
   "approvals",
 ];
 
@@ -123,29 +129,40 @@ function RailButton({
   label,
   icon: Icon,
   active,
+  badge,
   onClick,
 }: {
   id: string;
   label: string;
   icon: ComponentType<{ size?: number; strokeWidth?: number }>;
   active: boolean;
+  badge?: number;
   onClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
+  const labelWithBadge = badge && badge > 0 ? `${label} (${badge} pending)` : label;
   return (
     <button
       type="button"
       data-rail-button={id}
-      aria-label={label}
+      aria-label={labelWithBadge}
       aria-expanded={active}
-      title={label}
+      title={labelWithBadge}
       onClick={onClick}
-      className={`inline-flex size-9 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
+      className={`relative inline-flex size-9 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
         active
           ? "border-accent-rule bg-accent-soft text-accent"
           : "border-transparent text-muted hover:border-rule-strong hover:text-ink"
       }`}
     >
       <Icon size={16} strokeWidth={1.75} />
+      {badge && badge > 0 ? (
+        <span
+          aria-hidden
+          className="border-caution-rule bg-caution text-paper numeric absolute -right-0.5 -top-0.5 inline-flex min-w-4 items-center justify-center rounded-full border px-1 text-[10px] leading-4"
+        >
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -228,6 +245,10 @@ export function Shell({ left }: { left?: ReactNode }) {
   const runtime = useChatRuntime();
   const session = useSession();
   const lock = useVaultStore((s) => s.lock);
+  // Re-render the rail when a delegated run queues an approval.
+  useRegistryVersion(agentRunStore);
+  const activeThreadId = useChatStore((s) => s.activeThreadId);
+  const agentPending = agentRunStore.pendingApprovalCount(activeThreadId ?? undefined);
   const wide = useMediaQuery(WIDE_QUERY);
   const bootstrapped = useRef(false);
 
@@ -353,6 +374,12 @@ export function Shell({ left }: { left?: ReactNode }) {
       label: "Sandbox",
       icon: Boxes,
       render: () => <SandboxPanel />,
+    },
+    {
+      id: "agents",
+      label: "Agents",
+      icon: Bot,
+      render: () => <AgentsPanel />,
     },
     {
       id: "approvals",
@@ -484,6 +511,7 @@ export function Shell({ left }: { left?: ReactNode }) {
             label={panel.label}
             icon={panel.icon}
             active={rail.open && rail.activePanel === panel.id}
+            {...(panel.id === "agents" ? { badge: agentPending } : {})}
             onClick={(event) => {
               railTriggerRef.current = event.currentTarget;
               togglePanel(panel.id);

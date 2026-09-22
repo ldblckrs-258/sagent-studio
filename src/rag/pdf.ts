@@ -1,4 +1,4 @@
-import { normalizeVietnameseSyllableSplits } from './text-normalize'
+import { normalizeVietnameseSyllableSplits, repairMissingSyllableSpaces } from './text-normalize'
 
 /**
  * PDF text extraction through the pdf.js library.
@@ -105,6 +105,29 @@ function itemHeight(item: PdfTextItemLike): number {
 }
 
 /**
+ * The page's dominant font height, weighted by how many characters each item
+ * contributes so a handful of short items (footnote markers, page numbers) does
+ * not move the estimate. Zero when the items carry no geometry.
+ */
+function bodyFontHeight(items: readonly PdfTextItemLike[]): number {
+  const samples: { height: number; weight: number }[] = []
+  for (const item of items) {
+    const height = itemHeight(item)
+    const weight = (item.str ?? '').length
+    if (height > 0 && weight > 0) samples.push({ height, weight })
+  }
+  if (samples.length === 0) return 0
+  samples.sort((a, b) => a.height - b.height)
+  const half = samples.reduce((sum, sample) => sum + sample.weight, 0) / 2
+  let accumulated = 0
+  for (const sample of samples) {
+    accumulated += sample.weight
+    if (accumulated >= half) return sample.height
+  }
+  return samples[samples.length - 1].height
+}
+
+/**
  * Reconstructs one page's text from pdf.js items without inventing spaces.
  * A space is added only when the horizontal gap between two items on the same
  * line exceeds a word-space threshold; a vertical jump or `hasEOL` starts a new
@@ -112,13 +135,20 @@ function itemHeight(item: PdfTextItemLike): number {
  * before it becomes a space, because a decomposed item underreports its width.
  * When geometry is absent (older callers, tests) it falls back to a single space
  * between items, never splitting off a leading combining mark.
+ *
+ * A footnote marker is typeset smaller than the body and raised above the
+ * baseline; without special handling it fuses onto the number it follows
+ * (`Điều 110` + superscript `4` → `Điều 1104`), which corrupts a legal article
+ * number. Such an item is treated as its own word so `Điều 110` survives.
  */
 export function joinTextItems(items: readonly PdfTextItemLike[]): string {
+  const bodyHeight = bodyFontHeight(items)
   let text = ''
   let prevX: number | null = null
   let prevY: number | null = null
   let prevWidth = 0
   let prevHeight = 0
+  let spaceAfter = false
 
   for (const item of items) {
     const str = item.str ?? ''
@@ -128,11 +158,17 @@ export function joinTextItems(items: readonly PdfTextItemLike[]): string {
     const y = itemY(item)
     const height = itemHeight(item)
 
+    const lineJump =
+      y !== null && prevY !== null && Math.abs(y - prevY) > 0.5 * Math.max(prevHeight, height, 1)
+    const raised = y !== null && prevY !== null && y - prevY > 0.15 * Math.max(prevHeight, height, 1)
+    const superscript =
+      bodyHeight > 0 && height > 0 && height < bodyHeight * 0.75 && raised && !lineJump
+
     if (text.length > 0 && !/\s$/.test(text) && !/^\s/.test(str)) {
-      if (x !== null && prevX !== null) {
-        const verticalJump =
-          y !== null && prevY !== null && Math.abs(y - prevY) > 0.5 * Math.max(prevHeight, height, 1)
-        if (verticalJump) {
+      if (superscript || spaceAfter) {
+        text += ' '
+      } else if (x !== null && prevX !== null) {
+        if (lineJump) {
           text += '\n'
         } else {
           const gap = x - (prevX + prevWidth)
@@ -148,6 +184,7 @@ export function joinTextItems(items: readonly PdfTextItemLike[]): string {
     text += str
     if (item.hasEOL && !text.endsWith('\n')) text += '\n'
 
+    spaceAfter = superscript
     prevX = x
     prevY = y
     prevWidth = typeof item.width === 'number' && Number.isFinite(item.width) ? item.width : 0
@@ -165,15 +202,46 @@ export function joinTextItems(items: readonly PdfTextItemLike[]): string {
  * to an embedding provider.
  */
 function normalizeWhitespace(text: string): string {
-  return normalizeVietnameseSyllableSplits(
-    text
-      .normalize('NFC')
-      .replace(/\r\n?/g, '\n')
-      .replace(/[^\S\n]+/g, ' ')
-      .replace(/ *\n */g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim(),
-  )
+  const collapsed = text
+    .normalize('NFC')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  // Missing spaces first, then injected splits: the split repair never merges
+  // the two valid syllables it produces, so the order is not symmetric.
+  return normalizeVietnameseSyllableSplits(repairMissingSyllableSpaces(collapsed))
+}
+
+/**
+ * A page whose text layer was produced from a font without a ToUnicode CMap
+ * extracts as glyph codes, not characters: brackets and quotes fused into words,
+ * rare symbols, and letters glued to digits. Such a page is unreadable and
+ * un-citable, so it must be dropped before it enters the index rather than
+ * returned to the model as a passage. The signal is per token and the page is
+ * only dropped when the suspicious share clears the threshold, which keeps a
+ * clean page that happens to contain a stray glyph.
+ */
+const GARBLE_MIN_TOKENS = 20
+const GARBLE_RATIO = 0.2
+
+const ALLOWED_CHARS = /[\p{L}\p{N}\s.,:/%\-–—…!?;'"()[\]{}]/u
+const INTERNAL_GLUE = /[\p{L}\p{N}][()[\]{}"'*+=<>@#|\\~^][\p{L}\p{N}]/u
+const LETTER_DIGIT = /\p{L}\d|\d\p{L}/u
+
+function isSuspiciousToken(token: string): boolean {
+  if (LETTER_DIGIT.test(token) || INTERNAL_GLUE.test(token)) return true
+  for (const char of token) if (!ALLOWED_CHARS.test(char)) return true
+  return false
+}
+
+function isGarbledPage(text: string): boolean {
+  const tokens = text.split(/\s+/).filter((token) => token.length > 0)
+  if (tokens.length < GARBLE_MIN_TOKENS) return false
+  let suspicious = 0
+  for (const token of tokens) if (isSuspiciousToken(token)) suspicious += 1
+  return suspicious / tokens.length >= GARBLE_RATIO
 }
 
 const TRAILING_PAGE_NUMBER = /([;)\]”"’'])\d{1,4}(?=\n|$)/g
@@ -254,6 +322,9 @@ export async function extractText(
     const page = await pdf.getPage(pageNumber)
     const content = await page.getTextContent()
     const text = normalizeWhitespace(joinTextItems(content.items))
+    // A garbled page is dropped here, before the readable-limit total, so a
+    // font-without-ToUnicode page never becomes a passage or an embedding.
+    if (text.length === 0 || isGarbledPage(text)) continue
     total += text.length
     if (total > MAX_EXTRACTED_CHARS) {
       await destroyQuietly(pdf)
@@ -261,7 +332,7 @@ export async function extractText(
         `This PDF extracts more than the ${MAX_EXTRACTED_CHARS.toLocaleString()} character limit.`,
       )
     }
-    if (text.length > 0) parts.push(text)
+    parts.push(text)
   }
   return stripPageFurniture(parts)
 }

@@ -8,7 +8,9 @@ import { encryptRecord } from '../vault/records'
 import { useVaultStore, vaultInternals } from '../vault/store'
 import {
   createThread,
+  deleteAgentRunsForParent,
   deleteThread,
+  listAgentRuns,
   listThreadSummaries,
   listThreads,
   loadThread,
@@ -18,7 +20,7 @@ import {
   THREAD_ENVELOPE_VERSION,
 } from './persistence'
 import { defaultThreadConfig } from './types'
-import type { ChatThread } from './types'
+import type { AgentThreadMeta, ChatThread } from './types'
 
 const KDF = { algorithm: 'PBKDF2-SHA256' as const, iterations: 1000, salt: randomBytes(16) }
 
@@ -262,5 +264,66 @@ describe('thread persistence', () => {
     await saveThread(thread('h'))
     await deleteThread('h')
     await expect(loadThread('h')).resolves.toBeNull()
+  })
+})
+
+function agentThread(id: string, parentThreadId: string, status: AgentThreadMeta['status'] = 'running'): ChatThread {
+  return thread(id, {
+    agent: { runId: id, parentThreadId, mode: 'editing', tier: 'medium', status },
+  })
+}
+
+describe('agent run persistence', () => {
+  beforeEach(async () => {
+    await vaultInternals.reset()
+    await db.threads.clear()
+    keyring.install(await deriveKey('agent-password', KDF))
+  })
+
+  it('round-trips the agent metadata without a version bump', async () => {
+    await saveThread(agentThread('run-1', 'parent-1'))
+    const loaded = await loadThread('run-1')
+    expect(loaded?.agent).toEqual({
+      runId: 'run-1',
+      parentThreadId: 'parent-1',
+      mode: 'editing',
+      tier: 'medium',
+      status: 'running',
+    })
+  })
+
+  it('excludes child runs from the conversations list', async () => {
+    await saveThread(thread('parent-1', { updatedAt: 1000 }))
+    await saveThread(agentThread('run-1', 'parent-1', 'completed'))
+
+    const conversations = await listThreads()
+    expect(conversations.map((entry) => entry.id)).toEqual(['parent-1'])
+  })
+
+  it('lists child runs by parent and newest first', async () => {
+    await saveThread(agentThread('run-a', 'parent-1'))
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    await saveThread(agentThread('run-b', 'parent-1'))
+    await saveThread(agentThread('run-c', 'parent-2'))
+
+    const runs = await listAgentRuns('parent-1')
+    expect(runs.map((run) => run.id)).toEqual(['run-b', 'run-a'])
+    expect((await listAgentRuns()).map((run) => run.id).sort()).toEqual(['run-a', 'run-b', 'run-c'])
+  })
+
+  it('reconciles a persisted running child to interrupted on load', async () => {
+    await saveThread(agentThread('run-1', 'parent-1', 'running'))
+    const runs = await listAgentRuns('parent-1')
+    expect(runs[0].agent?.status).toBe('interrupted')
+  })
+
+  it('cascades a delete to child runs', async () => {
+    await saveThread(agentThread('run-1', 'parent-1'))
+    await saveThread(agentThread('run-2', 'parent-1'))
+    await saveThread(agentThread('run-3', 'parent-2'))
+
+    await deleteAgentRunsForParent('parent-1')
+    expect((await listAgentRuns('parent-1')).map((run) => run.id)).toEqual([])
+    expect((await listAgentRuns('parent-2')).map((run) => run.id)).toEqual(['run-3'])
   })
 })
