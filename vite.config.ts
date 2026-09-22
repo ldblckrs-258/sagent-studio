@@ -62,6 +62,23 @@ function cspPlugin(): Plugin {
   };
 }
 
+/**
+ * TypeSafe's endpoint does not send CORS headers, so a direct browser call is
+ * blocked at the preflight. The client defaults to a same-origin `/typesafe`
+ * path in the browser; dev and preview proxy it to the hosted API. A static
+ * production host must provide the same `/typesafe` proxy, or the user sets an
+ * explicit base URL in the TypeSafe settings.
+ */
+const TYPESAFE_PROXY_TARGET = "https://api.typesafe.ai";
+
+const typesafeProxy = {
+  "/typesafe": {
+    target: TYPESAFE_PROXY_TARGET,
+    changeOrigin: true,
+    rewrite: (path: string) => path.replace(/^\/typesafe/, ""),
+  },
+};
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -74,6 +91,10 @@ export default defineConfig({
     watch: {
       ignored: ["**/plans/**"],
     },
+    proxy: typesafeProxy,
+  },
+  preview: {
+    proxy: typesafeProxy,
   },
   worker: {
     format: "es",

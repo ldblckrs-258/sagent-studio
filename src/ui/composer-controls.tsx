@@ -6,13 +6,17 @@ import {
   ChevronRight,
   Eye,
   PenLine,
+  Plus,
   Search,
   Sparkles,
   Zap,
 } from "lucide-react";
 import { Popover as PopoverPrimitive } from "radix-ui";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { modelSupportsVision } from "../ai/model-caps";
 import { ensureActiveThread } from "../chat/active-thread";
+import { composerThreadKey } from "../chat/attachment-store";
+import { isImagePath } from "../chat/attachments";
 import { useChatStore } from "../chat/store";
 import {
   DEFAULT_CHAT_MODE,
@@ -22,6 +26,10 @@ import {
 } from "../chat/threads";
 import type { ChatMode, SkillRef, ThreadConfig } from "../chat/types";
 import { useSession } from "../session/session-context";
+import { useWorkspaceStore } from "../session/workspace-state";
+import type { WorkspaceFs } from "../workspace/fs";
+import { UPLOAD_DIRECTORY, uploadFiles } from "./composer-upload";
+import { WorkspacePermissionError } from "../workspace/errors";
 import type { ProviderConfig } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import { useRegistryVersion } from "./use-registry-version";
@@ -229,7 +237,7 @@ function ModelPickerBody({
               </p>
             ) : null}
             {(activeProvider
-              ? [undefined, ...activeProvider.models]
+              ? [undefined, ...activeProvider.models.map((model) => model.id)]
               : [undefined]
             )
               .filter((model) =>
@@ -381,6 +389,124 @@ function SkillsPickerBody({
  * globally; the registry filters out the rest, and the Skills panel owns that
  * trust decision.
  */
+/**
+ * The upload button.
+ *
+ * Gated on a `readwrite` permission **query**, not on `status === 'ready'`:
+ * the workspace store establishes `ready` from a read query, so a handle
+ * restored after a reload can be readable and still refuse a write. The
+ * tooltip names the destination directory, because uploading works in every
+ * chat mode — including `read_only`, whose menu text promises that every
+ * change asks first — so the write must never be silent.
+ */
+async function queryWritable(fs: WorkspaceFs): Promise<boolean> {
+  const query = fs.handle.queryPermission;
+  if (typeof query !== "function") return true;
+  try {
+    return (await query.call(fs.handle, { mode: "readwrite" })) === "granted";
+  } catch {
+    return false;
+  }
+}
+
+function UploadButton({ vision }: { vision: boolean }) {
+  const fs = useWorkspaceStore((s) => s.fs);
+  const regrant = useWorkspaceStore((s) => s.regrant);
+  // Refreshed from pointer and focus, never from an effect: the answer only
+  // matters when the button is about to be used, and the click itself has to
+  // stay synchronous or the file picker loses its user gesture.
+  const [writable, setWritable] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const refresh = () => {
+    if (!fs) {
+      setWritable(null);
+      return;
+    }
+    void queryWritable(fs).then(setWritable);
+  };
+
+  const onPicked = async (files: FileList | null) => {
+    if (!fs || !files || files.length === 0) return;
+    const picked = Array.from(files);
+    // A non-vision model gets no image bytes; the text files in the same pick
+    // still upload, so one rejected image never costs the whole batch.
+    const allowed = vision ? picked : picked.filter((file) => !isImagePath(file.name));
+    const skipped = picked.length - allowed.length;
+    const skippedMessage =
+      skipped === 0
+        ? null
+        : `${skipped} image ${
+            skipped === 1 ? "file was" : "files were"
+          } skipped: the active model has no image input.`;
+    if (allowed.length === 0) {
+      useChatStore.getState().setError(skippedMessage);
+      return;
+    }
+    setBusy(true);
+    try {
+      await uploadFiles(fs, composerThreadKey(), allowed);
+      useChatStore.getState().setError(skippedMessage);
+    } catch (cause) {
+      if (cause instanceof WorkspacePermissionError) {
+        setWritable(false);
+        useChatStore
+          .getState()
+          .setError("Grant write access to the workspace folder to upload files.");
+        void regrant();
+      } else {
+        useChatStore
+          .getState()
+          .setError(
+            cause instanceof Error ? cause.message : "The upload failed.",
+          );
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          void onPicked(event.target.files);
+          event.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        disabled={busy || fs === null}
+        onPointerEnter={refresh}
+        onFocus={refresh}
+        onClick={() => {
+          if (writable === false) {
+            void regrant();
+            return;
+          }
+          inputRef.current?.click();
+        }}
+        className={cn(TRIGGER, "text-muted-foreground hover:text-foreground")}
+        title={
+          fs === null
+            ? "Choose a workspace folder to upload files"
+            : writable === false
+              ? `Grant write access to upload into ${UPLOAD_DIRECTORY}/`
+              : `Upload files into ${UPLOAD_DIRECTORY}/ and attach them`
+        }
+        aria-label="Upload files"
+      >
+        <Plus size={13} strokeWidth={1.75} className="shrink-0" />
+      </button>
+    </>
+  );
+}
+
 export function ComposerControls() {
   const session = useSession();
   // Skills hydrate asynchronously after mount, so the composer must re-render
@@ -405,11 +531,17 @@ export function ComposerControls() {
   const selectedProvider = providers.find(
     (provider) => provider.id === providerId,
   );
+  const selectedModel = selectedProvider?.models.find(
+    (model) => model.id === modelId,
+  );
   const modelLabel =
+    selectedModel?.name ??
     (modelId ?? selectedProvider?.defaultModel ?? selectedProvider?.label)
       ?.split("/")
       ?.pop()
-      ?.replaceAll("-", " ") ?? "No model";
+      ?.replaceAll("-", " ") ??
+    "No model";
+  const vision = modelSupportsVision(settings, providerId, modelId);
   const activeMode =
     MODE_OPTIONS.find((option) => option.value === mode) ?? MODE_OPTIONS[1];
   const ActiveModeIcon = activeMode.icon;
@@ -471,6 +603,7 @@ export function ComposerControls() {
 
   return (
     <div className="flex items-center gap-1" data-composer-controls>
+      <UploadButton vision={vision} />
       <PopoverPrimitive.Root open={modeOpen} onOpenChange={setModeOpen}>
         <PopoverPrimitive.Trigger
           type="button"

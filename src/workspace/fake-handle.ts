@@ -1,4 +1,4 @@
-type FakeFileNode = { kind: 'file'; content: string }
+type FakeFileNode = { kind: 'file'; content: Uint8Array }
 type FakeDirNode = { kind: 'directory'; children: Map<string, FakeNode> }
 type FakeNode = FakeFileNode | FakeDirNode
 
@@ -13,6 +13,26 @@ function notFound(name: string): DOMException {
   return new DOMException(`"${name}" was not found.`, 'NotFoundError')
 }
 
+async function toBytes(data: string | BufferSource | Blob): Promise<Uint8Array> {
+  if (typeof data === 'string') return new TextEncoder().encode(data)
+  if (data instanceof Blob) return new Uint8Array(await data.arrayBuffer())
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength))
+  }
+  return new Uint8Array(data.slice(0))
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return merged
+}
+
 export function createFakeWorkspace(initial: Record<string, string> = {}): FakeWorkspace {
   const root: FakeDirNode = { kind: 'directory', children: new Map() }
   let permission: PermissionState = 'granted'
@@ -22,11 +42,11 @@ export function createFakeWorkspace(initial: Record<string, string> = {}): FakeW
       kind: 'file' as const,
       name,
       getFile: async () => {
-        const bytes = new TextEncoder().encode(node.content)
+        const bytes = node.content
         return {
           size: bytes.byteLength,
-          text: async () => node.content,
-          arrayBuffer: async () => bytes.buffer,
+          text: async () => new TextDecoder().decode(bytes),
+          arrayBuffer: async () => bytes.slice().buffer,
           slice: (start = 0, end = bytes.byteLength) => {
             const slice = bytes.slice(start, end)
             return {
@@ -38,14 +58,13 @@ export function createFakeWorkspace(initial: Record<string, string> = {}): FakeW
         } as unknown as File
       },
       createWritable: async () => {
-        let buffer = ''
+        const chunks: Uint8Array[] = []
         return {
-          write: async (data: string | BufferSource) => {
-            buffer +=
-              typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBufferView)
+          write: async (data: string | BufferSource | Blob) => {
+            chunks.push(await toBytes(data))
           },
           close: async () => {
-            node.content = buffer
+            node.content = concatBytes(chunks)
           },
         } as unknown as FileSystemWritableFileStream
       },
@@ -78,7 +97,7 @@ export function createFakeWorkspace(initial: Record<string, string> = {}): FakeW
           return fileHandle(existing, childName)
         }
         if (!options?.create) throw notFound(childName)
-        const created: FakeFileNode = { kind: 'file', content: '' }
+        const created: FakeFileNode = { kind: 'file', content: new Uint8Array() }
         node.children.set(childName, created)
         return fileHandle(created, childName)
       },
@@ -130,7 +149,7 @@ export function createFakeWorkspace(initial: Record<string, string> = {}): FakeW
         current = existing
       }
     }
-    current.children.set(fileName, { kind: 'file', content })
+    current.children.set(fileName, { kind: 'file', content: new TextEncoder().encode(content) })
   }
 
   for (const [path, content] of Object.entries(initial)) seed(path, content)

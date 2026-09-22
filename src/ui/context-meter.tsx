@@ -46,7 +46,13 @@ export function ContextMeter() {
     s.activeThreadId ? (s.runningThreads[s.activeThreadId] ?? 0) > 0 : false,
   );
   const settings = useVaultStore((s) => s.settings);
-  const [compacting, setCompacting] = useState(false);
+  // The flag is engine-owned so an auto-compaction disables the button too,
+  // and so the transcript's indicator and this row cannot disagree.
+  const compacting = useChatStore((s) =>
+    s.activeThreadId
+      ? s.compactingThreads[s.activeThreadId] === true
+      : false,
+  );
 
   // The live rate is elapsed-time based, so it needs a clock of its own; the
   // store only changes when a chunk arrives. It ticks only during a run,
@@ -71,7 +77,6 @@ export function ContextMeter() {
   const compact = async () => {
     const id = useChatStore.getState().activeThreadId;
     if (!id) return;
-    setCompacting(true);
     try {
       await session.engineFor(id).compact(id);
     } catch (error) {
@@ -82,8 +87,6 @@ export function ContextMeter() {
             ? error.message
             : "The conversation could not be compacted.",
         );
-    } finally {
-      setCompacting(false);
     }
   };
 

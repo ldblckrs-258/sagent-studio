@@ -9,9 +9,9 @@ function fromB64(value: string): Bytes {
 }
 
 const FIXTURE_SALT = fromB64('AQIDBAUGBwgJCgsMDQ4PEA==')
-const FIXTURE_IV = fromB64('CgsMDQ4PEBESExQV')
+const FIXTURE_IV = fromB64('dnZTaXUxH0HB0z1T')
 const FIXTURE_CIPHERTEXT = fromB64(
-  'UxoehPRtaZm+1UlbVd6B7WOULD6gw539U/Qe4udXCSQKvP6fhtedsVS7zVvrHx9M3c3cmUl/uNQ4z1zNAlVYoWGiYccjeJMrx/3Ktfa9c9QNcpnSQn2FpehQpV49ZeCr/nq/fDgPJOJeXCuIO3JqTkWGrKqCbfXTAcoajqNYdDGQ+vQxabVs6/wzxVka9b82WEvhVPxIgB8tEsoWhqZc7ta/6yxZwVJPOAvjoJVGAdpQuecv78UKvh/pf4cwsHB35z3InjXpJQpJDrrdv+YkL+eLY06L5A1eEl/lN6H/ut7yX96WauaOieQ3PXOTLlrn4AT9izlue+NrlXDLfDnGARexyp25TCkopqWoWxqQvKJ34M+wQ4Ukf0ogw18C5QXqDSEk+61lA67rVQD3p8R5HawdHZPTu7koxhkWgNfu0R4RalJmzyajo9hmftYzOuGZJteEUsBwk/euRCW25YQ1xz0QuXm87DBZ+OSyPbX4DoxisTLxtgX4gjlyk3rAr6mjPSMkxpJQeHFKIRjgvNdz6sme93a2dMePho41fA/epeWqn7t/MGCDriOd62jZSCsSvjUZXoZg+TTS1X7FSATAL8ndHykDBLawPg==',
+  'xi9lDtl3q5m82AZaqdcDHXbOe68Hxx0BYrpMEsNrdoZEp6HCCHVDbYiCX7XiBpKIRhejVzZiHruJ/2P7t9Y+WNBlGTZ9nSg3xD970GIGFlrbYP1lZP+2PMv9w1/eQwqejagtjvnLZPF4jtJ72xHNPjer1QXxKS5hE3ozEbPAEupba8NAeydRST2W3K2kAYiwuA7eutGP9/FrwpmWMMW6SokS6wTmkUAz7ttGpI+BFzNedhVETGHNoEfBWtWnhTfbB67TbFc/qFW/Yehe9E6OJ14U7Myj/D3AAmqTQhwd2DuIkvsvbNQyR/RHqx9j5gasHcDth2diLScFLviwHWChWmGSor5/Pg31cmNKZSs1Vxg7mlLIZZ0Wr0nkbIKR9OUgS7m+Q6GGL/anU3zmmRWBN0h7t3iWJ3jw3vZCQ4+vrJjHq0oAktTARf4EFOuKjergqwqctOTAM2CsKaMuU3j4jEzwPzQK91hPHUy5bQ3aLuP7+D1eXvaRG45gjHSFRiFKT4BalpI7tMwjuWcAhUS/vf+8ddvc4YjPRB4u/sWUk149SljGfAVESkx5os9KExKLfiMBBmW4Ve9FqMMPPGmJYXi1il4RffG7iiO5Ny3N/DIDYa/o3+wwNNge4Tg4qVdhsbUkNMYN1B6gJZncXlXQ2EHtBLZpPSWjDbWVmVijdvkWx91bL725TWV3SRXmGBGVqNlS9N4xNckAkM2PHAx4Zhw5djZL6inQfpgkbEF1PtMfSyBb9TSvboLpgVO3Xe1yFUWB/zoHRhu5q/BJIxHjmOEcHPOeQBY2O7DkcmwKwUnmPHtrr59SQT19H3ea+k/x1G20iJQzAoldiW0otSKbNo7usDmCotNnYgqaHW+oqoG5GekIkKQTNA==',
 )
 const FIXTURE_CANARY_IV = fromB64('Hh8gISIjJCUmJygp')
 const FIXTURE_CANARY_CIPHERTEXT = fromB64('4/mtWGZTcpny1iOXiKg9VGO6cXHliRjTS2KOkjWqJg==')
@@ -43,18 +43,18 @@ export const FIXTURE_SETTINGS: Settings = {
       kind: 'openai-compatible',
       baseURL: 'http://localhost:11434/v1',
       apiKey: 'fixture-provider-key',
-      models: ['llama3'],
+      models: [{ id: 'llama3' }],
       defaultModel: 'llama3',
     },
   ],
   typesafe: { apiKey: 'fixture-typesafe-key', model: 'jev-latest' },
   rag: {
     embedModel: 'text-embedding-3-small',
-    chunkSize: 1000,
-    overlap: 200,
+    chunkSize: 400,
+    overlap: 60,
     topK: 5,
     thresholds: {},
-    concurrency: 2,
+    concurrency: 4,
   },
   sandbox: {
     enabled: true,
@@ -65,7 +65,7 @@ export const FIXTURE_SETTINGS: Settings = {
   approvals: { tools: {} },
   context: {
     maxContextTokens: 128_000,
-    autoCompactRatio: 0.8,
+    autoCompactRatio: 0.9,
     autoCompactEnabled: true,
   },
   egressNoticeDismissed: false,

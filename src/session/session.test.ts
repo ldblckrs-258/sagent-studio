@@ -225,4 +225,19 @@ describe('createSession', () => {
     expect(listed.some((entry) => entry.name === 'open_preview')).toBe(true)
     session.dispose()
   })
+
+  it('lists the five RAG tools without a vault-locked crash', () => {
+    const session = createSession()
+    const listed = session.builtinProviders(defaultThreadConfig('p1', 'm1')).map((entry) => entry.name)
+    for (const name of [
+      'list_documents',
+      'search_documents',
+      'get_chunk',
+      'get_neighbors',
+      'verify_citation',
+    ]) {
+      expect(listed).toContain(name)
+    }
+    session.dispose()
+  })
 })

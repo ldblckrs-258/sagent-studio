@@ -113,7 +113,7 @@ export async function decryptBytes(
   key: CryptoKey,
   blob: EncryptedBlob,
   aad: Uint8Array,
-): Promise<Uint8Array> {
+): Promise<Bytes> {
   const impl = assertSubtle()
   if (!isWellFormed(blob)) {
     throw new MalformedBlobError()

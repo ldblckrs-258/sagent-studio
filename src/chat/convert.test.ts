@@ -349,3 +349,44 @@ describe('extractText', () => {
     expect(extractText([{ type: 'reasoning', text: 'x' }])).toBe('')
   })
 })
+
+describe('attachment parts in the transcript', () => {
+  it('keeps a file body out of the user bubble and badges it instead', () => {
+    const message: UIMessage = {
+      id: 'u1',
+      role: 'user',
+      parts: [
+        {
+          type: 'text',
+          text: 'Attached workspace content follows. A block opened with id="abc"…',
+        },
+        { type: 'text', text: '<attached id="abc" path="a.ts" bytes=12>\nconst a = 1\n</attached-abc>' },
+        { type: 'text', text: '<attached-ref path="docs" mode="reference" />' },
+        { type: 'text', text: 'what does this do?' },
+      ],
+      metadata: {
+        attachments: [
+          { path: 'a.ts', hash: 'cafe', mode: 'inline' },
+          { path: 'docs', hash: '', mode: 'reference' },
+        ],
+      },
+    } as UIMessage
+
+    const like = toThreadMessageLike(message, 0)
+    // Only the question is the user's own words; the rest is repository bytes
+    // the model needs and a reader does not.
+    expect(like.content).toEqual([{ type: 'text', text: 'what does this do?' }])
+    expect(
+      (like.metadata?.custom as { attachments?: unknown[] } | undefined)?.attachments,
+    ).toHaveLength(2)
+  })
+
+  it('leaves a message that merely mentions the word alone', () => {
+    const message: UIMessage = {
+      id: 'u2',
+      role: 'user',
+      parts: [{ type: 'text', text: 'the attached file is wrong' }],
+    } as UIMessage
+    expect(toThreadMessageLike(message, 0).content).toHaveLength(1)
+  })
+})

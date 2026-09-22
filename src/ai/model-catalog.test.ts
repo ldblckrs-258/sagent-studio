@@ -3,9 +3,11 @@ import {
   ModelDiscoveryError,
   candidateModelUrls,
   extractModelIds,
+  extractModels,
   fetchModels,
   mergeModels,
 } from './model-catalog'
+import { MAX_MODELS_PER_PROVIDER } from './providers'
 import type { ProviderConfig } from '../vault/settings'
 
 const SECRET = 'SEEDED_PLAINTEXT_SECRET_1234567890'
@@ -86,23 +88,160 @@ describe('extractModelIds', () => {
   })
 })
 
+describe('extractModels', () => {
+  it('reads ids, display names, and caps from a gateway listing', () => {
+    const payload = {
+      models: [
+        {
+          provider: 'alicode-intl',
+          model: 'qwen3.5-plus',
+          name: 'Qwen3.5 Plus',
+          fullModel: 'alicode-intl/qwen3.5-plus',
+          routedModel: 'alicode-intl/qwen3.5-plus',
+          alias: 'qwen3.5-plus',
+          caps: {
+            vision: true,
+            search: false,
+            reasoning: true,
+            contextWindow: 1_000_000,
+            maxOutput: 65_536,
+          },
+        },
+      ],
+    }
+    expect(extractModels(payload)).toEqual([
+      {
+        id: 'qwen3.5-plus',
+        name: 'Qwen3.5 Plus',
+        caps: {
+          vision: true,
+          search: false,
+          reasoning: true,
+          contextWindow: 1_000_000,
+          maxOutput: 65_536,
+        },
+      },
+    ])
+  })
+
+  it('reads OpenRouter-style architecture and top_provider caps', () => {
+    const [model] = extractModels({
+      data: [
+        {
+          id: 'cmc/deepseek/deepseek-v4-pro',
+          name: 'DeepSeek V4 Pro',
+          context_length: 128_000,
+          architecture: { input_modalities: ['text', 'image'] },
+          top_provider: { context_length: 128_000, max_completion_tokens: 8192 },
+          supported_parameters: ['tools', 'reasoning'],
+        },
+      ],
+    })
+    expect(model).toEqual({
+      id: 'cmc/deepseek/deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro',
+      caps: { vision: true, reasoning: true, contextWindow: 128_000, maxOutput: 8192 },
+    })
+  })
+
+  it('coerces numeric strings and reads a capabilities block', () => {
+    const [model] = extractModels({
+      models: [{ id: 'm', capabilities: { vision: 'false', context_window: '200000' } }],
+    })
+    expect(model).toEqual({ id: 'm', caps: { vision: false, contextWindow: 200_000 } })
+  })
+
+  it('treats a text-only modality as no vision', () => {
+    const [model] = extractModels({
+      data: [{ id: 't', architecture: { modality: 'text->text' } }],
+    })
+    expect(model?.caps?.vision).toBe(false)
+  })
+
+  it('reads an embedding model from model_type, endpoints, and size aliases', () => {
+    const [model] = extractModels({
+      data: [
+        {
+          created: 1757680563,
+          id: 'qwen/qwen3-embedding-0.6b',
+          object: 'model',
+          owned_by: 'novita',
+          permission: null,
+          root: '',
+          parent: '',
+          input_token_price_per_m: 700,
+          output_token_price_per_m: 0,
+          pricing: {
+            prompt: {
+              origin_price_per_m: 700,
+              price_per_m: 700,
+              origin_price_per_m_decimal: '0.07',
+              price_per_m_decimal: '0.07',
+            },
+          },
+          is_tiered_billing: false,
+          title: 'qwen/qwen3-embedding-0.6b',
+          description: '',
+          tags: [],
+          context_size: 32768,
+          status: 1,
+          display_name: 'qwen/qwen3-embedding-0.6b',
+          model_type: 'embedding',
+          max_output_tokens: 32768,
+          features: ['serverless'],
+          endpoints: ['embeddings'],
+          input_modalities: ['text'],
+          output_modalities: ['text'],
+        },
+      ],
+    })
+    expect(model).toEqual({
+      id: 'qwen/qwen3-embedding-0.6b',
+      caps: { embedding: true, vision: false, contextWindow: 32768, maxOutput: 32768 },
+    })
+  })
+
+  it('reads flat capability aliases and ignores a label that equals the id', () => {
+    const [model] = extractModels({
+      data: [{ id: 'llama3:8b', name: 'llama3:8b', context_window: 8192 }],
+    })
+    expect(model).toEqual({ id: 'llama3:8b', caps: { contextWindow: 8192 } })
+  })
+})
+
 describe('mergeModels', () => {
   it('adds only new ids and reports the count', () => {
-    expect(mergeModels(['a'], ['a', 'b', 'c'])).toEqual({ models: ['a', 'b', 'c'], added: 2, truncated: 0 })
+    expect(mergeModels([{ id: 'a' }], [{ id: 'a' }, { id: 'b' }, { id: 'c' }])).toEqual({
+      models: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      added: 2,
+      truncated: 0,
+    })
   })
 
   it('enforces the model cap and reports how many were skipped', () => {
-    const current = Array.from({ length: 49 }, (_, i) => `m-${i}`)
-    const result = mergeModels(current, ['new-1', 'new-2', 'new-3'])
-    expect(result.models).toHaveLength(50)
+    const current = Array.from({ length: MAX_MODELS_PER_PROVIDER - 1 }, (_, i) => ({ id: `m-${i}` }))
+    const result = mergeModels(current, [{ id: 'new-1' }, { id: 'new-2' }, { id: 'new-3' }])
+    expect(result.models).toHaveLength(MAX_MODELS_PER_PROVIDER)
     expect(result.added).toBe(1)
     expect(result.truncated).toBe(2)
   })
 
+  it('keeps user caps and fills only the gaps on re-fetch', () => {
+    const current = [{ id: 'a', caps: { contextWindow: 100 } }]
+    const result = mergeModels(current, [
+      { id: 'a', name: 'Alpha', caps: { contextWindow: 999, vision: false } },
+    ])
+    expect(result.models[0]).toEqual({
+      id: 'a',
+      name: 'Alpha',
+      caps: { contextWindow: 100 },
+    })
+  })
+
   it('does not mutate the input array', () => {
-    const current = ['a']
-    mergeModels(current, ['b'])
-    expect(current).toEqual(['a'])
+    const current = [{ id: 'a' }]
+    mergeModels(current, [{ id: 'b' }])
+    expect(current).toEqual([{ id: 'a' }])
   })
 })
 
@@ -121,7 +260,7 @@ describe('fetchModels', () => {
       return jsonResponse({ data: [{ id: 'qwen3-32b' }] })
     }) as typeof fetch
 
-    await expect(fetchModels(provider())).resolves.toEqual(['qwen3-32b'])
+    await expect(fetchModels(provider())).resolves.toEqual([{ id: 'qwen3-32b' }])
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe('http://localhost:11434/v1/models')
     expect(calls[0].auth).toBe(`Bearer ${SECRET}`)
@@ -136,7 +275,7 @@ describe('fetchModels', () => {
     }) as typeof fetch
 
     const ids = await fetchModels(provider({ baseURL: 'https://api.example.com' }))
-    expect(ids).toEqual(['llama3'])
+    expect(ids).toEqual([{ id: 'llama3' }])
     expect(urls).toEqual([
       'https://api.example.com/models',
       'https://api.example.com/v1/models',

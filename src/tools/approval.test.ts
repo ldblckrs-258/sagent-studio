@@ -102,15 +102,20 @@ describe('modeCeiling and resolveApprovalStatus', () => {
       [
         'change_mode',
         'file_info',
+        'get_chunk',
+        'get_neighbors',
         'list_dir',
+        'list_documents',
         'load_skill',
         'list_skills',
         'list_user_tools',
         'open_preview',
         'read_file',
         'search',
+        'search_documents',
         'stat',
         'update_plan',
+        'verify_citation',
       ].sort(),
     )
     expect((ceiling as ReadonlySet<string>).has('create_skill')).toBe(false)

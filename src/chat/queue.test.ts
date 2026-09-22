@@ -1,7 +1,8 @@
 import type { AppendMessage } from '@assistant-ui/react'
 import { describe, expect, it } from 'vitest'
+import type { Attachment } from './attachments'
 import { createChatQueue } from './queue'
-import type { ChatQueue } from './queue'
+import type { AttachmentSnapshot, ChatQueue } from './queue'
 
 function message(text: string): AppendMessage {
   return {
@@ -251,6 +252,136 @@ describe('createChatQueue', () => {
     const parts = h.queue.pendingItems()[0].parts
     expect(parts.map((part) => (part.type === 'text' ? part.text : ''))).toEqual([
       'a queued question',
+    ])
+  })
+})
+
+describe('attachment snapshots', () => {
+  function chip(path: string): Attachment {
+    return { id: path, kind: 'file', path, source: 'drag' }
+  }
+
+  function snapshotHarness() {
+    const seen: (AttachmentSnapshot | undefined)[] = []
+    let captured: AttachmentSnapshot | undefined
+    const pending: (() => void)[] = []
+    let running = 0
+    const queue: ChatQueue = createChatQueue({
+      capture: (text: string) =>
+        text.startsWith('/') ? undefined : captured,
+      dispatch: (_text, snapshot) => {
+        seen.push(snapshot)
+        running += 1
+        queue.sync()
+        return new Promise<void>((resolve) => {
+          pending.push(() => {
+            running -= 1
+            queue.sync()
+            resolve()
+          })
+        })
+      },
+      onError: () => undefined,
+      externalRunCount: () => running,
+    })
+    return {
+      queue,
+      seen,
+      set: (snapshot: AttachmentSnapshot | undefined) => {
+        captured = snapshot
+      },
+      settle: async () => {
+        pending.shift()?.()
+        await Promise.resolve()
+        await Promise.resolve()
+      },
+    }
+  }
+
+  it('hands the chips captured at send time to the dispatch', () => {
+    const h = snapshotHarness()
+    h.set({ threadId: 't1', fs: null, attachments: [chip('a.ts')] })
+    h.queue.adapter.enqueue(message('look'))
+    expect(h.seen[0]?.attachments.map((item) => item.path)).toEqual(['a.ts'])
+  })
+
+  it('keeps a queued message pinned to the chips it was sent with', async () => {
+    const h = snapshotHarness()
+    h.set({ threadId: 't1', fs: null, attachments: [chip('first.ts')] })
+    h.queue.adapter.enqueue(message('first'))
+
+    // Typed during the run: its own chips must travel with it, not the ones the
+    // composer happens to hold when the queue finally drains.
+    h.set({ threadId: 't1', fs: null, attachments: [chip('second.ts')] })
+    h.queue.adapter.enqueue(message('second'))
+    h.set(undefined)
+
+    await h.settle()
+    expect(h.seen.map((snapshot) => snapshot?.attachments[0]?.path)).toEqual([
+      'first.ts',
+      'second.ts',
+    ])
+  })
+
+  it('reports what a pending item is carrying', () => {
+    const h = snapshotHarness()
+    h.set({ threadId: 't1', fs: null, attachments: [chip('a.ts')] })
+    h.queue.adapter.enqueue(message('first'))
+    h.set({ threadId: 't1', fs: null, attachments: [chip('b.ts'), chip('c.ts')] })
+    h.queue.adapter.enqueue(message('second'))
+
+    const pendingItem = h.queue.pendingItems()[0]
+    expect(h.queue.attachmentsFor(pendingItem)).toHaveLength(2)
+  })
+
+  it('dispatches without a snapshot when nothing is attached', () => {
+    const h = snapshotHarness()
+    h.set(undefined)
+    h.queue.adapter.enqueue(message('plain'))
+    expect(h.seen).toEqual([undefined])
+  })
+
+  it('leaves the chips alone for a route that cannot carry them', () => {
+    const h = snapshotHarness()
+    h.set({ threadId: 't1', fs: null, attachments: [chip('a.ts')] })
+    // A slash command runs through the registry rather than `sendTurn`, so
+    // capturing would clear the composer's chips and drop them silently.
+    h.queue.adapter.enqueue(message('/compact'))
+    expect(h.seen).toEqual([undefined])
+  })
+
+  it('carries the snapshot through the dispatch transform', () => {
+    const h = snapshotHarness()
+    // The external-store runtime re-points a queued message at the tail with a
+    // shallow spread before dispatching it. The snapshot is keyed on the first
+    // content part precisely because that survives the spread; if a future
+    // version rebuilds `content`, this test is what catches it.
+    h.queue.adapter.__internal_setDispatchTransform?.((message) => ({
+      ...message,
+      parentId: 'tail',
+    }))
+    h.set({ threadId: 't1', fs: null, attachments: [chip('a.ts')] })
+    h.queue.adapter.enqueue(message('look'))
+    expect(h.seen[0]?.attachments.map((item) => item.path)).toEqual(['a.ts'])
+  })
+
+  it('keeps the chips when a queued message is edited', async () => {
+    const h = snapshotHarness()
+    h.set({ threadId: 't1', fs: null, attachments: [chip('first.ts')] })
+    h.queue.adapter.enqueue(message('first'))
+    h.set({ threadId: 't1', fs: null, attachments: [chip('queued.ts')] })
+    h.queue.adapter.enqueue(message('queued'))
+    h.set(undefined)
+
+    const pendingItem = h.queue.pendingItems()[0]
+    h.queue.adapter.edit(pendingItem.id, message('queued, reworded'))
+    // The chips were taken from the composer at enqueue, so losing them here
+    // would leave no way to re-attach them.
+    expect(h.queue.attachmentsFor(h.queue.pendingItems()[0])).toHaveLength(1)
+
+    await h.settle()
+    expect(h.seen[1]?.attachments.map((item) => item.path)).toEqual([
+      'queued.ts',
     ])
   })
 })

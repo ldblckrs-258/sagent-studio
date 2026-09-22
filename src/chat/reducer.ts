@@ -15,7 +15,21 @@ export function editMessage(
 ): UIMessage[] {
   const index = indexOf(messages, id)
   if (index === -1) return messages
-  return [...messages.slice(0, index), { ...messages[index], parts }]
+  const target = messages[index]
+  const metadata = target.metadata as Record<string, unknown> | undefined
+  // An edit replaces the parts, so an inlined attachment is gone. Keeping its
+  // record would let the next turn claim the content is already present.
+  const next =
+    metadata === undefined || metadata.attachments === undefined
+      ? { ...target, parts }
+      : { ...target, parts, metadata: withoutAttachments(metadata) }
+  return [...messages.slice(0, index), next]
+}
+
+function withoutAttachments(metadata: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...metadata }
+  delete rest.attachments
+  return rest
 }
 
 export function deleteMessage(messages: UIMessage[], id: string): UIMessage[] {

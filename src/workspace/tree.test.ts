@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WorkspaceEntry } from '../tools/types'
-import { buildTreeEntries, flattenTree } from './tree'
+import { baseName, buildTreeEntries, flattenTree, joinPath, parentPath } from './tree'
 import type { TreeNode } from './tree'
 
 function entry(path: string, kind: 'file' | 'directory'): WorkspaceEntry {
@@ -26,6 +26,23 @@ describe('buildTreeEntries', () => {
       'sub',
     )
     expect(nodes.map((node) => node.path)).toEqual(['sub/child.txt'])
+  })
+})
+
+describe('path helpers', () => {
+  it('splits a path into its parent and name', () => {
+    expect(parentPath('src/nested/deep.ts')).toBe('src/nested')
+    expect(baseName('src/nested/deep.ts')).toBe('deep.ts')
+  })
+
+  it('treats a root entry as having no parent', () => {
+    expect(parentPath('README.md')).toBe('')
+    expect(baseName('README.md')).toBe('README.md')
+  })
+
+  it('joins a directory and name, leaving a root path bare', () => {
+    expect(joinPath('src', 'index.ts')).toBe('src/index.ts')
+    expect(joinPath('', 'README.md')).toBe('README.md')
   })
 })
 

@@ -83,7 +83,26 @@ function requestCharsOfPart(part: MessagePart): number {
     if (typeof record.errorText === 'string') chars += record.errorText.length
     return chars
   }
+  if (type === 'file') return imageCharsOfFilePart(record)
   return 0
+}
+
+/**
+ * Bytes a vision model charges roughly one token for. An image part is sent as
+ * a base64 data URL, so measuring its string length with `CHARS_PER_TOKEN`
+ * would read a 1 MB image as ~350 K tokens. This meter feeds the
+ * auto-compaction gate (`engine.ts`, `shouldAutoCompact`), so that estimate
+ * would compact every turn after an image is attached.
+ */
+const IMAGE_BYTES_PER_TOKEN = 750
+
+function imageCharsOfFilePart(record: Record<string, unknown>): number {
+  const url = record.url
+  if (typeof url !== 'string') return 0
+  const comma = url.indexOf(',')
+  const payload = comma === -1 ? url : url.slice(comma + 1)
+  const bytes = Math.floor((payload.length * 3) / 4)
+  return Math.ceil(bytes / IMAGE_BYTES_PER_TOKEN) * CHARS_PER_TOKEN
 }
 
 /** Rendered output characters, which drive the live rate before usage arrives. */

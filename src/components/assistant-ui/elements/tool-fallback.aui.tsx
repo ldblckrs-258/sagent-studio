@@ -752,6 +752,7 @@ export {
   ToolFallbackTrigger,
   ToolFallbackContent,
   ToolFallbackArgs,
+  ToolFallbackDuration,
   ToolFallbackResult,
   ToolFallbackError,
   ToolFallbackApproval,

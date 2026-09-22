@@ -11,6 +11,7 @@ import {
 import type { CodeRunner } from '../../sandbox/types'
 import { createCodeToolProvider } from './code'
 import { createHistoryToolProvider } from './history'
+import { createRagToolProvider } from './rag'
 import { createSandboxControlProvider } from './sandbox-control'
 import { createSkillManagementProvider } from './skill-management'
 import { createSkillToolProvider } from './skills'
@@ -50,6 +51,7 @@ const COVERED_BY_PROVIDERS = new Set(
     createSkillManagementProvider(),
     createToolManagementProvider(),
     createToolGuideProvider(),
+    createRagToolProvider(() => undefined),
   ].flatMap((provider) => [...provider.names]),
 )
 

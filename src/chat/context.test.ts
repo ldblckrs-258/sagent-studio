@@ -118,6 +118,17 @@ describe('composeSystemPrompt', () => {
     expect(composeSystemPrompt('base', [], ['read_file'])).not.toContain('## Tool guides')
   })
 
+  it('adds the document library guidance only when search_documents is available', () => {
+    const withRag = composeSystemPrompt('base', [], ['search_documents'])
+    expect(withRag).toContain('Document library (Untrusted)')
+    expect(withRag).toContain('untrusted')
+    expect(withRag).toContain('verify_citation')
+
+    expect(composeSystemPrompt('base', [], ['read_file'])).not.toContain(
+      'Document library (Untrusted)',
+    )
+  })
+
   it('omits the skills block when there are no skills', () => {
     const prompt = composeSystemPrompt('base', [], ['read_file'])
     expect(prompt).not.toContain('## Skills')

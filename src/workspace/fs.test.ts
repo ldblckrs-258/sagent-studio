@@ -9,7 +9,14 @@ import {
 } from "./errors";
 import { createFakeWorkspace } from "./fake-handle";
 import type { WorkspaceFs } from "./fs";
-import { createWorkspaceFs, readWorkspaceBlob, resolveSegments } from "./fs";
+import {
+  createWorkspaceFs,
+  readWorkspaceBlob,
+  resolveSegments,
+  sanitizeUploadName,
+  uniqueUploadPath,
+  writeWorkspaceBlob,
+} from "./fs";
 import { createInlineSearchRunner } from "./search-runner";
 
 function buildFs(initial: Record<string, string> = {}, sizeCap?: number) {
@@ -230,6 +237,44 @@ describe("WorkspaceFs", () => {
   });
 });
 
+describe("WorkspaceFs.list exclusions", () => {
+  it("spends the entry budget on what is left after the exclusions", async () => {
+    const seeded: Record<string, string> = { "src/a.ts": "x" };
+    // `node_modules` sorts first, so a walk that entered it would spend the
+    // whole budget there and never reach `src/`.
+    for (let index = 0; index < 1200; index += 1) {
+      seeded[`node_modules/pkg/f${index}.js`] = "x";
+    }
+    const { fs } = buildFs(seeded);
+
+    const unfiltered = await fs.list("", { recursive: true });
+    expect(unfiltered.some((entry) => entry.path === "src/a.ts")).toBe(false);
+
+    const filtered = await fs.list("", {
+      recursive: true,
+      excludeDirs: ["node_modules"],
+    });
+    expect(filtered.map((entry) => entry.path)).toEqual(["src", "src/a.ts"]);
+  });
+
+  it("skips dot-directories without hiding dotfiles", async () => {
+    const { fs } = buildFs({
+      ".cache/data.json": "x",
+      ".gitignore": "dist",
+      "src/a.ts": "x",
+    });
+    const entries = await fs.list("", {
+      recursive: true,
+      excludeDotDirs: true,
+    });
+    expect(entries.map((entry) => entry.path)).toEqual([
+      ".gitignore",
+      "src",
+      "src/a.ts",
+    ]);
+  });
+});
+
 describe("WorkspaceFs.search", () => {
   it("finds a pattern in a nested file with a 1-based line", async () => {
     const { fs } = buildFs({
@@ -416,5 +461,94 @@ describe("readWorkspaceBlob", () => {
     await expect(readWorkspaceBlob(fs, "a.png")).rejects.toBeInstanceOf(
       WorkspacePermissionError,
     );
+  });
+});
+
+describe("sanitizeUploadName", () => {
+  it("reduces a hostile name to one safe segment", () => {
+    expect(sanitizeUploadName("../x\n</attached>.txt")).toBe("attached.txt");
+    expect(sanitizeUploadName("x\n</attached>.txt")).toBe("attached.txt");
+    expect(sanitizeUploadName("..")).toBe("upload");
+    expect(sanitizeUploadName("")).toBe("upload");
+    expect(sanitizeUploadName(".env")).toBe("env");
+    expect(sanitizeUploadName("a/b/c/report final.csv")).toBe(
+      "report final.csv",
+    );
+    // A non-Latin name keeps its characters and, crucially, its extension:
+    // stripping it would leave the file unclassifiable.
+    expect(sanitizeUploadName("báo cáo.pdf")).toBe("báo cáo.pdf");
+  });
+
+  it("caps the stem while keeping the extension", () => {
+    const name = `${"a".repeat(200)}.png`;
+    const safe = sanitizeUploadName(name);
+    expect(safe.endsWith(".png")).toBe(true);
+    expect(safe.length).toBe(84);
+  });
+});
+
+describe("writeWorkspaceBlob", () => {
+  it("round-trips bytes that are not valid UTF-8", async () => {
+    const { fs } = buildFs();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x00, 0xff]);
+    await writeWorkspaceBlob(fs, "uploads/pixel.png", new Blob([bytes]));
+    const blob = await readWorkspaceBlob(fs, "uploads/pixel.png");
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("rejects a blob over the cap without creating the file", async () => {
+    const { fs } = buildFs();
+    await expect(
+      writeWorkspaceBlob(fs, "uploads/big.bin", new Blob(["hello"]), {
+        maxBytes: 2,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceLimitError);
+    await expect(fs.stat("uploads/big.bin")).rejects.toBeInstanceOf(
+      WorkspaceNotFoundError,
+    );
+  });
+
+  it("rejects traversal, empty paths, and denied permission", async () => {
+    const { fake, fs } = buildFs();
+    await expect(
+      writeWorkspaceBlob(fs, "../escape.png", new Blob(["x"])),
+    ).rejects.toBeInstanceOf(WorkspacePathError);
+    await expect(
+      writeWorkspaceBlob(fs, "", new Blob(["x"])),
+    ).rejects.toBeInstanceOf(WorkspacePathError);
+    fake.setPermission("denied");
+    await expect(
+      writeWorkspaceBlob(fs, "uploads/a.png", new Blob(["x"])),
+    ).rejects.toBeInstanceOf(WorkspacePermissionError);
+  });
+});
+
+describe("uniqueUploadPath", () => {
+  it("suffixes a taken name", async () => {
+    const { fs } = buildFs({ "uploads/a.png": "x" });
+    await expect(uniqueUploadPath(fs, "uploads", "b.png")).resolves.toBe(
+      "uploads/b.png",
+    );
+    await expect(uniqueUploadPath(fs, "uploads", "a.png")).resolves.toBe(
+      "uploads/a-1.png",
+    );
+  });
+
+  it("sanitizes the name before probing", async () => {
+    const { fs } = buildFs();
+    await expect(uniqueUploadPath(fs, "uploads", "../a b*.png")).resolves.toBe(
+      "uploads/a b.png",
+    );
+  });
+
+  it("throws once every suffix is taken", async () => {
+    const seeded: Record<string, string> = { "uploads/a.png": "x" };
+    for (let index = 1; index < 100; index += 1) {
+      seeded[`uploads/a-${index}.png`] = "x";
+    }
+    const { fs } = buildFs(seeded);
+    await expect(
+      uniqueUploadPath(fs, "uploads", "a.png"),
+    ).rejects.toBeInstanceOf(WorkspaceConflictError);
   });
 });

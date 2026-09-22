@@ -3,7 +3,12 @@
 import { UserMessageAttachments } from "@/components/assistant-ui/elements/attachment.aui";
 import { File } from "@/components/assistant-ui/elements/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
-import { Image } from "@/components/assistant-ui/elements/image";
+import {
+  Image,
+  ImagePreview,
+  ImageRoot,
+  ImageZoom,
+} from "@/components/assistant-ui/elements/image";
 import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   Reasoning,
@@ -12,6 +17,11 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
+import { ToolCallView } from "@/components/assistant-ui/elements/tool-view/registry";
+import {
+  taskAwareGroupBy,
+  threadGroupBy,
+} from "@/components/assistant-ui/elements/tool-view/grouping";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 import {
   ToolGroupContent,
@@ -23,9 +33,16 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { ApprovalPrompt } from "@/ui/approval-prompt";
+import { AttachmentBar, MessageAttachmentBadges } from "@/ui/attachment-bar";
+import { ComposerDropzone } from "@/ui/composer-dropzone";
 import { ChatErrorBanner } from "@/ui/chat-error-banner";
+import { attachmentsForQueueParts } from "@/chat/queue";
+import { CompactionIndicator } from "@/ui/compaction-indicator";
 import { ComposerControls } from "@/ui/composer-controls";
 import { ContextMeter } from "@/ui/context-meter";
+import type { AttachmentRecord } from "@/chat/attachments";
+import { ComposerHighlight } from "@/ui/composer-highlight";
+import { MentionSuggestions } from "@/ui/mention-suggestions";
 import { SlashSuggestions } from "@/ui/slash-suggestions";
 import {
   ActionBarMorePrimitive,
@@ -33,7 +50,6 @@ import {
   AuiIf,
   ComposerPrimitive,
   ErrorPrimitive,
-  groupPartByType,
   MessagePrimitive,
   QueueItemPrimitive,
   SuggestionPrimitive,
@@ -78,7 +94,9 @@ export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
  * Optional component overrides for the thread. `AssistantMessage` and
  * `Welcome` replace whole sections; the remaining slots override how the
  * assistant message renders tool calls and part groups. Tool UIs registered
- * by name (toolkit `render`, `useAssistantDataUI`) take precedence over
+ * by name (toolkit `render`, `useAssistantDataUI`) take precedence over the
+ * built-in views. Built-in tools render through their tailored view
+ * (`tool-view/registry`), and a tool with none of those renders through
  * `ToolFallback`. When `TaskGroup` is set, tool calls that carry a nested
  * conversation and have no registered UI render through it instead of the
  * tool group; without it they render like any other tool call.
@@ -96,36 +114,12 @@ export type ThreadComponents = {
   TaskGroup?: ComponentType<{ group: ThreadGroupPart }> | undefined;
 };
 
-const messageGroupBy = groupPartByType({
-  reasoning: ["group-chainOfThought", "group-reasoning"],
-  "tool-call": ["group-chainOfThought", "group-tool"],
-  "standalone-tool-call": [],
-});
-
-type ThreadGroupKey =
-  | "group-chainOfThought"
-  | "group-reasoning"
-  | "group-tool"
-  | "group-task";
-
-const TASK_GROUP_PATH: readonly ThreadGroupKey[] = [
-  "group-chainOfThought",
-  "group-task",
-];
-
-const taskAwareGroupBy = (
-  part: Parameters<typeof messageGroupBy>[0],
-  context?: Parameters<typeof messageGroupBy>[1],
-): readonly ThreadGroupKey[] => {
-  const path = messageGroupBy(part, context);
-  return part.type === "tool-call" &&
-    part.messages !== undefined &&
-    path.length > 0 &&
-    !context?.toolUIs?.[part.toolName]?.length
-    ? TASK_GROUP_PATH
-    : path;
-};
-
+/**
+ * The grouping policy lives in `tool-view/grouping`: a file preview, a plan, a
+ * mode change, or a call waiting on the user renders on its own; every other
+ * tool call coalesces into the "N tool calls" disclosure with the surrounding
+ * reasoning.
+ */
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
   autoFocus?: boolean | undefined;
@@ -224,6 +218,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage />}
             </ThreadPrimitive.Messages>
+            <CompactionIndicator />
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -485,29 +480,50 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ApprovalPrompt />
-      <ComposerPrimitive.AttachmentDropzone asChild>
-        <div
-          data-slot="aui_composer-shell"
-          className="border-foreground/10 focus-within:border-foreground/25 data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
-        >
+      <ComposerDropzone>
+          <AttachmentBar />
           <SlashSuggestions>
+            <MentionSuggestions>
+            <ComposerHighlight>
             <ComposerPrimitive.Input
               placeholder="Send a message..."
-              className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
+              // Transparent glyphs: `ComposerHighlight` paints the text under
+              // the textarea so a completed command and an attached mention can
+              // carry their own colour. The caret, the selection, and the
+              // placeholder keep their own colours and stay visible.
+              className="aui-composer-input caret-primary selection:text-ink text-transparent placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
               rows={1}
               autoFocus={autoFocus}
               enterKeyHint="send"
               aria-label="Message input"
             />
+            </ComposerHighlight>
+            </MentionSuggestions>
           </SlashSuggestions>
           <div className="flex items-center justify-between gap-2">
             <ComposerControls />
             <ComposerAction />
           </div>
-        </div>
-      </ComposerPrimitive.AttachmentDropzone>
+      </ComposerDropzone>
       <ComposerQueue />
     </ComposerPrimitive.Root>
+  );
+};
+
+/**
+ * What a queued message will attach when it drains. Without it a queued row
+ * shows its text alone, and the chips it captured are invisible until the
+ * message sends.
+ */
+const QueuedAttachmentCount: FC = () => {
+  const count = useAuiState(
+    (s) => attachmentsForQueueParts(s.queueItem.parts ?? []).length,
+  );
+  if (count === 0) return null;
+  return (
+    <span className="text-faint shrink-0 font-mono text-[10px]">
+      {count} attached
+    </span>
   );
 };
 
@@ -528,6 +544,7 @@ const ComposerQueue: FC = () => {
               queued
             </span>
             <QueueItemPrimitive.Text className="min-w-0 flex-1 truncate" />
+            <QueuedAttachmentCount />
             <QueueItemPrimitive.Remove asChild>
               <button
                 type="button"
@@ -641,7 +658,7 @@ const AssistantMessage: FC = () => {
     ReasoningGroup,
     TaskGroup: TaskGroupComponent,
   } = useContext(ThreadComponentsContext);
-  const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
+  const groupBy = TaskGroupComponent ? taskAwareGroupBy : threadGroupBy;
 
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
@@ -700,7 +717,9 @@ const AssistantMessage: FC = () => {
               case "reasoning":
                 return <Reasoning {...part} />;
               case "tool-call":
-                return part.toolUI ?? <ToolFallbackComponent {...part} />;
+                return part.toolUI ?? (
+                  <ToolCallView {...part} fallback={ToolFallbackComponent} />
+                );
               case "data":
                 return part.dataRendererUI;
               case "file":
@@ -810,17 +829,52 @@ const AssistantActionBar: FC = () => {
   );
 };
 
-const UserFilePart: FileMessagePartComponent = (part) => (
-  <div data-slot="aui_user-message-file" className="py-1">
-    <File {...part} />
-  </div>
-);
+const UserFilePart: FileMessagePartComponent = (part) =>
+  // An image has its own place above the bubble; the file card would repeat
+  // the filename over a picture already on screen.
+  part.mimeType.startsWith("image/") ? null : (
+    <div data-slot="aui_user-message-file" className="py-1">
+      <File {...part} />
+    </div>
+  );
 
-const UserImagePart: ImageMessagePartComponent = (part) => (
-  <div data-slot="aui_user-message-image" className="py-1">
-    <Image {...part} />
-  </div>
-);
+const UserImagePart: ImageMessagePartComponent = () => null;
+
+/**
+ * User image attachments, drawn above the bubble.
+ *
+ * The image file part is suppressed from `MessagePrimitive.Parts`, and the
+ * `mode: "image"` badge is suppressed too, so the picture itself is the only
+ * thing shown. A marker-only image (`reference`/`missing`) has no file part and
+ * therefore still surfaces as a badge.
+ */
+const UserMessageImages: FC = () => {
+  const parts = useAuiState((s) => s.message.parts);
+  const images = parts.flatMap((part) => {
+    if (part.type === "file" && part.mimeType.startsWith("image/")) {
+      return [{ src: part.data, filename: part.filename }];
+    }
+    if (part.type === "image") {
+      return [{ src: part.image, filename: part.filename }];
+    }
+    return [];
+  });
+  if (images.length === 0) return null;
+  return (
+    <div className="col-start-2 flex flex-wrap justify-end gap-2">
+      {images.map((image, index) => {
+        const alt = image.filename ?? "Attached image";
+        return (
+          <ImageRoot key={`${alt}:${index}`} size="sm">
+            <ImageZoom src={image.src} alt={alt}>
+              <ImagePreview src={image.src} alt={alt} />
+            </ImageZoom>
+          </ImageRoot>
+        );
+      })}
+    </div>
+  );
+};
 
 const UserMessage: FC = () => {
   return (
@@ -830,6 +884,8 @@ const UserMessage: FC = () => {
       data-role="user"
     >
       <UserMessageAttachments />
+      <UserMessageImages />
+      <UserAttachmentBadges />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-paper-sunk text-foreground rounded-(--composer-radius) px-4 py-2 wrap-break-word empty:hidden">
@@ -842,6 +898,27 @@ const UserMessage: FC = () => {
         </div>
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+/** Reads what `toThreadMessageLike` carried over for this turn. */
+const UserAttachmentBadges: FC = () => {
+  const attachments = useAuiState(
+    (s) =>
+      (
+        s.message.metadata.custom as
+          | { attachments?: readonly AttachmentRecord[] }
+          | undefined
+      )?.attachments,
+  );
+  // An image attachment is shown as the picture itself above the bubble, so a
+  // badge that only says "image" would be a duplicate.
+  const visible = attachments?.filter((record) => record.mode !== "image");
+  if (!visible || visible.length === 0) return null;
+  return (
+    <div className="col-start-2">
+      <MessageAttachmentBadges attachments={visible} />
+    </div>
   );
 };
 

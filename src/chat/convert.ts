@@ -1,5 +1,6 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
 import type { UIMessage } from 'ai'
+import { isAttachmentPartText } from './attachments'
 import type { ChatMessageMetadata } from './sanitize'
 
 /**
@@ -158,9 +159,19 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
   }
   // `fromThreadMessageLike` rejects reasoning/source/tool-call parts on a user
   // message, so a stray part cannot reach the runtime and crash the render.
+  // An attachment's own parts are dropped here too: the model still receives
+  // them, but rendering a file body as something the user typed buries the
+  // question and drags it into the edit box. The badges below say what rode
+  // along instead.
   const safeContent =
     message.role === 'user'
-      ? content.filter((part) => part.type !== 'reasoning' && part.type !== 'source' && part.type !== 'tool-call')
+      ? content.filter(
+          (part) =>
+            part.type !== 'reasoning' &&
+            part.type !== 'source' &&
+            part.type !== 'tool-call' &&
+            !(part.type === 'text' && isAttachmentPartText(part.text)),
+        )
       : content
 
   const metadata = message.metadata as ChatMessageMetadata | undefined
@@ -171,9 +182,11 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
   // as a bubble offers Regenerate, which would drop it and silently
   // un-compact the thread. Usage stays on our side, where the meter reads it
   // straight from the store.
+  const attachments = metadata?.attachments
   const custom = {
     ...(directive ? { skillDirective: directive } : {}),
     ...(compaction ? { compaction } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
   }
 
   const like: ThreadMessageLike = {

@@ -40,6 +40,11 @@ const READ_ONLY_TOOLS = new Set([
   'change_mode',
   'list_skills',
   'list_user_tools',
+  'list_documents',
+  'search_documents',
+  'get_chunk',
+  'get_neighbors',
+  'verify_citation',
 ])
 
 const EDITING_TOOLS = new Set([

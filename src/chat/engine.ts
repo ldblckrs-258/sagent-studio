@@ -11,6 +11,14 @@ import {
   toUIMessageStream,
 } from "ai";
 import { createLLM } from "../ai/llm";
+import type { ResolvedAttachments } from "./attachments";
+import {
+  applyUnchanged,
+  attachmentParts,
+  attachmentRecords,
+  seenPaths,
+} from "./attachments";
+import type { RagPort } from "../rag/port";
 import type { CodeRunner } from "../sandbox/types";
 import type { WorkspaceJournal } from "../workspace/journal";
 import type { SkillRegistry } from "../skills/registry";
@@ -59,6 +67,7 @@ export interface PipelineDeps {
   getSettings(): Settings | null;
   skillRegistry: SkillRegistry;
   toolRegistry: ToolRegistry;
+  rag?: RagPort;
   workspace?: WorkspaceApi;
   codeRunner?: CodeRunner;
   sandbox?: SandboxControlPort;
@@ -95,8 +104,13 @@ export interface EngineDeps extends PipelineDeps {
   threadStore: ThreadStore;
 }
 
+export interface SendTurnExtra {
+  /** Already-resolved attachments; suppression is applied inside `sendTurn`. */
+  attachments?: ResolvedAttachments;
+}
+
 export interface ChatEngine {
-  sendTurn(threadId: string, text: string): Promise<void>;
+  sendTurn(threadId: string, text: string, extra?: SendTurnExtra): Promise<void>;
   editMessage(
     threadId: string,
     messageId: string,
@@ -315,6 +329,7 @@ export async function buildRunStream(
 
   const skills = deps.skillRegistry.resolve(config.enabledSkills);
   const ports = {
+    rag: deps.rag,
     workspace: deps.workspace,
     codeRunner: deps.codeRunner,
     sandbox: deps.sandbox,
@@ -459,12 +474,29 @@ class DefaultEngine implements ChatEngine {
     this.runs.clear();
   }
 
-  async sendTurn(threadId: string, text: string): Promise<void> {
+  async sendTurn(
+    threadId: string,
+    text: string,
+    extra: SendTurnExtra = {},
+  ): Promise<void> {
     const thread = await this.requireThread(threadId);
+    // Suppression is decided here, against the messages this run starts from,
+    // and covers both an earlier attachment and the model's own `read_file`.
+    // Auto-compaction can still bury the content inside the same run, which is
+    // why the `unchanged` marker also tells the model how to recover it.
+    const resolved =
+      extra.attachments === undefined
+        ? undefined
+        : applyUnchanged(extra.attachments, seenPaths(thread.messages));
+    const records = resolved === undefined ? [] : attachmentRecords(resolved);
     const userMessage: UIMessage = {
       id: createMessageId(),
       role: "user",
-      parts: [{ type: "text", text }],
+      parts: [
+        ...(resolved === undefined ? [] : attachmentParts(resolved)),
+        { type: "text", text },
+      ],
+      ...(records.length > 0 ? { metadata: { attachments: records } } : {}),
     };
     await this.startRun(threadId, appendMessage(thread.messages, userMessage));
   }
@@ -589,6 +621,7 @@ class DefaultEngine implements ChatEngine {
     // cleared store.
     const controller = new AbortController();
     this.controllers.set(threadId, controller);
+    useChatStore.getState().beginCompaction(threadId);
     try {
       const compacted = await compactThread(
         this.deps,
@@ -601,6 +634,7 @@ class DefaultEngine implements ChatEngine {
       this.setThreadMessages(threadId, compacted.messages);
       await this.persist(threadId);
     } finally {
+      useChatStore.getState().endCompaction(threadId);
       if (this.controllers.get(threadId) === controller)
         this.controllers.delete(threadId);
     }
@@ -701,6 +735,7 @@ class DefaultEngine implements ChatEngine {
     const { history, tail } = splitTrailingUserTurn(base);
     if (history.length === 0) return base;
 
+    useChatStore.getState().beginCompaction(threadId);
     try {
       const compacted = await compactThread(
         this.deps,
@@ -716,6 +751,8 @@ class DefaultEngine implements ChatEngine {
       if (signal.aborted || isAbortError(error)) return base;
       useChatStore.getState().setError(redactSecrets(messageOf(error)));
       return base;
+    } finally {
+      useChatStore.getState().endCompaction(threadId);
     }
   }
 

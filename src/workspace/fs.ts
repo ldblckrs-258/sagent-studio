@@ -220,6 +220,10 @@ class FileWorkspaceFs implements WorkspaceFs {
     const maxEntries =
       options.maxEntries ??
       (recursive ? DEFAULT_RECURSIVE_MAX_ENTRIES : undefined);
+    const excluded = new Set(options.excludeDirs ?? []);
+    const skipsDirectory = (name: string): boolean =>
+      excluded.has(name) ||
+      (options.excludeDotDirs === true && name.startsWith("."));
     const entries: WorkspaceEntry[] = [];
     const start = segments.join("/");
     let stopped = false;
@@ -238,6 +242,7 @@ class FileWorkspaceFs implements WorkspaceFs {
       children.sort((a, b) => a.name.localeCompare(b.name));
       for (const child of children) {
         if (stopped) return;
+        if (child.kind === "directory" && skipsDirectory(child.name)) continue;
         const childPath =
           prefix === "" ? child.name : `${prefix}/${child.name}`;
         const matches = matcher === null || matcher.test(childPath);
@@ -565,6 +570,96 @@ export async function readWorkspaceBlob(
   } catch (error) {
     mapDomError(error, segments.join("/"));
   }
+}
+
+/**
+ * Normalizes an arbitrary picked-file name into a single safe path segment.
+ * `resolveSegments` rejects separators and `..`, but not newlines or bidi
+ * overrides, which would ride into an attachment marker later.
+ */
+export function sanitizeUploadName(name: string): string {
+  const segment = name.normalize("NFC").split(/[\\/]/).pop() ?? "";
+  const cleaned = segment
+    // Unicode letters and digits survive, so a non-Latin name keeps its
+    // meaning and its extension; separators, controls, and punctuation that
+    // could ride into a marker do not.
+    .replace(/[^\p{L}\p{N}._ -]/gu, "")
+    .replace(/ +/g, " ")
+    .replace(/^\.+/, "")
+    .trim();
+  if (cleaned === "" || cleaned === "." || cleaned === "..") return "upload";
+  const dot = cleaned.lastIndexOf(".");
+  const stem = dot > 0 ? cleaned.slice(0, dot) : cleaned;
+  const extension = dot > 0 ? cleaned.slice(dot) : "";
+  const cappedStem = stem.slice(0, 80).trim();
+  if (cappedStem === "") return "upload";
+  return `${cappedStem}${extension.slice(0, 32)}`;
+}
+
+/**
+ * Writes binary content into the workspace. Kept as a function rather than a
+ * `WorkspaceFs` member so existing mocks stay valid, mirroring
+ * `readWorkspaceBlob`.
+ */
+export async function writeWorkspaceBlob(
+  fs: WorkspaceFs,
+  path: string,
+  blob: Blob,
+  options: { maxBytes?: number } = {},
+): Promise<void> {
+  const segments = resolveSegments(path);
+  if (segments.length === 0) throw new WorkspacePathError(path);
+  const cap = options.maxBytes ?? DEFAULT_BINARY_SIZE_CAP;
+  if (blob.size > cap) throw new WorkspaceLimitError(path);
+  await fs.ensurePermission("readwrite");
+  try {
+    let directory = fs.handle;
+    for (const segment of segments.slice(0, -1)) {
+      directory = await directory.getDirectoryHandle(segment, { create: true });
+    }
+    const handle = await directory.getFileHandle(
+      segments[segments.length - 1],
+      { create: true },
+    );
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    mapDomError(error, path);
+  }
+}
+
+/**
+ * Picks a free path for an upload inside `directory`.
+ *
+ * Advisory only: the probe and the write are separate steps, so a batch has to
+ * write sequentially or two identical names both see a free slot, and a write
+ * from another tab between probe and write is a residual TOCTOU this does not
+ * close.
+ */
+export async function uniqueUploadPath(
+  fs: WorkspaceFs,
+  directory: string,
+  name: string,
+): Promise<string> {
+  const safe = sanitizeUploadName(name);
+  const dot = safe.lastIndexOf(".");
+  const stem = dot > 0 ? safe.slice(0, dot) : safe;
+  const extension = dot > 0 ? safe.slice(dot) : "";
+  const prefix = directory === "" ? "" : `${directory}/`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate =
+      attempt === 0
+        ? `${prefix}${safe}`
+        : `${prefix}${stem}-${attempt}${extension}`;
+    try {
+      await fs.stat(candidate);
+    } catch (error) {
+      if (error instanceof WorkspaceNotFoundError) return candidate;
+      throw error;
+    }
+  }
+  throw new WorkspaceConflictError(`${prefix}${safe}`);
 }
 
 export function createWorkspaceFs(

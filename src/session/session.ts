@@ -4,6 +4,11 @@ import type { ThreadConfig } from '../chat/types'
 import { deleteThread, listThreads, loadThread, saveThread } from '../chat/persistence'
 import { useChatStore } from '../chat/store'
 import { labelConversation } from '../chat/threads'
+import { createEmbedder } from '../ai/embedder'
+import { createTypeSafe } from '../ai/typesafe'
+import { createRagPort, resolveEmbedProviderId } from '../rag/port'
+import type { RagPort } from '../rag/port'
+import { createJevCache, SYSTEM_ONE_TIMEOUT_MS } from '../rag/jev'
 import { createSandboxManager } from '../sandbox/manager'
 import type { SandboxManager } from '../sandbox/manager'
 import { createVaultSkillEnablement } from '../skills/enablement'
@@ -17,6 +22,7 @@ import { createHistoryToolProvider } from '../tools/builtin/history'
 import { createModeToolProvider } from '../tools/builtin/mode'
 import { createPlanToolProvider } from '../tools/builtin/plan'
 import { createPreviewToolProvider } from '../tools/builtin/preview'
+import { createRagToolProvider } from '../tools/builtin/rag'
 import { createSandboxControlProvider } from '../tools/builtin/sandbox-control'
 import { createSkillManagementProvider } from '../tools/builtin/skill-management'
 import { createSkillToolProvider } from '../tools/builtin/skills'
@@ -217,6 +223,31 @@ export function createSession(options: SessionOptions = {}): AppSession {
     getPort: sandboxControlPort,
   })
 
+  // Lazily created per session: requires the vault to be unlocked, a provider
+  // that resolves, and a TypeSafe key. The one construction site of the
+  // TypeSafe client, so its judgments are discarded with the session.
+  let ragPortInstance: RagPort | undefined
+  function ragPort(): RagPort | undefined {
+    if (ragPortInstance) return ragPortInstance
+    const settings = getSettings()
+    if (!settings) return undefined
+    if (!settings.typesafe.apiKey.trim()) return undefined
+    try {
+      // Validate the embedding target before advertising the tools.
+      createEmbedder(settings, resolveEmbedProviderId(settings))
+      ragPortInstance = createRagPort({
+        getSettings,
+        embedderFor: (current) => createEmbedder(current, resolveEmbedProviderId(current)),
+        typesafe: createTypeSafe(settings, { timeoutMs: SYSTEM_ONE_TIMEOUT_MS }),
+        cache: createJevCache(),
+      })
+    } catch {
+      return undefined
+    }
+    return ragPortInstance
+  }
+  const ragProvider = createRagToolProvider(() => ragPort())
+
   const modeProvider = createModeToolProvider()
   const skillProvider = createSkillToolProvider({ isEnabled: () => runnerSource.isEnabled() })
   const planProvider = createPlanToolProvider()
@@ -240,6 +271,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(toolManagementProvider)
     toolRegistry.registerProvider(previewProvider)
     toolRegistry.registerProvider(toolGuideProvider)
+    toolRegistry.registerProvider(ragProvider)
   }
 
   const deps: EngineDeps = {
@@ -258,6 +290,9 @@ export function createSession(options: SessionOptions = {}): AppSession {
     },
     get preview() {
       return previewPort()
+    },
+    get rag() {
+      return ragPort()
     },
     journalFor: (threadId) => workspaceJournalStore.forThread(threadId),
   }
@@ -294,6 +329,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
     unsubFolder = null
     unsubThread = null
     manager?.dispose()
+    ragPortInstance?.dispose()
+    ragPortInstance = undefined
   }
 
   return {
@@ -312,6 +349,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     builtinProviders(config) {
       const skills = config ? skillRegistry.resolve(config.enabledSkills) : []
       const ports = {
+        rag: ragPort(),
         workspace: getWorkspace() ?? undefined,
         codeRunner: runnerSource.getRunners().js,
         sandbox: sandboxControlPort(),
@@ -335,6 +373,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         toolManagementProvider,
         previewProvider,
         toolGuideProvider,
+        ragProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

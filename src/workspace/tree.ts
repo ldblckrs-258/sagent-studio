@@ -10,6 +10,23 @@ export interface FlatTreeNode extends TreeNode {
   depth: number
 }
 
+/** The containing directory of a workspace path, `''` for a root entry. */
+export function parentPath(path: string): string {
+  const index = path.lastIndexOf('/')
+  return index === -1 ? '' : path.slice(0, index)
+}
+
+/** The final segment of a workspace path. */
+export function baseName(path: string): string {
+  const index = path.lastIndexOf('/')
+  return index === -1 ? path : path.slice(index + 1)
+}
+
+/** Joins a directory path and a single entry name into a workspace path. */
+export function joinPath(parent: string, name: string): string {
+  return parent === '' ? name : `${parent}/${name}`
+}
+
 function compareNodes(a: TreeNode, b: TreeNode): number {
   if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
   return a.name.localeCompare(b.name)

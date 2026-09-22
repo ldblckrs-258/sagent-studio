@@ -1,139 +1,159 @@
-import { useState } from 'react'
-import type { FormEvent, InputHTMLAttributes } from 'react'
-import { Eye, EyeOff, LockKeyhole } from 'lucide-react'
-import { useVaultStore } from './store'
-import { MIN_PASSWORD_LENGTH, scorePassword } from './password-strength'
-import type { PasswordStrengthTone } from './password-strength'
-import { Button, Field, IconButton, Input } from '../ui/primitives'
-import { Spinner } from '../ui/shortcuts'
+import { Eye, EyeOff, LoaderCircle, LockKeyhole } from "lucide-react";
+import type { FormEvent, InputHTMLAttributes } from "react";
+import { useState } from "react";
+import { Button, Field, IconButton, Input } from "../ui/primitives";
+import type { PasswordStrengthTone } from "./password-strength";
+import { MIN_PASSWORD_LENGTH, scorePassword } from "./password-strength";
+import { useVaultStore } from "./store";
 
 const CAPABILITIES = [
   {
-    term: 'Agent loop',
-    detail: 'Streaming threads, tool calls, and history that survives a reload.',
+    term: "Agent loop",
+    detail:
+      "Streaming threads, tool calls, and history that survives a reload.",
   },
   {
-    term: 'Tools and skills',
-    detail: 'Built-in file and code tools, HTTP tools, and per-conversation skills.',
+    term: "Tools and skills",
+    detail:
+      "Built-in file and code tools, HTTP tools, and per-conversation skills.",
   },
   {
-    term: 'Runtimes',
-    detail: 'JavaScript and Python run in isolated workers and report back to the thread.',
+    term: "Runtimes",
+    detail:
+      "JavaScript and Python run in isolated workers and report back to the thread.",
   },
   {
-    term: 'Workspace',
-    detail: 'Your own folder tree, editor and glob search, opened without a server.',
+    term: "Workspace",
+    detail:
+      "Your own folder tree, editor and glob search, opened without a server.",
   },
-] as const
+] as const;
 
 const VAULT_SPEC =
-  'AES-256-GCM with per-record AAD · PBKDF2-SHA256 at 600,000 iterations · IndexedDB, origin-scoped'
+  "AES-256-GCM with per-record AAD · PBKDF2-SHA256 at 600,000 iterations · IndexedDB, origin-scoped";
 
-const METER_TONES: Record<PasswordStrengthTone, { fill: string; label: string }> = {
-  danger: { fill: 'bg-danger', label: 'text-danger' },
-  caution: { fill: 'bg-caution', label: 'text-caution' },
-  positive: { fill: 'bg-positive', label: 'text-positive' },
-}
+const METER_TONES: Record<
+  PasswordStrengthTone,
+  { fill: string; label: string }
+> = {
+  danger: { fill: "bg-danger", label: "text-danger" },
+  caution: { fill: "bg-caution", label: "text-caution" },
+  positive: { fill: "bg-positive", label: "text-positive" },
+};
 
-const STRENGTH_SEGMENTS = [0, 1, 2, 3] as const
+const STRENGTH_SEGMENTS = [0, 1, 2, 3] as const;
 
 function Wordmark() {
   return (
     <span className="flex items-center gap-3">
-      <span className="font-mono text-xs uppercase tracking-[0.08em] text-ink">Sagent Studio</span>
+      <span className="font-mono text-xs uppercase tracking-[0.08em] text-ink">
+        Sagent Studio
+      </span>
       <span aria-hidden="true" className="h-px w-6 bg-rule-strong" />
       <span className="label-micro">agentic harness</span>
     </span>
-  )
+  );
 }
 
 function PasswordStrengthMeter({ password }: { password: string }) {
-  if (!password) return null
-  const strength = scorePassword(password)
-  const tone = METER_TONES[strength.tone]
+  if (!password) return null;
+  const strength = scorePassword(password);
+  const tone = METER_TONES[strength.tone];
   return (
     <span className="flex items-center gap-3">
       <span aria-hidden="true" className="flex flex-1 gap-1">
         {STRENGTH_SEGMENTS.map((segment) => (
           <span
             key={segment}
-            className={`h-0.5 flex-1 rounded-sm ${segment < strength.score ? tone.fill : 'bg-rule'}`}
+            className={`h-0.5 flex-1 rounded-sm ${segment < strength.score ? tone.fill : "bg-rule"}`}
           />
         ))}
       </span>
-      <span className={`w-20 shrink-0 text-right font-mono text-xs ${tone.label}`}>
+      <span
+        className={`w-20 shrink-0 text-right font-mono text-xs ${tone.label}`}
+      >
         {strength.label}
       </span>
     </span>
-  )
+  );
 }
 
 function PasswordInput({
   visible,
   onToggleVisible,
   ...rest
-}: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'size'> & {
-  visible: boolean
-  onToggleVisible(): void
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "size"> & {
+  visible: boolean;
+  onToggleVisible(): void;
 }) {
   return (
     <span className="relative block">
-      <Input {...rest} type={visible ? 'text' : 'password'} className="pr-10" />
+      <Input {...rest} type={visible ? "text" : "password"} className="pr-10" />
       <span className="absolute inset-y-0 right-1 flex items-center">
-        <IconButton label={visible ? 'Hide password' : 'Show password'} onClick={onToggleVisible}>
-          {visible ? <EyeOff size={15} strokeWidth={1.75} /> : <Eye size={15} strokeWidth={1.75} />}
+        <IconButton
+          label={visible ? "Hide password" : "Show password"}
+          onClick={onToggleVisible}
+        >
+          {visible ? (
+            <EyeOff size={15} strokeWidth={1.75} />
+          ) : (
+            <Eye size={15} strokeWidth={1.75} />
+          )}
         </IconButton>
       </span>
     </span>
-  )
+  );
 }
 
 interface ValidationError {
-  field: 'password' | 'confirmation'
-  message: string
+  field: "password" | "confirmation";
+  message: string;
 }
 
-export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
-  const setup = useVaultStore((s) => s.setup)
-  const unlock = useVaultStore((s) => s.unlock)
-  const status = useVaultStore((s) => s.status)
-  const error = useVaultStore((s) => s.error)
-  const clearError = useVaultStore((s) => s.clearError)
-  const firstRun = presence === 'none'
-  const busy = status === 'unlocking'
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [revealed, setRevealed] = useState(false)
-  const [validation, setValidation] = useState<ValidationError | null>(null)
+export function UnlockScreen({ presence }: { presence: "none" | "complete" }) {
+  const setup = useVaultStore((s) => s.setup);
+  const unlock = useVaultStore((s) => s.unlock);
+  const status = useVaultStore((s) => s.status);
+  const error = useVaultStore((s) => s.error);
+  const clearError = useVaultStore((s) => s.clearError);
+  const firstRun = presence === "none";
+  const busy = status === "unlocking";
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [revealed, setRevealed] = useState(false);
+  const [validation, setValidation] = useState<ValidationError | null>(null);
 
-  const toggleRevealed = () => setRevealed((value) => !value)
+  const toggleRevealed = () => setRevealed((value) => !value);
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+    event.preventDefault();
     if (firstRun && password.length < MIN_PASSWORD_LENGTH) {
       setValidation({
-        field: 'password',
+        field: "password",
         message: `Use at least ${MIN_PASSWORD_LENGTH} characters.`,
-      })
-      return
+      });
+      return;
     }
     if (firstRun && confirmation !== password) {
-      setValidation({ field: 'confirmation', message: 'The two entries do not match.' })
-      return
+      setValidation({
+        field: "confirmation",
+        message: "The two entries do not match.",
+      });
+      return;
     }
-    setValidation(null)
+    setValidation(null);
     try {
       if (firstRun) {
-        await setup(password)
+        await setup(password);
       } else {
-        await unlock(password)
+        await unlock(password);
       }
-      setPassword('')
-      setConfirmation('')
+      setPassword("");
+      setConfirmation("");
     } catch {
       // The store maps the rejection to a typed message shown below the field.
     }
-  }
+  };
 
   return (
     <main className="grid min-h-[100dvh] lg:grid-cols-[1fr_minmax(0,40rem)]">
@@ -145,9 +165,10 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
             The agent harness that runs on the machine in front of you.
           </h1>
           <p className="mt-6 max-w-md text-muted">
-            Bring your own OpenAI-compatible provider, point a model at a workspace, and let it
-            read files, call tools and run code. Keys, threads and documents stay local; only the
-            requests you send leave this browser.
+            Bring your own OpenAI-compatible provider, point a model at a
+            workspace, and let it read files, call tools and run code. Keys,
+            threads and documents stay local; only the requests you send leave
+            this browser.
           </p>
 
           <dl className="mt-10">
@@ -156,19 +177,26 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
                 key={capability.term}
                 className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-x-4 border-t border-rule py-4"
               >
-                <span aria-hidden="true" className="numeric pt-px font-mono text-xs text-faint">
-                  {String(index + 1).padStart(2, '0')}
+                <span
+                  aria-hidden="true"
+                  className="numeric pt-px font-mono text-xs text-faint"
+                >
+                  {String(index + 1).padStart(2, "0")}
                 </span>
                 <div className="min-w-0">
                   <dt className="text-sm text-ink">{capability.term}</dt>
-                  <dd className="mt-1 text-xs leading-relaxed text-muted">{capability.detail}</dd>
+                  <dd className="mt-1 text-xs leading-relaxed text-muted">
+                    {capability.detail}
+                  </dd>
                 </div>
               </div>
             ))}
           </dl>
         </div>
 
-        <p className="font-mono text-xs leading-relaxed text-faint">{VAULT_SPEC}</p>
+        <p className="font-mono text-xs leading-relaxed text-faint">
+          {VAULT_SPEC}
+        </p>
       </section>
 
       <section className="order-1 flex flex-col justify-center px-6 py-16 sm:px-10 lg:order-2 lg:py-20 xl:px-14">
@@ -182,21 +210,27 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
           >
             <LockKeyhole size={18} strokeWidth={1.75} />
           </span>
-          <h2 className="text-2xl">{firstRun ? 'Create your vault' : 'Unlock the vault'}</h2>
+          <h2 className="text-2xl">
+            {firstRun ? "Create your vault" : "Unlock the vault"}
+          </h2>
           <p className="mt-3 text-sm text-muted">
             {firstRun
-              ? 'Choose a password. It derives the key for everything the studio keeps on this device: provider keys, conversations and workspace settings.'
-              : 'Enter your password to derive the key and resume your conversations, workspace and provider keys.'}
+              ? "Choose a password. It derives the key for everything the studio keeps on this device: provider keys, conversations and workspace settings."
+              : "Enter your password to derive the key and resume your conversations, workspace and provider keys."}
           </p>
 
           <form onSubmit={onSubmit} className="mt-8 flex flex-col gap-6">
             <Field
               label="Password"
-              error={validation?.field === 'password' ? validation.message : (error ?? undefined)}
+              error={
+                validation?.field === "password"
+                  ? validation.message
+                  : (error ?? undefined)
+              }
             >
               <PasswordInput
                 name="password"
-                autoComplete={firstRun ? 'new-password' : 'current-password'}
+                autoComplete={firstRun ? "new-password" : "current-password"}
                 autoFocus
                 required
                 minLength={MIN_PASSWORD_LENGTH}
@@ -205,9 +239,9 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
                 onToggleVisible={toggleRevealed}
                 value={password}
                 onChange={(event) => {
-                  setPassword(event.target.value)
-                  setValidation(null)
-                  if (error) clearError()
+                  setPassword(event.target.value);
+                  setValidation(null);
+                  if (error) clearError();
                 }}
               />
               {firstRun ? <PasswordStrengthMeter password={password} /> : null}
@@ -216,7 +250,11 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
             {firstRun ? (
               <Field
                 label="Confirm password"
-                error={validation?.field === 'confirmation' ? validation.message : undefined}
+                error={
+                  validation?.field === "confirmation"
+                    ? validation.message
+                    : undefined
+                }
               >
                 <PasswordInput
                   name="confirmation"
@@ -227,8 +265,8 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
                   onToggleVisible={toggleRevealed}
                   value={confirmation}
                   onChange={(event) => {
-                    setConfirmation(event.target.value)
-                    setValidation(null)
+                    setConfirmation(event.target.value);
+                    setValidation(null);
                   }}
                 />
               </Field>
@@ -239,18 +277,27 @@ export function UnlockScreen({ presence }: { presence: 'none' | 'complete' }) {
               variant="primary"
               disabled={busy}
               className="w-full"
-              icon={busy ? <Spinner /> : undefined}
+              icon={
+                busy ? (
+                  <LoaderCircle
+                    size={14}
+                    strokeWidth={2}
+                    aria-hidden="true"
+                    className="motion-safe:animate-spin"
+                  />
+                ) : undefined
+              }
             >
-              {busy ? 'Deriving key' : firstRun ? 'Create vault' : 'Unlock'}
+              {busy ? "Deriving key" : firstRun ? "Create vault" : "Unlock"}
             </Button>
           </form>
 
           <p className="mt-8 border-t border-rule pt-5 font-mono text-xs leading-relaxed text-faint">
-            There is no recovery path. If you forget this password the vault cannot be decrypted,
-            by design.
+            There is no recovery path. If you forget this password the vault
+            cannot be decrypted, by design.
           </p>
         </div>
       </section>
     </main>
-  )
+  );
 }

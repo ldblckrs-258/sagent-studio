@@ -2,14 +2,26 @@ import { useExternalStoreRuntime } from '@assistant-ui/react'
 import type { AppendMessage } from '@assistant-ui/react'
 import type { UIMessage } from 'ai'
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { modelSupportsVision } from '../ai/model-caps'
 import type { AppSession } from '../session/session'
 import { useSession } from '../session/session-context'
+import { useWorkspaceStore } from '../session/workspace-state'
 import { useVaultStore } from '../vault/store'
+import {
+  autoAttachmentForThread,
+  composerThreadKey,
+  subscribeAttachmentThreadChanges,
+  subscribeAutoTargetOwner,
+  useAttachmentStore,
+} from './attachment-store'
+import type { ResolvedAttachments } from './attachments'
+import { resolveAttachments } from './attachments'
 import { extractText, toThreadMessageLike, toUiParts } from './convert'
 import type { IncomingContent } from './convert'
 import { redactSecrets } from './engine'
 import { ChatThreadNotFoundError } from './errors'
 import { createChatQueue } from './queue'
+import type { AttachmentSnapshot } from './queue'
 import { deleteMessage } from './reducer'
 import {
   defaultSlashEntries,
@@ -38,9 +50,12 @@ export async function dispatchComposerText(
   session: AppSession,
   threadId: string,
   text: string,
+  attachments?: ResolvedAttachments,
 ): Promise<void> {
   if (!looksLikeSlashCommand(text)) {
-    await session.engineFor(threadId).sendTurn(threadId, text)
+    await session
+      .engineFor(threadId)
+      .sendTurn(threadId, text, attachments ? { attachments } : {})
     return
   }
   const thread = useChatStore.getState().threads[threadId]
@@ -50,6 +65,73 @@ export async function dispatchComposerText(
     threadId,
     thread,
   }, text)
+}
+
+/**
+ * Manual chips plus the auto chip, read at the moment the user presses send.
+ *
+ * A slash command routes through the registry rather than `sendTurn`, so it
+ * cannot carry attachments; capturing for one would clear the chips and drop
+ * them silently. They stay in the composer for the next real turn instead.
+ */
+function captureAttachments(text: string): AttachmentSnapshot | undefined {
+  if (looksLikeSlashCommand(text)) return undefined
+  const threadId = composerThreadKey()
+  const manual = useAttachmentStore.getState().take(threadId)
+  const auto = autoAttachmentForThread(threadId)
+  const attachments = auto === null ? manual : [...manual, auto]
+  if (attachments.length === 0) return undefined
+  // The folder is captured too: `boundThreadId` moves synchronously at the
+  // start of `bindThread` while `fs` is still the previous thread's handle,
+  // so an id comparison alone would let a send inside that window resolve
+  // against the wrong folder.
+  return { threadId, attachments, fs: useWorkspaceStore.getState().fs }
+}
+
+/**
+ * Resolves a snapshot against the folder bound *now*, not the one bound when
+ * the message was typed. A queued message therefore sends the file's current
+ * content, which is the same rule an immediate send follows; a message whose
+ * thread changed under it resolves nothing at all.
+ */
+/** A resolution that could not run. The turn still sends its text. */
+export class AttachmentsDroppedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AttachmentsDroppedError'
+  }
+}
+
+export async function resolveSnapshot(
+  snapshot: AttachmentSnapshot,
+  threadId: string,
+): Promise<ResolvedAttachments | undefined> {
+  const workspace = useWorkspaceStore.getState()
+  const fs = workspace.fs
+  if (snapshot.threadId !== '' && snapshot.threadId !== threadId) {
+    throw new AttachmentsDroppedError(
+      'The conversation changed before this message was sent, so it was sent without its attachments.',
+    )
+  }
+  if (fs === null) {
+    throw new AttachmentsDroppedError(
+      'No workspace folder is open, so this message was sent without its attachments.',
+    )
+  }
+  if (snapshot.fs !== null && snapshot.fs !== fs) {
+    throw new AttachmentsDroppedError(
+      'The workspace folder changed before this message was sent, so it was sent without its attachments.',
+    )
+  }
+  const settings = useVaultStore.getState().settings
+  const config = useChatStore.getState().threads[threadId]?.config
+  const resolved = await resolveAttachments(fs, snapshot.attachments, {
+    imageSupport: modelSupportsVision(settings, config?.providerId, config?.modelId),
+  })
+  if (resolved.errors.length > 0) {
+    useChatStore.getState().setError(resolved.errors.join(' '))
+  }
+  return resolved.items.length === 0 ? undefined : resolved
 }
 
 /**
@@ -75,7 +157,8 @@ export function useChatRuntime() {
   const queue = useMemo(
     () =>
       createChatQueue({
-        dispatch: async (text) => {
+        capture: captureAttachments,
+        dispatch: async (text, snapshot) => {
           const id = await ensureActiveThread(session)
           if (!id) {
             useChatStore
@@ -83,7 +166,18 @@ export function useChatRuntime() {
               .setError('Add a provider in Config before sending a message.')
             return
           }
-          await dispatchComposerText(session, id, text)
+          // The user's text must survive every attachment failure: the
+          // composer has already cleared its draft by the time this runs, so a
+          // rejection here would destroy the turn rather than degrade it.
+          let attachments: ResolvedAttachments | undefined
+          if (snapshot !== undefined) {
+            try {
+              attachments = await resolveSnapshot(snapshot, id)
+            } catch (error) {
+              useChatStore.getState().setError(describe(error))
+            }
+          }
+          await dispatchComposerText(session, id, text, attachments)
         },
         onError: (error) => useChatStore.getState().setError(describe(error)),
         externalRunCount: () => {
@@ -103,6 +197,14 @@ export function useChatRuntime() {
     queue.sync()
     return useChatStore.subscribe(queue.sync)
   }, [queue])
+
+  // Chips are keyed by thread because the workspace is; a conversation switch
+  // drops the ones the user left behind, mirroring the queue's own reset.
+  useEffect(() => subscribeAttachmentThreadChanges(), [])
+
+  // Records which conversation opened the file the File panel shows, so the
+  // auto chip cannot follow the user into another thread's folder.
+  useEffect(() => subscribeAutoTargetOwner(), [])
 
   // The runtime does not subscribe to the queue, so a lane change has to be
   // turned into a render here or a removed item lingers on screen.
@@ -127,6 +229,9 @@ export function useChatRuntime() {
     state.setThread({ ...thread, messages: [...next] })
   }, [])
 
+  // Unreachable in this app: `queue` is always supplied, and the external-store
+  // runtime returns into `enqueue`/`steer` before it ever reaches `onNew`. It
+  // stays as the runtime's required fallback — do not wire send logic here.
   const onNew = useCallback(
     async (message: AppendMessage) => {
       const text = extractText(message.content as unknown as IncomingContent)

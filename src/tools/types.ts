@@ -1,4 +1,5 @@
 import type { Tool } from 'ai'
+import type { RagPort } from '../rag/port'
 import type { CodeRunner } from '../sandbox/types'
 import type { WorkspaceJournal } from '../workspace/journal'
 import type { ChatMode, PlanItem } from '../chat/types'
@@ -24,6 +25,14 @@ export interface WorkspaceListOptions {
   recursive?: boolean
   glob?: string
   maxEntries?: number
+  /**
+   * Directory names the walk never descends into. Filtering the result instead
+   * does not help: `maxEntries` is spent while walking, so one `node_modules`
+   * can exhaust the budget before the first source file is reached.
+   */
+  excludeDirs?: readonly string[]
+  /** Skips `.git`, `.next`, and every other dot-directory. */
+  excludeDotDirs?: boolean
 }
 
 export interface WorkspaceTransferResult {
@@ -209,6 +218,7 @@ export interface ApprovalPolicyPort {
 }
 
 export interface ToolRuntimePorts {
+  rag?: RagPort
   codeRunner?: CodeRunner
   workspace?: WorkspaceApi
   /** The conversation's write journal, used to record mutations and expose checkpoint tools. */

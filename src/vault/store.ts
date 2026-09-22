@@ -324,7 +324,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     await vaultWriteQueue.drain()
     await db.transaction(
       'rw',
-      [db.vault, db.meta, db.threads, db.skills, db.tools, db.fs],
+      [db.vault, db.meta, db.threads, db.skills, db.tools, db.fs, db.documents, db.chunks],
       async () => {
         await db.vault.clear()
         await db.meta.clear()
@@ -332,6 +332,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         await db.skills.clear()
         await db.tools.clear()
         await db.fs.clear()
+        await db.documents.clear()
+        await db.chunks.clear()
       },
     )
     invalidateClients()
@@ -367,6 +369,8 @@ export const vaultInternals = {
     await db.skills.clear()
     await db.tools.clear()
     await db.fs.clear()
+    await db.documents.clear()
+    await db.chunks.clear()
     keyring.reset()
     createInFlight = null
     vaultWriteQueue.reset()

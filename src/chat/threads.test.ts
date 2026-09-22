@@ -122,8 +122,8 @@ describe('conversation helpers', () => {
     expect(defaultProviderFor(null)).toBeNull()
     const settings = deepMerge(defaultSettings(), {
       providers: [
-        { id: 'p1', label: 'One', kind: 'openai-compatible', baseURL: '', apiKey: '', models: ['m1', 'm2'], defaultModel: 'm2' },
-        { id: 'p2', label: 'Two', kind: 'openai-compatible', baseURL: '', apiKey: '', models: ['m3'], defaultModel: 'm3' },
+        { id: 'p1', label: 'One', kind: 'openai-compatible', baseURL: '', apiKey: '', models: [{ id: 'm1' }, { id: 'm2' }], defaultModel: 'm2' },
+        { id: 'p2', label: 'Two', kind: 'openai-compatible', baseURL: '', apiKey: '', models: [{ id: 'm3' }], defaultModel: 'm3' },
       ],
     })
     expect(defaultProviderFor(settings)).toEqual({ providerId: 'p1', modelId: 'm2' })

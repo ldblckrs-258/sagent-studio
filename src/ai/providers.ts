@@ -32,10 +32,13 @@ export function validateProvider(provider: ProviderConfig): ProviderValidationEr
   if (provider.models.length > MAX_MODELS_PER_PROVIDER) {
     errors.models = `A provider may list at most ${MAX_MODELS_PER_PROVIDER} models.`
   }
-  if (provider.models.some((model) => !model.trim())) {
-    errors.models = 'Model names cannot be blank.'
+  if (provider.models.some((model) => !model || !model.id.trim())) {
+    errors.models = 'Model ids cannot be blank.'
   }
-  if (!provider.defaultModel.trim() || !provider.models.includes(provider.defaultModel)) {
+  if (
+    !provider.defaultModel.trim() ||
+    !provider.models.some((model) => model.id === provider.defaultModel)
+  ) {
     errors.defaultModel = 'The default model must be one of the listed models.'
   }
   return errors

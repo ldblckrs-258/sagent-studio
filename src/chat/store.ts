@@ -24,6 +24,12 @@ export interface ChatState {
   runningThreads: Record<string, number>
   /** Per-thread stream progress for the in-flight run. Never persisted. */
   liveStats: Record<string, LiveStreamStats>
+  /**
+   * Threads with a summarization in flight, manual or automatic. Separate from
+   * `runningThreads` because a compaction is not a run: it renders its own
+   * indicator and the composer's stop button does not apply to it.
+   */
+  compactingThreads: Record<string, boolean>
   error: string | null
   setThread(thread: ChatThread): void
   removeThread(id: string): void
@@ -32,6 +38,8 @@ export interface ChatState {
   endRun(threadId: string): void
   setLiveStats(threadId: string, stats: LiveStreamStats): void
   clearLiveStats(threadId: string): void
+  beginCompaction(threadId: string): void
+  endCompaction(threadId: string): void
   setError(error: string | null): void
   clear(): void
 }
@@ -43,6 +51,7 @@ export const useChatStore = create<ChatState>((set) => ({
   activeRuns: 0,
   runningThreads: {},
   liveStats: {},
+  compactingThreads: {},
   error: null,
 
   setThread(thread) {
@@ -106,6 +115,21 @@ export const useChatStore = create<ChatState>((set) => ({
     })
   },
 
+  beginCompaction(threadId) {
+    set((state) => ({
+      compactingThreads: { ...state.compactingThreads, [threadId]: true },
+    }))
+  },
+
+  endCompaction(threadId) {
+    set((state) => {
+      if (state.compactingThreads[threadId] === undefined) return {}
+      const compactingThreads = { ...state.compactingThreads }
+      delete compactingThreads[threadId]
+      return { compactingThreads }
+    })
+  },
+
   setError(error) {
     set({ error })
   },
@@ -118,6 +142,7 @@ export const useChatStore = create<ChatState>((set) => ({
       activeRuns: 0,
       runningThreads: {},
       liveStats: {},
+      compactingThreads: {},
       error: null,
     })
   },

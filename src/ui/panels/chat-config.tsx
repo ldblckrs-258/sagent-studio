@@ -143,11 +143,11 @@ function ThreadTab({ thread }: { thread: ChatThread }) {
           {(provider?.models.length
             ? provider.models
             : draft.modelId
-              ? [draft.modelId]
-              : [""]
+              ? [{ id: draft.modelId }]
+              : [{ id: "" }]
           ).map((model) => (
-            <option key={model} value={model}>
-              {model || "Default model"}
+            <option key={model.id} value={model.id}>
+              {model.name ?? (model.id || "Default model")}
             </option>
           ))}
         </Select>

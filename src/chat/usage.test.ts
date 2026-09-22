@@ -60,19 +60,24 @@ describe('estimateMessagesTokens', () => {
     expect(estimateMessagesTokens([withTool])).toBeGreaterThan(proseOnly + 10)
   })
 
-  it('ignores a part the model never receives', () => {
-    const withFile: UIMessage = {
+  it('prices an image part by its bytes, not by its base64 length', () => {
+    const megabyte: UIMessage = {
       id: 'u1',
       role: 'user',
       parts: [
         {
           type: 'file',
           mediaType: 'image/png',
-          url: `data:image/png;base64,${'A'.repeat(400)}`,
+          // A 1 MB PNG: base64 carries it in roughly 4/3 as many characters.
+          url: `data:image/png;base64,${'A'.repeat(1_398_101)}`,
         } as unknown as UIMessage['parts'][number],
       ],
     }
-    expect(estimateMessagesTokens([withFile])).toBe(0)
+    const tokens = estimateMessagesTokens([megabyte])
+    // Measuring the data URL as prose would read this as ~350 K tokens and
+    // auto-compact every turn after an image is attached.
+    expect(tokens).toBeGreaterThan(1_200)
+    expect(tokens).toBeLessThan(1_600)
   })
 })
 

@@ -11,6 +11,7 @@ import type { ToolProvider, WorkspaceApi } from "../tools/types";
 import type { Settings } from "../vault/settings";
 import { defaultSettings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
+import type { ResolvedAttachments } from "./attachments";
 import type { EngineDeps } from "./engine";
 import { createEngine } from "./engine";
 import { abortersCount, useChatStore } from "./store";
@@ -336,6 +337,81 @@ describe("chat engine", () => {
     expect(textOf(messages[1])).toBe("Hello");
     expect(messages[1].metadata).toMatchObject({ chatStatus: "done" });
     expect(store.get("th1")?.messages).toHaveLength(2);
+  });
+
+  it("carries resolved attachments and records what it inlined", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "Hello")) }]);
+    const { engine } = setup({ model });
+    seed("th1", []);
+
+    const resolved: ResolvedAttachments = {
+      nonce: "abcdef0123456789",
+      items: [
+        {
+          record: { path: "a.ts", hash: "cafe", mode: "inline" },
+          parts: [{ type: "text", text: "<attached …>const a = 1</attached-…>" }],
+          fenced: true,
+        },
+      ],
+      errors: [],
+    };
+
+    await engine.sendTurn("th1", "explain this", { attachments: resolved });
+
+    const userMessage = useChatStore.getState().threads.th1.messages[0];
+    expect(userMessage.parts).toHaveLength(3);
+    expect(textOf(userMessage)).toContain("const a = 1");
+    // The question stays last, so the model reads the instruction after the data.
+    expect((userMessage.parts[2] as { text: string }).text).toBe("explain this");
+    expect(userMessage.metadata).toMatchObject({
+      attachments: [{ path: "a.ts", hash: "cafe", mode: "inline" }],
+    });
+  });
+
+  it("suppresses a repeat of bytes already in the window", async () => {
+    const model = makeModel([
+      { stream: streamOf(textStep("t1", "One")) },
+      { stream: streamOf(textStep("t2", "Two")) },
+    ]);
+    const { engine } = setup({ model });
+    seed("th1", []);
+
+    const resolved = (): ResolvedAttachments => ({
+      nonce: "abcdef0123456789",
+      items: [
+        {
+          record: { path: "a.ts", hash: "cafe", mode: "inline" },
+          parts: [{ type: "text", text: "INLINED BODY" }],
+          fenced: true,
+        },
+      ],
+      errors: [],
+    });
+
+    await engine.sendTurn("th1", "first", { attachments: resolved() });
+    await engine.sendTurn("th1", "second", { attachments: resolved() });
+
+    const messages = useChatStore.getState().threads.th1.messages;
+    const second = messages[2];
+    expect(textOf(second)).not.toContain("INLINED BODY");
+    // The marker has to fail safe: compaction can bury the original in the same
+    // run that suppresses it.
+    expect(textOf(second)).toContain("read_file");
+    expect(second.metadata).toMatchObject({
+      attachments: [{ path: "a.ts", mode: "unchanged" }],
+    });
+  });
+
+  it("sends the same single-part message as before when nothing is attached", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "Hello")) }]);
+    const { engine } = setup({ model });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "hi");
+
+    const userMessage = useChatStore.getState().threads.th1.messages[0];
+    expect(userMessage.parts).toEqual([{ type: "text", text: "hi" }]);
+    expect(userMessage.metadata).toBeUndefined();
   });
 
   it("records the turn usage without clobbering the run status", async () => {

@@ -35,7 +35,7 @@ export interface ProviderSelection {
 export function defaultProviderFor(settings: Settings | null): ProviderSelection | null {
   const provider = settings?.providers[0]
   if (!provider) return null
-  const modelId = provider.defaultModel || provider.models[0]
+  const modelId = provider.defaultModel || provider.models[0]?.id
   return modelId ? { providerId: provider.id, modelId } : { providerId: provider.id }
 }
 

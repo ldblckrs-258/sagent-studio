@@ -49,6 +49,55 @@ export interface JournalRecord {
   updatedAt: number
 }
 
+export interface DocumentRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
+/**
+ * One encrypted chunk. `dims` is the only plaintext per-chunk number: it is the
+ * vector width, which lets hydration validate a vector without decrypting the
+ * document blob. It carries no content.
+ */
+export interface ChunkRecord {
+  id: string
+  docId: string
+  ordinal: number
+  dims: number
+  text: EncryptedBlob
+  vector: EncryptedBlob
+  updatedAt: number
+}
+
+type DatabaseBlockedListener = () => void
+
+let blocked = false
+const blockedListeners = new Set<DatabaseBlockedListener>()
+
+/** True once a schema upgrade was blocked by another open tab. */
+export function isDatabaseBlocked(): boolean {
+  return blocked
+}
+
+/** Subscribes to the "another tab is holding the old schema" notice. */
+export function subscribeDatabaseBlocked(listener: DatabaseBlockedListener): () => void {
+  blockedListeners.add(listener)
+  return () => {
+    blockedListeners.delete(listener)
+  }
+}
+
+function notifyDatabaseBlocked(): void {
+  blocked = true
+  for (const listener of blockedListeners) listener()
+}
+
+/** Test seam: reset the one-shot blocked flag between cases. */
+export function resetDatabaseBlocked(): void {
+  blocked = false
+}
+
 export class VaultDatabase extends Dexie {
   vault!: Table<VaultRecord, string>
   meta!: Table<MetaRecord, string>
@@ -57,6 +106,8 @@ export class VaultDatabase extends Dexie {
   tools!: Table<ToolRecord, string>
   fs!: Table<FsHandleRecord, string>
   journals!: Table<JournalRecord, string>
+  documents!: Table<DocumentRecord, string>
+  chunks!: Table<ChunkRecord, string>
 
   constructor(name = 'sagent-vault') {
     super(name)
@@ -92,6 +143,27 @@ export class VaultDatabase extends Dexie {
       tools: 'id, updatedAt',
       fs: 'id',
       journals: 'id, updatedAt',
+    })
+    this.version(6).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+      fs: 'id',
+      journals: 'id, updatedAt',
+      documents: 'id, updatedAt',
+      chunks: 'id, docId, [docId+ordinal]',
+    })
+
+    // Another tab opening a higher schema version fires `versionchange` here.
+    // Close this connection rather than let it keep writing against the old
+    // schema; the opening tab then sees `blocked` until this one releases it.
+    this.on('versionchange', () => {
+      this.close()
+    })
+    this.on('blocked', () => {
+      notifyDatabaseBlocked()
     })
   }
 }

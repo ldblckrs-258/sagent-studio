@@ -25,6 +25,16 @@ describe('createTypeSafe', () => {
     expect(() => createTypeSafe(settingsWithTypesafe({ apiKey: '' }))).toThrow(TypeSafeConfigError)
   })
 
+  it('applies an explicit timeout when passed', () => {
+    const client = createTypeSafe(settingsWithTypesafe({ apiKey: 'ts-key' }), { timeoutMs: 60_000 })
+    expect(client.timeout).toBe(60_000)
+  })
+
+  it('uses the SDK default timeout when no option is passed', () => {
+    const client = createTypeSafe(settingsWithTypesafe({ apiKey: 'ts-key' }))
+    expect(client.timeout).toBe(10_000)
+  })
+
   it('accepts a base URL override', () => {
     const client = createTypeSafe(
       settingsWithTypesafe({ apiKey: 'ts-key', baseURL: 'https://example.test' }),

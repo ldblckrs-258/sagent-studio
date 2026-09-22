@@ -230,6 +230,26 @@
   }
 }
 
+/* A highlight that travels along a determinate progress bar while it fills. */
+@keyframes ingest-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(200%);
+  }
+}
+
+/* A bar sweeping a track when a phase has no measurable total yet. */
+@keyframes ingest-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

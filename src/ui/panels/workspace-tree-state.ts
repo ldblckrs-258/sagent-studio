@@ -21,6 +21,7 @@ export interface WorkspaceTreeState {
   cacheChildren(path: string, nodes: TreeNode[]): void
   expand(path: string): void
   collapse(path: string): void
+  invalidateSubtree(path: string): void
   reset(): void
 }
 
@@ -52,6 +53,21 @@ export const useWorkspaceTreeStore = create<WorkspaceTreeState>((set) => ({
       const expanded = new Set(state.expanded)
       expanded.delete(path)
       return { expanded }
+    })
+  },
+
+  invalidateSubtree(path) {
+    // A rename or move leaves children cached under the old path, and a delete
+    // leaves them cached at all; both must go so a later expand re-lists.
+    const prefix = path === '' ? '' : `${path}/`
+    const within = (key: string): boolean =>
+      key === path || key.startsWith(prefix)
+    set((state) => {
+      const children = new Map(state.children)
+      for (const key of children.keys()) if (within(key)) children.delete(key)
+      const expanded = new Set(state.expanded)
+      for (const key of expanded) if (within(key)) expanded.delete(key)
+      return { children, expanded }
     })
   },
 

@@ -103,7 +103,7 @@ describe('deepMerge', () => {
       kind: 'openai-compatible' as const,
       baseURL: 'http://localhost:11434/v1',
       apiKey: 'secret',
-      models: ['llama3'],
+      models: [{ id: 'llama3' }],
       defaultModel: 'llama3',
     }
     const merged = deepMerge(base, { providers: [provider] })
@@ -130,7 +130,7 @@ describe('migrate', () => {
     const migrated = migrate(1, { rag: { topK: 7 } })
     expect(migrated.version).toBe(1)
     expect(migrated.rag.topK).toBe(7)
-    expect(migrated.rag.concurrency).toBe(2)
+    expect(migrated.rag.concurrency).toBe(4)
   })
 
   it('throws on a future version instead of discarding data', () => {
@@ -159,10 +159,10 @@ describe('migrate', () => {
 })
 
 describe('context settings', () => {
-  it('defaults to a 128k cap that auto-compacts at 80 percent', () => {
+  it('defaults to a 128k cap that auto-compacts at 90 percent', () => {
     expect(defaultSettings().context).toEqual({
       maxContextTokens: 128_000,
-      autoCompactRatio: 0.8,
+      autoCompactRatio: 0.9,
       autoCompactEnabled: true,
     })
   })
@@ -207,5 +207,61 @@ describe('context settings', () => {
         autoCompactEnabled: true,
       }),
     ).toThrow(/autoCompactRatio must be between 0.1 and 0.95/)
+  })
+
+  it('upgrades the pre-model legacy ratio exactly once', () => {
+    const migrated = migrate(1, {
+      context: { maxContextTokens: 32_000, autoCompactRatio: 0.8, autoCompactEnabled: true },
+    })
+    expect(migrated.context.autoCompactRatio).toBe(0.9)
+  })
+})
+
+describe('provider migration', () => {
+  it('upgrades a legacy string model list to model objects', () => {
+    const migrated = migrate(1, {
+      providers: [
+        {
+          id: 'p',
+          label: 'P',
+          kind: 'openai-compatible',
+          baseURL: 'http://localhost/v1',
+          apiKey: 'k',
+          models: ['a', 'b'],
+          defaultModel: 'b',
+        },
+      ],
+    })
+    expect(migrated.providers[0].models).toEqual([{ id: 'a' }, { id: 'b' }])
+    expect(migrated.providers[0].defaultModel).toBe('b')
+  })
+
+  it('keeps model names and caps that are already objects', () => {
+    const migrated = migrate(1, {
+      providers: [
+        {
+          id: 'p',
+          models: [{ id: 'a', name: 'Alpha', caps: { vision: false, contextWindow: 1000 } }],
+          defaultModel: 'a',
+        },
+      ],
+    })
+    expect(migrated.providers[0].models[0]).toEqual({
+      id: 'a',
+      name: 'Alpha',
+      caps: { vision: false, contextWindow: 1000 },
+    })
+  })
+
+  it('picks the first model when the stored default names none', () => {
+    const migrated = migrate(1, { providers: [{ id: 'p', models: ['a'], defaultModel: 'gone' }] })
+    expect(migrated.providers[0].defaultModel).toBe('a')
+  })
+
+  it('drops malformed model entries instead of throwing', () => {
+    const migrated = migrate(1, {
+      providers: [{ id: 'p', models: ['', { id: 7 }, { id: 'ok' }], defaultModel: 'ok' }],
+    })
+    expect(migrated.providers[0].models).toEqual([{ id: 'ok' }])
   })
 })

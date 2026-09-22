@@ -4,6 +4,7 @@ import { ToolNotFoundError } from '../types'
 import type { ToolProvider } from '../types'
 import checkpointsGuide from './guides/checkpoints.md?raw'
 import customToolsGuide from './guides/custom-tools.md?raw'
+import ragGuide from './guides/rag.md?raw'
 import sandboxGuide from './guides/sandbox.md?raw'
 import skillsGuide from './guides/skills.md?raw'
 import workspaceEditGuide from './guides/workspace-edit.md?raw'
@@ -47,6 +48,12 @@ const ENTRIES: readonly ToolGuideEntry[] = [
     summary: 'Loading skills, trusted versus untrusted sources, and authoring vault skills.',
     covers: ['load_skill', 'search_skills', 'list_skills', 'create_skill', 'update_skill', 'delete_skill'],
     guide: skillsGuide,
+  },
+  {
+    topic: 'rag',
+    summary: 'Searching the encrypted document library and verifying citations.',
+    covers: ['list_documents', 'search_documents', 'get_chunk', 'get_neighbors', 'verify_citation'],
+    guide: ragGuide,
   },
 ]
 

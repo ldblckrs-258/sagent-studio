@@ -1,4 +1,5 @@
 import type { UIMessage } from 'ai'
+import type { AttachmentRecord } from './attachments'
 import type { CompactionMeta } from './boundary'
 import type { SkillDirective } from './skill-invoke'
 import type { ChatThread } from './types'
@@ -12,6 +13,8 @@ export type ChatMessageMetadata = {
   compaction?: CompactionMeta
   /** Present only on a `/<skill-id>` directive, which renders as a marker. */
   skillDirective?: SkillDirective
+  /** What this user turn attached, so a later turn can skip re-inlining it. */
+  attachments?: AttachmentRecord[]
 }
 
 type MessagePart = UIMessage['parts'][number]

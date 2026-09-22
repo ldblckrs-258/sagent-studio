@@ -11,7 +11,7 @@ function provider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
     kind: 'openai-compatible',
     baseURL: 'http://localhost:11434/v1',
     apiKey: 'test-key',
-    models: ['llama3', 'mixtral'],
+    models: [{ id: 'llama3' }, { id: 'mixtral' }],
     defaultModel: 'llama3',
     ...overrides,
   }
@@ -43,7 +43,7 @@ describe('validateProvider', () => {
   })
 
   it('rejects an over-long model list', () => {
-    const models = Array.from({ length: 60 }, (_, i) => `model-${i}`)
+    const models = Array.from({ length: 501 }, (_, i) => ({ id: `model-${i}` }))
     expect(validateProvider(provider({ models, defaultModel: 'model-0' })).models).toBeTruthy()
   })
 })

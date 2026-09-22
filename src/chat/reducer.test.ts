@@ -32,6 +32,26 @@ describe('chat reducer', () => {
     expect(next).not.toBe(messages)
   })
 
+  it('drops attachment records when an edit replaces the parts', () => {
+    // The inlined block is gone after an edit, so a surviving record would let
+    // the next turn claim the content is already in the conversation.
+    const withRecords: UIMessage = {
+      id: 'u2',
+      role: 'user',
+      parts: [{ type: 'text', text: 'look' }],
+      metadata: {
+        chatStatus: 'done',
+        attachments: [{ path: 'a.ts', hash: 'deadbeef', mode: 'inline' }],
+      },
+    } as UIMessage
+    const next = editMessage([user('u1'), withRecords], 'u2', [
+      { type: 'text', text: 'edited' },
+    ])
+    const metadata = next[1].metadata as Record<string, unknown>
+    expect(metadata.attachments).toBeUndefined()
+    expect(metadata.chatStatus).toBe('done')
+  })
+
   it('edits a user message and truncates the downstream history', () => {
     const messages = conversation()
     const next = editMessage(messages, 'u2', [{ type: 'text', text: 'edited' }])

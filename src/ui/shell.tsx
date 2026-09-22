@@ -1,101 +1,122 @@
-import { useEffect, useRef, useState } from 'react'
-import type { ComponentType, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
-import { AssistantRuntimeProvider } from '@assistant-ui/react'
-import { Boxes, FileText, FolderTree, Lock as LockIcon, Menu, PanelLeftClose, PanelLeftOpen, Settings2, ShieldCheck, Sparkles, Wrench, X } from 'lucide-react'
-import { Dialog as DialogPrimitive } from 'radix-ui'
-import { Thread } from '../components/assistant-ui/elements/thread.aui'
-import { listThreadSummaries } from '../chat/persistence'
-import { rehydrateThread } from '../chat/sanitize'
-import { useChatRuntime } from '../chat/use-chat-runtime'
-import { useChatStore } from '../chat/store'
-import { useMediaQuery } from '../hooks/use-media-query'
-import { useFileViewStore } from '../session/file-view-state'
-import { useSession } from '../session/session-context'
-import { useVaultStore } from '../vault/store'
-import { ApprovalsPanel } from './panels/approvals'
-import { ChatConfig } from './panels/chat-config'
-import type { ConfigTab } from './panels/chat-config'
-import { Conversations } from './panels/conversations'
-import { PlanPanel } from './plan-panel'
-import { FilePanel } from './panels/file-editor'
-import { SandboxPanel } from './panels/sandbox'
-import { SkillsPanel } from './panels/skills'
-import { ToolsPanel } from './panels/tools'
-import { WorkspacePanel } from './panels/workspace'
-import { Button } from './primitives'
-import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from './resize'
-import { ResizeHandle } from './resize-handle'
-import { Shortcuts } from './shortcuts'
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import {
+  BookOpen,
+  Boxes,
+  FileText,
+  FolderTree,
+  Lock as LockIcon,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Wrench,
+  X,
+} from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
+import type {
+  ComponentType,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  RefObject,
+} from "react";
+import { useEffect, useRef, useState } from "react";
+import { listThreadSummaries } from "../chat/persistence";
+import { rehydrateThread } from "../chat/sanitize";
+import { useChatStore } from "../chat/store";
+import { useChatRuntime } from "../chat/use-chat-runtime";
+import { Thread } from "../components/assistant-ui/elements/thread.aui";
+import { useMediaQuery } from "../hooks/use-media-query";
+import { useFileViewStore } from "../session/file-view-state";
+import { useSession } from "../session/session-context";
+import { useVaultStore } from "../vault/store";
+import { ApprovalsPanel } from "./panels/approvals";
+import type { ConfigTab } from "./panels/chat-config";
+import { ChatConfig } from "./panels/chat-config";
+import { Conversations } from "./panels/conversations";
+import { FilePanel } from "./panels/file-editor";
+import { LibraryPanel } from "./panels/library";
+import { SandboxPanel } from "./panels/sandbox";
+import { SkillsPanel } from "./panels/skills";
+import { ToolsPanel } from "./panels/tools";
+import { WorkspacePanel } from "./panels/workspace";
+import { PlanPanel } from "./plan-panel";
+import { Button } from "./primitives";
+import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from "./resize";
+import { ResizeHandle } from "./resize-handle";
 
 export type RailPanelId =
-  | 'config'
-  | 'workspace'
-  | 'files'
-  | 'skills'
-  | 'tools'
-  | 'sandbox'
-  | 'approvals'
+  | "config"
+  | "workspace"
+  | "files"
+  | "documents"
+  | "skills"
+  | "tools"
+  | "sandbox"
+  | "approvals";
 
 const RAIL_IDS: readonly RailPanelId[] = [
-  'config',
-  'workspace',
-  'files',
-  'skills',
-  'tools',
-  'sandbox',
-  'approvals',
-]
+  "config",
+  "workspace",
+  "files",
+  "documents",
+  "skills",
+  "tools",
+  "sandbox",
+  "approvals",
+];
 
 interface RailPanelState {
-  open: boolean
-  activePanel: RailPanelId
-  width: number
+  open: boolean;
+  activePanel: RailPanelId;
+  width: number;
 }
 
 interface RailPanelDef {
-  id: RailPanelId
-  label: string
-  icon: ComponentType<{ size?: number; strokeWidth?: number }>
-  render(): ReactNode
+  id: RailPanelId;
+  label: string;
+  icon: ComponentType<{ size?: number; strokeWidth?: number }>;
+  render(): ReactNode;
 }
 
-const RAIL_STATE_KEY = 'sagent.rail.v2'
-const SIDEBAR_STATE_KEY = 'sagent.sidebar.v1'
+const RAIL_STATE_KEY = "sagent.rail.v2";
+const SIDEBAR_STATE_KEY = "sagent.sidebar.v1";
 const DEFAULT_RAIL: RailPanelState = {
   open: false,
-  activePanel: 'config',
+  activePanel: "config",
   width: PANEL_DEFAULT_WIDTH,
-}
+};
 
 function readSidebarCollapsed(): boolean {
-  if (typeof sessionStorage === 'undefined') return false
+  if (typeof sessionStorage === "undefined") return false;
   try {
-    return sessionStorage.getItem(SIDEBAR_STATE_KEY) === 'collapsed'
+    return sessionStorage.getItem(SIDEBAR_STATE_KEY) === "collapsed";
   } catch {
-    return false
+    return false;
   }
 }
 
 function readRailState(): RailPanelState {
-  if (typeof sessionStorage === 'undefined') return DEFAULT_RAIL
+  if (typeof sessionStorage === "undefined") return DEFAULT_RAIL;
   try {
-    const raw = sessionStorage.getItem(RAIL_STATE_KEY)
-    if (!raw) return DEFAULT_RAIL
-    const parsed = JSON.parse(raw) as Partial<RailPanelState>
+    const raw = sessionStorage.getItem(RAIL_STATE_KEY);
+    if (!raw) return DEFAULT_RAIL;
+    const parsed = JSON.parse(raw) as Partial<RailPanelState>;
     const activePanel =
-      typeof parsed.activePanel === 'string' && (RAIL_IDS as readonly string[]).includes(parsed.activePanel)
+      typeof parsed.activePanel === "string" &&
+      (RAIL_IDS as readonly string[]).includes(parsed.activePanel)
         ? (parsed.activePanel as RailPanelId)
-        : DEFAULT_RAIL.activePanel
+        : DEFAULT_RAIL.activePanel;
     const width =
-      typeof parsed.width === 'number' && Number.isFinite(parsed.width)
+      typeof parsed.width === "number" && Number.isFinite(parsed.width)
         ? parsed.width
-        : DEFAULT_RAIL.width
-    return { open: parsed.open === true, activePanel, width }
+        : DEFAULT_RAIL.width;
+    return { open: parsed.open === true, activePanel, width };
   } catch {
-    return DEFAULT_RAIL
+    return DEFAULT_RAIL;
   }
 }
-
 
 function RailButton({
   id,
@@ -104,11 +125,11 @@ function RailButton({
   active,
   onClick,
 }: {
-  id: string
-  label: string
-  icon: ComponentType<{ size?: number; strokeWidth?: number }>
-  active: boolean
-  onClick(event: ReactMouseEvent<HTMLButtonElement>): void
+  id: string;
+  label: string;
+  icon: ComponentType<{ size?: number; strokeWidth?: number }>;
+  active: boolean;
+  onClick(event: ReactMouseEvent<HTMLButtonElement>): void;
 }) {
   return (
     <button
@@ -120,13 +141,13 @@ function RailButton({
       onClick={onClick}
       className={`inline-flex size-9 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart ${
         active
-          ? 'border-accent-rule bg-accent-soft text-accent'
-          : 'border-transparent text-muted hover:border-rule-strong hover:text-ink'
+          ? "border-accent-rule bg-accent-soft text-accent"
+          : "border-transparent text-muted hover:border-rule-strong hover:text-ink"
       }`}
     >
       <Icon size={16} strokeWidth={1.75} />
     </button>
-  )
+  );
 }
 
 function PanelFrame({
@@ -134,9 +155,9 @@ function PanelFrame({
   onClose,
   children,
 }: {
-  title: string
-  onClose(): void
-  children: ReactNode
+  title: string;
+  onClose(): void;
+  children: ReactNode;
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -153,7 +174,7 @@ function PanelFrame({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
     </div>
-  )
+  );
 }
 
 function OverlayDialog({
@@ -161,109 +182,120 @@ function OverlayDialog({
   label,
   onClose,
   children,
-  side = 'left',
+  side = "left",
   restoreFocusTo,
 }: {
-  open: boolean
-  label: string
-  onClose(): void
-  children: ReactNode
-  side?: 'left' | 'right'
-  restoreFocusTo?: RefObject<HTMLElement | null>
+  open: boolean;
+  label: string;
+  onClose(): void;
+  children: ReactNode;
+  side?: "left" | "right";
+  restoreFocusTo?: RefObject<HTMLElement | null>;
 }) {
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={(next) => (!next ? onClose() : undefined)}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(next) => (!next ? onClose() : undefined)}
+    >
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content
           onCloseAutoFocus={(event) => {
-            if (!restoreFocusTo) return
-            event.preventDefault()
-            restoreFocusTo.current?.focus()
+            if (!restoreFocusTo) return;
+            event.preventDefault();
+            restoreFocusTo.current?.focus();
           }}
           className={`fixed top-0 z-50 h-dvh border-rule bg-paper outline-none data-[state=open]:animate-in ${
-            side === 'left' ? 'left-0 w-80 max-w-[85vw] border-r' : 'right-0 w-96 max-w-[100vw] border-l'
+            side === "left"
+              ? "left-0 w-80 max-w-[85vw] border-r"
+              : "right-0 w-96 max-w-[100vw] border-l"
           }`}
         >
-          <DialogPrimitive.Title className="sr-only">{label}</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="sr-only">
+            {label}
+          </DialogPrimitive.Title>
           <div className="h-full min-h-0">{children}</div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
-  )
+  );
 }
 
 /** The left/right columns become overlays below this width, so one column is usable. */
-const WIDE_QUERY = '(min-width: 1024px)'
+const WIDE_QUERY = "(min-width: 1024px)";
 
 export function Shell({ left }: { left?: ReactNode }) {
-  const runtime = useChatRuntime()
-  const session = useSession()
-  const lock = useVaultStore((s) => s.lock)
-  const wide = useMediaQuery(WIDE_QUERY)
-  const bootstrapped = useRef(false)
+  const runtime = useChatRuntime();
+  const session = useSession();
+  const lock = useVaultStore((s) => s.lock);
+  const wide = useMediaQuery(WIDE_QUERY);
+  const bootstrapped = useRef(false);
 
   // One-time bootstrap so the center column is usable on first load, on any
   // viewport: select the most recent conversation when none is active.
   useEffect(() => {
-    if (bootstrapped.current) return
-    bootstrapped.current = true
-    let cancelled = false
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    let cancelled = false;
     void (async () => {
-      if (useChatStore.getState().activeThreadId !== null) return
-      const result = await listThreadSummaries()
-      if (cancelled || result.summaries.length === 0) return
-      const id = result.summaries[0].id
-      const loaded = await session.threadStore.loadThread(id)
-      if (cancelled || !loaded) return
-      useChatStore.getState().setThread(rehydrateThread(loaded))
-      useChatStore.getState().setActiveThread(id)
-    })()
+      if (useChatStore.getState().activeThreadId !== null) return;
+      const result = await listThreadSummaries();
+      if (cancelled || result.summaries.length === 0) return;
+      const id = result.summaries[0].id;
+      const loaded = await session.threadStore.loadThread(id);
+      if (cancelled || !loaded) return;
+      useChatStore.getState().setThread(rehydrateThread(loaded));
+      useChatStore.getState().setActiveThread(id);
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [session])
+      cancelled = true;
+    };
+  }, [session]);
 
-  const [rail, setRail] = useState<RailPanelState>(readRailState)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [configTab, setConfigTab] = useState<ConfigTab>('thread')
-  const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
-  const railTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const [rail, setRail] = useState<RailPanelState>(readRailState);
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(readSidebarCollapsed);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [configTab, setConfigTab] = useState<ConfigTab>("thread");
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const railTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    if (typeof sessionStorage === 'undefined') return
+    if (typeof sessionStorage === "undefined") return;
     try {
-      sessionStorage.setItem(RAIL_STATE_KEY, JSON.stringify(rail))
+      sessionStorage.setItem(RAIL_STATE_KEY, JSON.stringify(rail));
     } catch {
       // Storage disabled: panel state simply does not survive this session.
     }
-  }, [rail])
+  }, [rail]);
 
   // Track the viewport so the stored width is re-clamped when the window shrinks.
   const [viewportWidth, setViewportWidth] = useState(() =>
-    typeof window === 'undefined' ? 1440 : window.innerWidth,
-  )
+    typeof window === "undefined" ? 1440 : window.innerWidth,
+  );
 
   useEffect(() => {
-    if (typeof sessionStorage === 'undefined') return
+    if (typeof sessionStorage === "undefined") return;
     try {
-      sessionStorage.setItem(SIDEBAR_STATE_KEY, sidebarCollapsed ? 'collapsed' : 'expanded')
+      sessionStorage.setItem(
+        SIDEBAR_STATE_KEY,
+        sidebarCollapsed ? "collapsed" : "expanded",
+      );
     } catch {
       // Storage disabled: the collapse preference simply does not survive.
     }
-  }, [sidebarCollapsed])
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth)
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
-  const panelMax = panelWidthMax(viewportWidth)
-  const panelWidth = clampPanelWidth(rail.width, viewportWidth)
+  const panelMax = panelWidthMax(viewportWidth);
+  const panelWidth = clampPanelWidth(rail.width, viewportWidth);
 
-  const openWorkspaceFile = useFileViewStore((s) => s.openWorkspace)
+  const openWorkspaceFile = useFileViewStore((s) => s.openWorkspace);
 
   // Every entry point that sets a target — the Workspace tree, the File panel's
   // URL bar, or a chat link — reveals the File panel. Subscribing keeps the
@@ -271,62 +303,88 @@ export function Shell({ left }: { left?: ReactNode }) {
   useEffect(
     () =>
       useFileViewStore.subscribe((state) => {
-        if (!state.target) return
+        if (!state.target) return;
         setRail((prev) =>
-          prev.open && prev.activePanel === 'files'
+          prev.open && prev.activePanel === "files"
             ? prev
-            : { ...prev, open: true, activePanel: 'files' },
-        )
+            : { ...prev, open: true, activePanel: "files" },
+        );
       }),
     [],
-  )
+  );
 
   const openWorkspacePanel = () =>
-    setRail((prev) => ({ ...prev, open: true, activePanel: 'workspace' }))
+    setRail((prev) => ({ ...prev, open: true, activePanel: "workspace" }));
 
   const panels: RailPanelDef[] = [
     {
-      id: 'config',
-      label: 'Config',
+      id: "config",
+      label: "Config",
       icon: Settings2,
       render: () => <ChatConfig tab={configTab} onTabChange={setConfigTab} />,
     },
     {
-      id: 'workspace',
-      label: 'Workspace',
+      id: "workspace",
+      label: "Workspace",
       icon: FolderTree,
       render: () => <WorkspacePanel onOpenFile={openWorkspaceFile} />,
     },
     {
-      id: 'files',
-      label: 'File',
+      id: "files",
+      label: "File",
       icon: FileText,
       render: () => <FilePanel onBrowseWorkspace={openWorkspacePanel} />,
     },
-    { id: 'skills', label: 'Skills', icon: Sparkles, render: () => <SkillsPanel /> },
-    { id: 'tools', label: 'Tools', icon: Wrench, render: () => <ToolsPanel /> },
-    { id: 'sandbox', label: 'Sandbox', icon: Boxes, render: () => <SandboxPanel /> },
-    { id: 'approvals', label: 'Approvals', icon: ShieldCheck, render: () => <ApprovalsPanel /> },
-  ]
-  const active = panels.find((panel) => panel.id === rail.activePanel) ?? panels[0]
+    {
+      id: "documents",
+      label: "Documents",
+      icon: BookOpen,
+      render: () => <LibraryPanel />,
+    },
+    {
+      id: "skills",
+      label: "Skills",
+      icon: Sparkles,
+      render: () => <SkillsPanel />,
+    },
+    { id: "tools", label: "Tools", icon: Wrench, render: () => <ToolsPanel /> },
+    {
+      id: "sandbox",
+      label: "Sandbox",
+      icon: Boxes,
+      render: () => <SandboxPanel />,
+    },
+    {
+      id: "approvals",
+      label: "Approvals",
+      icon: ShieldCheck,
+      render: () => <ApprovalsPanel />,
+    },
+  ];
+  const active =
+    panels.find((panel) => panel.id === rail.activePanel) ?? panels[0];
 
   const togglePanel = (id: RailPanelId) => {
     setRail((prev) =>
       prev.open && prev.activePanel === id
         ? { ...prev, open: false }
         : { ...prev, open: true, activePanel: id },
-    )
-  }
+    );
+  };
 
-  const closeRail = () => setRail((prev) => ({ ...prev, open: false }))
+  const closeRail = () => setRail((prev) => ({ ...prev, open: false }));
   const openProviders = () => {
-    setConfigTab('providers')
-    setDrawerOpen(false)
-    setRail((prev) => ({ ...prev, open: true, activePanel: 'config' }))
-  }
-  const closeDrawer = () => setDrawerOpen(false)
+    setConfigTab("providers");
+    setDrawerOpen(false);
+    setRail((prev) => ({ ...prev, open: true, activePanel: "config" }));
+  };
+  const closeDrawer = () => setDrawerOpen(false);
 
-  const panelBody = <PanelFrame title={active.label} onClose={closeRail}>{active.render()}</PanelFrame>
+  const panelBody = (
+    <PanelFrame title={active.label} onClose={closeRail}>
+      {active.render()}
+    </PanelFrame>
+  );
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-paper text-ink">
@@ -348,7 +406,12 @@ export function Shell({ left }: { left?: ReactNode }) {
           onClose={closeDrawer}
           restoreFocusTo={menuTriggerRef}
         >
-          {left ?? <Conversations onOpenProviders={openProviders} onClose={closeDrawer} />}
+          {left ?? (
+            <Conversations
+              onOpenProviders={openProviders}
+              onClose={closeDrawer}
+            />
+          )}
         </OverlayDialog>
       )}
 
@@ -360,8 +423,8 @@ export function Shell({ left }: { left?: ReactNode }) {
                 type="button"
                 aria-label="Open conversations"
                 onClick={(event) => {
-                  menuTriggerRef.current = event.currentTarget
-                  setDrawerOpen(true)
+                  menuTriggerRef.current = event.currentTarget;
+                  setDrawerOpen(true);
                 }}
                 className="inline-flex size-9 items-center justify-center rounded-sm text-muted transition-colors hover:text-ink"
               >
@@ -370,9 +433,13 @@ export function Shell({ left }: { left?: ReactNode }) {
             ) : (
               <button
                 type="button"
-                aria-label={sidebarCollapsed ? 'Show conversations' : 'Hide conversations'}
+                aria-label={
+                  sidebarCollapsed ? "Show conversations" : "Hide conversations"
+                }
                 aria-pressed={sidebarCollapsed}
-                title={sidebarCollapsed ? 'Show conversations' : 'Hide conversations'}
+                title={
+                  sidebarCollapsed ? "Show conversations" : "Hide conversations"
+                }
                 onClick={() => setSidebarCollapsed((prev) => !prev)}
                 className="relative inline-flex size-9 items-center justify-center rounded-sm border border-transparent text-muted transition-colors duration-150 ease-out-quart after:absolute after:-inset-0.5 after:content-[''] hover:border-rule-strong hover:text-ink"
               >
@@ -383,10 +450,11 @@ export function Shell({ left }: { left?: ReactNode }) {
                 )}
               </button>
             )}
-            <span className="text-sm font-medium tracking-tight text-ink">Sagent Studio</span>
+            <span className="text-sm font-medium tracking-tight text-ink">
+              Sagent Studio
+            </span>
           </div>
           <div className="flex items-center gap-1">
-            <Shortcuts />
             <Button
               type="button"
               size="sm"
@@ -417,8 +485,8 @@ export function Shell({ left }: { left?: ReactNode }) {
             icon={panel.icon}
             active={rail.open && rail.activePanel === panel.id}
             onClick={(event) => {
-              railTriggerRef.current = event.currentTarget
-              togglePanel(panel.id)
+              railTriggerRef.current = event.currentTarget;
+              togglePanel(panel.id);
             }}
           />
         ))}
@@ -453,5 +521,5 @@ export function Shell({ left }: { left?: ReactNode }) {
         </OverlayDialog>
       ) : null}
     </div>
-  )
+  );
 }
