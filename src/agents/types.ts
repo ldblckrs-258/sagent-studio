@@ -57,14 +57,6 @@ export interface AgentRunResult {
   stopReason?: AgentStopReason
 }
 
-export type AgentRunEvent =
-  | { type: 'text-delta'; text: string }
-  | { type: 'tool-call'; toolName: string; toolCallId: string; input: unknown }
-  | { type: 'tool-result'; toolName: string; toolCallId: string; output?: unknown }
-  | { type: 'tool-error'; toolName: string; toolCallId: string; error: string }
-  | { type: 'approval-requested'; approvalId: string; toolName: string; input: unknown }
-  | { type: 'user-message'; text: string }
-
 /** The read side of a run's steering channel, consumed by the runner. */
 export interface AgentSteeringHandle {
   drain(): string[]

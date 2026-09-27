@@ -18,6 +18,7 @@ describe("SubAgentReport", () => {
     expect(html).toContain("Completed");
     expect(html).toContain("Four call sites, all in the vault layer.");
     expect(html).toContain("untrusted output");
+    expect(html).toContain("Open run");
     expect(html).toContain("run-7c21");
   });
 

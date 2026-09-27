@@ -34,6 +34,7 @@ import { useAgentPanelStore } from "../session/agent-panel-state";
 import { useFileViewStore } from "../session/file-view-state";
 import { useSession } from "../session/session-context";
 import { useVaultStore } from "../vault/store";
+import { AgentRunView } from "./agent-run-view";
 import { AgentsPanel } from "./panels/agents";
 import { ApprovalsPanel } from "./panels/approvals";
 import type { ConfigTab } from "./panels/chat-config";
@@ -338,21 +339,10 @@ export function Shell({ left }: { left?: ReactNode }) {
   const openWorkspacePanel = () =>
     setRail((prev) => ({ ...prev, open: true, activePanel: "workspace" }));
 
-  // A sub-agent tool call in the transcript selects a run through the shared
-  // store; watch it so that click reveals the Agents panel without the caller
-  // reaching into the shell's local rail state.
-  useEffect(
-    () =>
-      useAgentPanelStore.subscribe((state) => {
-        if (state.selectedRunId === null) return;
-        setRail((prev) =>
-          prev.open && prev.activePanel === "agents"
-            ? prev
-            : { ...prev, open: true, activePanel: "agents" },
-        );
-      }),
-    [],
-  );
+  const selectedRunId = useAgentPanelStore((s) => s.selectedRunId);
+  useEffect(() => {
+    useAgentPanelStore.getState().clear();
+  }, [activeThreadId]);
 
   const panels: RailPanelDef[] = [
     {
@@ -514,9 +504,13 @@ export function Shell({ left }: { left?: ReactNode }) {
         <PlanPanel />
 
         <div className="min-h-0 flex-1">
-          <AssistantRuntimeProvider runtime={runtime}>
-            <Thread />
-          </AssistantRuntimeProvider>
+          {selectedRunId !== null ? (
+            <AgentRunView key={selectedRunId} runId={selectedRunId} />
+          ) : (
+            <AssistantRuntimeProvider runtime={runtime}>
+              <Thread />
+            </AssistantRuntimeProvider>
+          )}
         </div>
       </main>
 

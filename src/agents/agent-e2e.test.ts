@@ -424,6 +424,69 @@ describe('agent delegation end to end', () => {
     expect(noticePartOf(settledMessage)?.data).toMatchObject({ status: 'completed' })
   })
 
+  it('keeps a mid-turn notice where it arrived as later parts stream in', async () => {
+    let releaseParent!: () => void
+    const parentGate = new Promise<void>((resolve) => {
+      releaseParent = resolve
+    })
+    let settle!: () => void
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    const sub = new MockLanguageModelV4({ doStream: [{ stream: streamOf(textStep('s1', 'background result')) }] })
+    const parent = new MockLanguageModelV4({
+      doStream: [
+        {
+          stream: streamOf(
+            toolStep('c1', 'spawn_agent', {
+              prompt: 'research the topic',
+              mode: 'god',
+              tier: 'cheap',
+              background: true,
+            }),
+          ),
+        },
+        {
+          stream: new ReadableStream<Chunk>({
+            async start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] })
+              controller.enqueue({ type: 'text-start', id: 't2' })
+              controller.enqueue({ type: 'text-delta', id: 't2', delta: 'before the notice' })
+              controller.enqueue({ type: 'text-end', id: 't2' })
+              await parentGate
+              controller.enqueue({ type: 'text-start', id: 't3' })
+              controller.enqueue({ type: 'text-delta', id: 't3', delta: 'after the notice' })
+              controller.enqueue({ type: 'text-end', id: 't3' })
+              controller.enqueue({ type: 'finish', usage, finishReason: { unified: 'stop', raw: undefined } })
+              controller.close()
+            },
+          }),
+        },
+      ],
+    })
+    const { engine } = build({
+      settings: settingsWith({ cheap: { providerId: 'sub', modelId: 'm' } }),
+      modelFactory: (_settings, providerId) =>
+        (providerId === 'sub' ? sub : parent) as unknown as LanguageModel,
+      onSettled: settle,
+    })
+    seed()
+
+    const turn = engine.sendTurn('th1', 'delegate in the background')
+    await settled
+    releaseParent()
+    await turn
+
+    const parts = useChatStore.getState().threads.th1.messages.at(-1)!.parts
+    const index = (predicate: (part: UIMessage['parts'][number]) => boolean) => parts.findIndex(predicate)
+    const before = index((part) => part.type === 'text' && part.text === 'before the notice')
+    const notice = index((part) => part.type === 'data-agent-notice')
+    const after = index((part) => part.type === 'text' && part.text === 'after the notice')
+    expect(before).toBeGreaterThanOrEqual(0)
+    expect(notice).toBeGreaterThan(before)
+    expect(after).toBeGreaterThan(notice)
+  })
+
   it('appends a standalone notice when the thread is idle', async () => {
     const { engine, threadStore } = build({
       settings: settingsWith({}),
@@ -534,6 +597,35 @@ describe('agent delegation end to end', () => {
     // Every control method is scoped to the calling conversation.
     await expect(runtime.read('other', runId)).resolves.toBeNull()
     await expect(runtime.resolveRun('other', { runId })).resolves.toBeNull()
+  })
+
+  it('persists each child tool call with its real result, so a reload shows it', async () => {
+    const sub = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('k1', 'read_file', { path: 'a' })) },
+        { stream: streamOf(textStep('s2', 'done')) },
+      ],
+    })
+    const { runtime, threads, store } = build({
+      settings: settingsWith({ cheap: { providerId: 'sub', modelId: 'm' } }),
+      modelFactory: () => sub as unknown as LanguageModel,
+    })
+
+    const outcome = await runtime.spawn(
+      { ...parentContext(), toolNames: ['read_file'] },
+      { prompt: 'go', mode: 'god', tier: 'cheap' },
+      {},
+    )
+    const runId = (outcome as { runId: string }).runId
+    const persisted = threads.get(runId)
+    expect(persisted).toBeDefined()
+    const reloaded = rehydrateThread(persisted as ChatThread)
+    const toolPart = reloaded.messages
+      .flatMap((message) => message.parts)
+      .find((part) => part.type === 'tool-read_file') as unknown as { state: string; output: unknown }
+
+    expect(toolPart).toMatchObject({ state: 'output-available', output: 'file contents' })
+    expect(reloaded.messages).toEqual(store.get(runId)?.messages)
   })
 
   it('uses the explicitly requested max tier', async () => {

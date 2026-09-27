@@ -3,7 +3,7 @@ import {
   Bot,
   CircleStop,
   Loader,
-  PanelRightOpen,
+  SquareArrowOutUpRight,
   Radio,
   ScrollText,
   TriangleAlert,
@@ -88,7 +88,7 @@ function openTargetLabel(args: Record<string, unknown>, envelope: ToolEnvelope |
 
 /**
  * The header action for a call that owns a run: it writes the run id to the
- * shared panel store, so the shell reveals the Agents rail on that run. It sits
+ * shared panel store, so the shell opens that run in place of the conversation. It sits
  * beside the disclosure trigger, so it stays clickable while the body is shut.
  */
 function AgentOpenAction({ args, envelope }: ToolDetailProps) {
@@ -100,11 +100,11 @@ function AgentOpenAction({ args, envelope }: ToolDetailProps) {
       type="button"
       data-slot="agent-open-panel"
       onClick={() => useAgentPanelStore.getState().open(runId)}
-      aria-label={label ? `Open ${label} in the Agents panel` : "Open in the Agents panel"}
-      title="Open in the Agents panel"
+      aria-label={label ? `Open the ${label} run` : "Open the run"}
+      title="Open the run"
       className="border-rule text-muted hover:border-muted hover:text-ink focus-visible:ring-accent-rule inline-flex size-6 shrink-0 items-center justify-center rounded-sm border transition-colors duration-150 ease-out-quart focus-visible:ring-2 focus-visible:outline-none"
     >
-      <PanelRightOpen size={13} strokeWidth={1.75} aria-hidden="true" />
+      <SquareArrowOutUpRight size={13} strokeWidth={1.75} aria-hidden="true" />
     </button>
   );
 }
@@ -166,7 +166,7 @@ function Outcome({ args, envelope, status }: ToolDetailProps) {
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-ink text-xs">Running in the background.</span>
             <span className="text-faint text-[11px] leading-relaxed">
-              Progress and approval requests appear in the Agents panel. A notice lands here
+              Open the run to follow its progress. Approval requests appear in the Agents panel. A notice lands here
               when it finishes.
             </span>
             {runId !== undefined && runId.length > 0 && (

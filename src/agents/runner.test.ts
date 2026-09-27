@@ -1,4 +1,4 @@
-import type { LanguageModel } from 'ai'
+import type { LanguageModel, UIMessage } from 'ai'
 import { jsonSchema, tool } from 'ai'
 import { MockLanguageModelV4 } from 'ai/test'
 import { describe, expect, it, vi } from 'vitest'
@@ -12,7 +12,6 @@ import { runAgent } from './runner'
 import type { AgentRunInput } from './runner'
 import type {
   AgentParentContext,
-  AgentRunEvent,
   AgentSteeringControl,
   AgentStopReason,
 } from './types'
@@ -171,6 +170,22 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
   }
 }
 
+type ToolPartView = { type: string; state?: string; output?: unknown; errorText?: string }
+
+function toolParts(messages: readonly UIMessage[]): ToolPartView[] {
+  return messages.flatMap((message) =>
+    message.parts.filter((part) => part.type.startsWith('tool-')),
+  ) as unknown as ToolPartView[]
+}
+
+function textOf(message: UIMessage): string {
+  return message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('')
+}
+
+function userTexts(messages: readonly UIMessage[]): string[] {
+  return messages.filter((message) => message.role === 'user').map(textOf)
+}
+
 describe('runAgent', () => {
   it('runs a tool and returns the model text', async () => {
     const model = new MockLanguageModelV4({
@@ -188,6 +203,66 @@ describe('runAgent', () => {
     expect(result.toolCalls).toBe(1)
     expect(executed).toEqual(['read_file'])
     expect(result.text).toContain('all done')
+  })
+
+  it('carries each tool call\u2019s real output into the transcript, never an empty result', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'read_file', { path: 'a.txt' })) },
+        { stream: streamOf(textStep('t2', 'all done')) },
+      ],
+    })
+    const { controller, deps } = buildDeps(model, [])
+    let latest: UIMessage[] = []
+
+    await runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
+    })
+
+    expect(latest[0]).toMatchObject({ role: 'user', parts: [{ type: 'text', text: 'do the thing' }] })
+    const [part] = toolParts(latest)
+    expect(part).toMatchObject({ type: 'tool-read_file', state: 'output-available' })
+    expect(part.output).toBe('read_file:ok')
+    expect(textOf(latest[latest.length - 1])).toBe('all done')
+  })
+
+  it('shows a call as running until its result arrives', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{ stream: streamOf(toolStep('c1', 'create_skill', {})) }],
+    })
+    const { controller, deps, queue } = buildDeps(model, [])
+    let latest: UIMessage[] = []
+
+    const run = runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
+    })
+    await waitFor(() => queue.pending().length > 0)
+
+    expect(toolParts(latest)[0]?.state).toBe('input-available')
+    controller.abort()
+    await run
+    const [settled] = toolParts(latest)
+    expect(settled.state).toBe('output-error')
+    expect(settled.output).toBeUndefined()
+  })
+
+  it('records a denied call as denied rather than as an empty success', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'create_skill', {})) },
+        { stream: streamOf(textStep('t2', 'skipped it')) },
+      ],
+    })
+    const settings = defaultSettings()
+    settings.approvals = { tools: { create_skill: 'deny' } }
+    const { controller, deps } = buildDeps(model, [], { settings })
+    let latest: UIMessage[] = []
+
+    await runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
+    })
+
+    expect(toolParts(latest)[0]?.state).toBe('output-denied')
   })
 
   it('short-circuits a denied tool without executing it', async () => {
@@ -256,12 +331,13 @@ describe('runAgent', () => {
     const executed: string[] = []
     const steering = steeringControl()
     const { controller, deps } = buildDeps(model, executed, { steering: steering.control })
-    const events: AgentRunEvent[] = []
+    let latest: UIMessage[] = []
     let enqueued = false
 
-    const result = await runAgent(input(), deps, controller.signal, (event) => {
-      events.push(event)
-      if (!enqueued && event.type === 'text-delta') {
+    const result = await runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
+      const last = messages[messages.length - 1]
+      if (!enqueued && last?.role === 'assistant' && textOf(last).includes('first answer')) {
         enqueued = true
         steering.enqueue('please steer')
       }
@@ -270,9 +346,9 @@ describe('runAgent', () => {
     expect(result.status).toBe('completed')
     expect(model.doStreamCalls).toHaveLength(3)
     expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain('please steer')
-    expect(
-      events.some((event) => event.type === 'user-message' && event.text === 'please steer'),
-    ).toBe(true)
+    expect(latest.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(userTexts(latest)).toEqual(['do the thing', 'please steer'])
+    expect(textOf(latest[3])).toBe('steered answer')
     expect(result.text).toContain('steered answer')
   })
 
@@ -292,13 +368,13 @@ describe('runAgent', () => {
       requestStop: () => {},
     }
     const { controller, deps } = buildDeps(model, executed, { steering })
-    let userMessages = 0
+    let latest: UIMessage[] = []
 
-    await runAgent(input(), deps, controller.signal, (event) => {
-      if (event.type === 'user-message') userMessages += 1
+    await runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
     })
 
-    expect(userMessages).toBe(30)
+    expect(userTexts(latest).filter((text) => text === 'keep going')).toHaveLength(30)
     expect(model.doStreamCalls).toHaveLength(31)
   })
 
@@ -324,11 +400,19 @@ describe('runAgent', () => {
     const { controller, deps } = buildDeps(model, executed, { steering })
     let enqueuedSecond = false
 
-    const result = await runAgent(input(), deps, controller.signal, (event) => {
+    let enqueuedFirst = false
+    let latest: UIMessage[] = []
+
+    const result = await runAgent(input(), deps, controller.signal, (messages) => {
+      latest = messages
       // The tool result lets the next step's prepareStep inject; the second
       // steer is queued too late for that step, so it triggers the next pass.
-      if (event.type === 'tool-call') steering.enqueue('first steer')
-      if (!enqueuedSecond && event.type === 'text-delta' && event.text === 'first answer') {
+      if (!enqueuedFirst && toolParts(messages).length > 0) {
+        enqueuedFirst = true
+        steering.enqueue('first steer')
+      }
+      const last = messages[messages.length - 1]
+      if (!enqueuedSecond && last?.role === 'assistant' && textOf(last).includes('first answer')) {
         enqueuedSecond = true
         steering.enqueue('second steer')
       }
@@ -339,6 +423,11 @@ describe('runAgent', () => {
     // Pass 1 injected 'first steer' through its `prepareStep` override; pass 2
     // (the third model call) must still carry it in its own prompt.
     expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain('first steer')
+    expect(userTexts(latest)).toEqual(['do the thing', 'first steer', 'second steer'])
+    const firstSteer = latest.findIndex((message) => textOf(message) === 'first steer')
+    expect(toolParts(latest.slice(0, firstSteer))).toHaveLength(1)
+    expect(textOf(latest[firstSteer + 1])).toBe('first answer')
+    expect(textOf(latest[latest.length - 1])).toBe('second answer')
   })
 
   it('closes the steering channel once the run settles', async () => {

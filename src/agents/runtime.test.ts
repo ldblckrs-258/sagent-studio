@@ -1,4 +1,4 @@
-import type { LanguageModel } from 'ai'
+import type { LanguageModel, UIMessage } from 'ai'
 import { jsonSchema, tool } from 'ai'
 import { MockLanguageModelV4 } from 'ai/test'
 import { describe, expect, it, vi } from 'vitest'
@@ -184,10 +184,23 @@ function settledRecord(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord 
     toolCalls: 1,
     approvals: [],
     startedAt: 1,
-    events: [
-      { type: 'text-delta', text: 'thinking' },
-      { type: 'tool-call', toolName: 'read_file', toolCallId: 'c1', input: {} },
-      { type: 'text-delta', text: 'hello' },
+    messages: [
+      { id: 'p', role: 'user', parts: [{ type: 'text', text: 'do the task' }] },
+      {
+        id: 'a',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'thinking' },
+          {
+            type: 'tool-read_file',
+            toolCallId: 'c1',
+            state: 'output-available',
+            input: {},
+            output: 'ok',
+          },
+          { type: 'text', text: 'hello' },
+        ] as UIMessage['parts'],
+      },
     ],
     ...overrides,
   }
@@ -222,6 +235,33 @@ describe('createAgentRuntime', () => {
     expect(store.list()).toHaveLength(1)
     expect(store.list()[0].status).toBe('completed')
     expect(onSettle).not.toHaveBeenCalled()
+  })
+
+  it('keeps the settled status when an earlier mid-run save finishes last', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 450))
+        return { stream: textStep('t1', 'done') }
+      },
+    })
+    const written: string[] = []
+    let saves = 0
+    const persistence: AgentRunPersistence = {
+      create: async () => {},
+      save: async (next) => {
+        saves += 1
+        if (saves === 1) await new Promise((resolve) => setTimeout(resolve, 60))
+        written.push(next.status)
+      },
+      load: async () => null,
+      list: async () => [],
+    }
+    const { runtime } = build(model, persistence)
+
+    await runtime.spawn(context(), { prompt: 'go', mode: 'read_only', tier: 'cheap' })
+
+    expect(written.length).toBeGreaterThan(1)
+    expect(written.at(-1)).toBe('completed')
   })
 
   it('settles a background run and calls onSettle once', async () => {
@@ -340,9 +380,10 @@ describe('createAgentRuntime', () => {
     const { runtime, store } = build(pendingModel())
     store.register(
       settledRecord({
-        events: Array.from({ length: 60 }, (_, index) => ({
-          type: 'user-message' as const,
-          text: `steer ${index}`,
+        messages: Array.from({ length: 60 }, (_, index) => ({
+          id: `s${index}`,
+          role: 'user' as const,
+          parts: [{ type: 'text' as const, text: `steer ${index}` }],
         })),
       }),
     )

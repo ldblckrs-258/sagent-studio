@@ -121,8 +121,12 @@ lets a task run while you keep going.
   summary notice to the conversation when it settles. That notice lands inline in the turn
   that was still streaming when the agent finished, or as its own card when the
   conversation is idle. The conversation does not continue on its own.
-- **Steer or force-stop a live run.** Select a run in the **Agents** panel to open its flow,
-  send it a steering message it picks up at its next step, or force-stop it. A stopped run
+- **Open a run like a conversation.** The **Agents** panel lists runs with their status,
+  current activity, tool count, and elapsed time. Selecting one opens it full-width in place
+  of the conversation, with the same messages, tool results, and composer as the main thread;
+  **Conversation** or Esc returns. Switching conversations closes it.
+- **Steer or force-stop a live run.** From an open run, send a steering message it picks up
+  at its next step, or force-stop it. A stopped run
   settles with the **stopped** status (reason `user_stop`) instead of a failure. The main
   model can do the same with the `stop_agent` tool, and read a run's most recent turns with
   `read_agent`.
@@ -130,7 +134,7 @@ lets a task run while you keep going.
   delegated, then the agent's returned text, with its tier and mode on the header and a tool
   call and token count on the result. A background run lands as its own sub-agent report card
   when it settles, carrying the agent's name, its outcome, and the returned text. The call's
-  card also has an **Open in panel** action that jumps straight to that run in the Agents panel.
+  card and the report card both have an **Open run** action that opens that run full-width.
 - **Mode is capped.** A sub-agent never runs above the conversation's own mode. In an
   *Editing* conversation, a request for *Full access* runs as *Editing*.
 - **A subset of your tools.** A sub-agent can only use tools you already have, and never

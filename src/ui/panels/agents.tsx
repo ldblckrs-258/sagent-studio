@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, ChevronRight } from "lucide-react";
+import { Bot, CircleStop, Loader } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { agentRunStore } from "../../agents/store";
 import { listAgentRuns } from "../../chat/persistence";
@@ -8,30 +8,22 @@ import { useChatStore } from "../../chat/store";
 import type { ChatThread } from "../../chat/types";
 import { useAgentPanelStore } from "../../session/agent-panel-state";
 import { useSession } from "../../session/session-context";
-import { asMode, asTier, ModeChip, TierChip } from "../agent-chips";
+import { pluralize } from "../../components/assistant-ui/elements/tool-view/helpers";
+import { ToolChip } from "../../components/assistant-ui/elements/tool-view/primitives";
+import { asTier, TierChip } from "../agent-chips";
 import { AgentApprovalCard } from "../agent-approval";
+import { activityOf, elapsed, isRunning, STATUS_DOT, toolCallCount } from "../agent-status";
 import { Button, EmptyState } from "../primitives";
 import { useRegistryVersion } from "../use-registry-version";
-import { AgentFlowView, STATUS_TINT, elapsed } from "./agent-flow-view";
-
-const STATUS_DOT: Record<string, string> = {
-  running: "bg-accent",
-  completed: "bg-positive",
-  interrupted: "bg-caution",
-  denied: "bg-caution",
-  aborted: "bg-muted",
-  stopped: "bg-caution",
-  error: "bg-danger",
-  limit_exceeded: "bg-danger",
-  invalid_input: "bg-danger",
-};
 
 export function RunRow({
   title,
   tier,
-  mode,
   status,
+  activity,
+  toolCalls,
   elapsedText,
+  hasApproval = false,
   selected,
   stopping,
   onSelect,
@@ -40,71 +32,75 @@ export function RunRow({
 }: {
   title: string;
   tier: string;
-  mode: string;
   status: string;
+  activity: string;
+  toolCalls: number;
   elapsedText: string;
+  hasApproval?: boolean;
   selected: boolean;
   stopping?: boolean;
   onSelect(): void;
   onStop?: () => void;
   rowRef?: (element: HTMLButtonElement | null) => void;
 }) {
-  const running = status === "running";
+  const running = isRunning(status);
   return (
     <div
       className={`border-rule border-b transition-colors duration-150 ${
         selected ? "bg-accent-soft/40" : ""
       }`}
     >
-      <div className="flex items-center gap-1.5 px-1.5 py-1.5">
+      <div className="flex items-start gap-1.5 px-1.5 py-1.5">
         <button
           type="button"
           ref={rowRef}
           aria-current={selected ? "true" : undefined}
           onClick={onSelect}
-          className="ease-out-quart group flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-sm text-left transition-colors duration-150 hover:text-ink focus-visible:ring-2 focus-visible:ring-accent-rule focus-visible:outline-none"
+          className="ease-out-quart group flex min-h-11 min-w-0 flex-1 flex-col gap-1 rounded-sm py-0.5 text-left transition-colors duration-150 hover:text-ink focus-visible:ring-2 focus-visible:ring-accent-rule focus-visible:outline-none"
         >
-          <span
-            aria-hidden="true"
-            className={`size-2 shrink-0 rounded-full ${STATUS_DOT[status] ?? "bg-muted"}`}
-          />
-          <span className="min-w-0 flex-1 truncate text-xs text-ink">{title}</span>
-          <ChevronRight
-            size={13}
-            strokeWidth={1.75}
-            className="text-faint shrink-0 transition-transform duration-150 group-hover:translate-x-0.5"
-            aria-hidden="true"
-          />
+          <span className="flex min-w-0 items-center gap-1.5">
+            {running ? (
+              <Loader
+                size={12}
+                strokeWidth={2}
+                className="text-accent shrink-0 animate-spin [animation-duration:1s]"
+                aria-hidden="true"
+              />
+            ) : (
+              <span
+                aria-hidden="true"
+                className={`size-2 shrink-0 rounded-full ${STATUS_DOT[status] ?? "bg-muted"}`}
+              />
+            )}
+            <span className="sr-only">{status}</span>
+            <span className="min-w-0 flex-1 truncate text-xs text-ink">{title}</span>
+            {hasApproval ? <ToolChip tone="caution">approval</ToolChip> : null}
+          </span>
+          <span className="text-faint min-w-0 truncate pl-[18px] text-[11px]">
+            {activity.length > 0 ? activity : " "}
+          </span>
+          <span className="flex flex-wrap items-center gap-1.5 pl-[18px]">
+            <TierChip tier={asTier(tier)} />
+            <span className="text-faint text-[10px]">· {pluralize(toolCalls, "tool")} ·</span>
+            <span className="numeric text-faint ms-auto font-mono text-[10px]">{elapsedText}</span>
+          </span>
         </button>
         {running && onStop ? (
           <Button
             size="sm"
             variant="quiet"
+            icon={<CircleStop size={13} strokeWidth={1.75} />}
             onClick={onStop}
             disabled={stopping}
             aria-label="Stop agent run"
             className="shrink-0"
-          >
-            {stopping ? "Stopping…" : "Stop"}
-          </Button>
+          />
         ) : null}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 px-1.5 pb-2 pl-[22px]">
-        <span className={`text-[11px] ${STATUS_TINT[status] ?? "text-muted"}`}>{status}</span>
-        <ModeChip mode={asMode(mode)} />
-        <TierChip tier={asTier(tier)} />
-        <span className="numeric text-faint ms-auto font-mono text-[10px]">{elapsedText}</span>
       </div>
     </div>
   );
 }
 
-/**
- * Live and persisted delegated runs for the active conversation. The panel is a
- * two-state surface: a sectioned list (active runs first), and the flow of the
- * run the user opened. Selection lives in `useAgentPanelStore` so a sub-agent
- * tool call in the transcript can open the panel straight to its run.
- */
 export function AgentsPanel() {
   const session = useSession();
   const activeThreadId = useChatStore((s) => s.activeThreadId);
@@ -114,7 +110,7 @@ export function AgentsPanel() {
   const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
-  const focusTargetRef = useRef<string | null>(null);
+  const previousSelectedRef = useRef<string | null>(null);
 
   const live = agentRunStore.list(activeThreadId ?? undefined);
   const liveIds = new Set(live.map((run) => run.runId));
@@ -135,21 +131,11 @@ export function AgentsPanel() {
     };
   }, [activeThreadId, loadKey]);
 
-  const selectedLive = selectedRunId
-    ? live.find((run) => run.runId === selectedRunId)
-    : undefined;
-  const selectedThread = selectedRunId
-    ? persisted.find((thread) => thread.id === selectedRunId)
-    : undefined;
-  const showDetail =
-    selectedRunId !== null && (selectedLive !== undefined || selectedThread !== undefined);
-
   useEffect(() => {
-    if (selectedRunId !== null) return;
-    const target = focusTargetRef.current;
-    if (target === null) return;
-    focusTargetRef.current = null;
-    rowRefs.current.get(target)?.focus();
+    if (selectedRunId === null && previousSelectedRef.current !== null) {
+      rowRefs.current.get(previousSelectedRef.current)?.focus();
+    }
+    previousSelectedRef.current = selectedRunId;
   }, [selectedRunId]);
 
   const anyRunning = live.some((run) => run.status === "running");
@@ -162,18 +148,18 @@ export function AgentsPanel() {
   const approvals = agentRunStore.pendingApprovals(activeThreadId ?? undefined);
   const approvalsWithLabel = useMemo(
     () =>
-      approvals.map((approval) => ({
-        approval,
-        label: live.find((run) => run.runId === approval.runId)?.label,
-      })),
-    [approvals, live],
+      approvals
+        .filter((approval) => approval.runId !== selectedRunId)
+        .map((approval) => ({
+          approval,
+          label: live.find((run) => run.runId === approval.runId)?.label,
+        })),
+    [approvals, live, selectedRunId],
   );
-  const visibleApprovals = showDetail
-    ? approvalsWithLabel.filter((entry) => entry.approval.runId !== selectedRunId)
-    : approvalsWithLabel;
 
-  const activeRuns = live.filter((run) => run.status === "running");
-  const recentLive = live.filter((run) => run.status !== "running");
+  const activeRuns = live.filter((run) => run.status === "running" || run.approvals.length > 0);
+  const activeIds = new Set(activeRuns.map((run) => run.runId));
+  const recentLive = live.filter((run) => !activeIds.has(run.runId));
   const recentPersisted = persisted.filter(
     (thread) => !liveIds.has(thread.id) && thread.agent !== undefined,
   );
@@ -190,28 +176,15 @@ export function AgentsPanel() {
     }
   }
 
-  function back(): void {
-    if (selectedRunId !== null) focusTargetRef.current = selectedRunId;
-    useAgentPanelStore.getState().clear();
-  }
-
   const empty = live.length === 0 && persisted.length === 0;
 
   return (
     <div className="flex min-w-0 flex-col py-1">
-      {visibleApprovals.map(({ approval, label }) => (
+      {approvalsWithLabel.map(({ approval, label }) => (
         <AgentApprovalCard key={approval.id} approval={approval} {...(label ? { label } : {})} />
       ))}
 
-      {showDetail && selectedRunId !== null ? (
-        <AgentFlowView
-          key={selectedRunId}
-          runId={selectedRunId}
-          persisted={persisted}
-          now={now}
-          onBack={back}
-        />
-      ) : empty ? (
+      {empty ? (
         <div className="px-3 py-4">
           <EmptyState
             icon={<Bot size={18} strokeWidth={1.5} />}
@@ -231,9 +204,11 @@ export function AgentsPanel() {
               key={run.runId}
               title={run.label || run.prompt.slice(0, 60) || "Agent run"}
               tier={run.tier}
-              mode={run.mode}
               status={run.status}
+              activity={activityOf(run.messages, run.status)}
+              toolCalls={run.toolCalls}
               elapsedText={elapsed(run.startedAt, run.endedAt, now)}
+              hasApproval={run.approvals.length > 0}
               selected={selectedRunId === run.runId}
               stopping={stopping.has(run.runId)}
               onSelect={() => useAgentPanelStore.getState().open(run.runId)}
@@ -253,8 +228,9 @@ export function AgentsPanel() {
               key={run.runId}
               title={run.label || run.prompt.slice(0, 60) || "Agent run"}
               tier={run.tier}
-              mode={run.mode}
               status={run.status}
+              activity={activityOf(run.messages, run.status)}
+              toolCalls={run.toolCalls}
               elapsedText={elapsed(run.startedAt, run.endedAt, now)}
               selected={selectedRunId === run.runId}
               onSelect={() => useAgentPanelStore.getState().open(run.runId)}
@@ -272,8 +248,9 @@ export function AgentsPanel() {
                 key={thread.id}
                 title={meta.label || thread.title}
                 tier={meta.tier}
-                mode={meta.mode}
                 status={meta.status}
+                activity={activityOf(thread.messages, meta.status)}
+                toolCalls={toolCallCount(thread.messages)}
                 elapsedText={elapsed(thread.createdAt, thread.updatedAt, now)}
                 selected={selectedRunId === thread.id}
                 onSelect={() => useAgentPanelStore.getState().open(thread.id)}

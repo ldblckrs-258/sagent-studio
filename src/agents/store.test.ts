@@ -29,7 +29,7 @@ const base: AgentRunRecord = {
   tier: 'medium',
   status: 'running',
   prompt: 'do it',
-  events: [],
+  messages: [],
   text: '',
   toolCalls: 0,
   approvals: [],
@@ -43,7 +43,7 @@ describe('AgentRunStore', () => {
     store.subscribe(listener)
     const start = store.getVersion()
     store.register(base)
-    store.appendEvent('run-1', { type: 'text-delta', text: 'hi' })
+    store.setMessages('run-1', [{ id: 'a', role: 'assistant', parts: [{ type: 'text', text: 'hi' }] }])
     store.finish('run-1', { status: 'completed', mode: 'editing', tier: 'medium', text: 'hi', toolCalls: 0 })
     expect(store.getVersion()).toBeGreaterThan(start)
     expect(listener).toHaveBeenCalled()
@@ -81,7 +81,7 @@ describe('AgentRunStore', () => {
     expect(store.steer('run-1', 'first')).toBe(true)
     expect(store.steer('run-1', 'second')).toBe(true)
 
-    expect(store.get('run-1')?.events).toEqual([])
+    expect(store.get('run-1')?.messages).toEqual([])
     expect(steering.drain()).toEqual(['first', 'second'])
   })
 

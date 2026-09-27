@@ -1,8 +1,10 @@
+import type { UIMessage } from 'ai'
 import type { AgentRunStatus, AgentStopReason, ChatMode } from '../chat/types'
 import type { ModelTier } from '../vault/settings'
 import { useVaultStore } from '../vault/store'
 import type { AgentApprovalQueue, PendingAgentApproval } from './approval-queue'
-import type { AgentRunEvent, AgentRunResult, AgentSteeringControl } from './types'
+import { toolCallCount } from './run-transcript'
+import type { AgentRunResult, AgentSteeringControl } from './types'
 
 export interface AgentRunRecord {
   runId: string
@@ -12,8 +14,7 @@ export interface AgentRunRecord {
   tier: ModelTier
   status: AgentRunStatus
   prompt: string
-  events: AgentRunEvent[]
-  /** Accumulated assistant text; the event log is the source of the transcript. */
+  messages: UIMessage[]
   text: string
   toolCalls: number
   approvals: PendingAgentApproval[]
@@ -75,13 +76,10 @@ export class AgentRunStore {
     this.notify()
   }
 
-  appendEvent(runId: string, event: AgentRunEvent): void {
+  setMessages(runId: string, messages: UIMessage[]): void {
     const current = this.runs.get(runId)
     if (!current) return
-    const next: AgentRunRecord = { ...current, events: [...current.events, event] }
-    if (event.type === 'text-delta') next.text = current.text + event.text
-    if (event.type === 'tool-call') next.toolCalls = current.toolCalls + 1
-    this.runs.set(runId, next)
+    this.runs.set(runId, { ...current, messages, toolCalls: toolCallCount(messages) })
     this.notify()
   }
 
@@ -123,9 +121,9 @@ export class AgentRunStore {
   }
 
   /**
-   * Enqueues a steering turn for a live run. The runner records the
-   * `user-message` event when it drains the queue at the next step boundary, so
-   * the flow shows the turn at the point it was actually injected. A run that has
+   * Enqueues a steering turn for a live run. The runner adds it to the run's
+   * transcript when it drains the queue at the next step boundary, so the run
+   * shows the turn at the point it was actually injected. A run that has
    * already stopped draining (a settled step cap, an abort) refuses the steer so
    * the caller does not keep an optimistic echo that can never be delivered.
    */

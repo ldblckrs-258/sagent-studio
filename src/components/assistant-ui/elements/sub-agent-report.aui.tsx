@@ -1,5 +1,6 @@
-import { Bot, TriangleAlert } from "lucide-react";
+import { Bot, SquareArrowOutUpRight, TriangleAlert } from "lucide-react";
 import type { AgentNoticeMeta, AgentRunStatus } from "@/chat/types";
+import { useAgentPanelStore } from "@/session/agent-panel-state";
 import { MarkdownProse } from "@/ui/markdown-prose";
 import { Badge, type BadgeTone } from "@/ui/primitives";
 
@@ -67,7 +68,15 @@ export function SubAgentReport({ report }: { report: AgentNoticeMeta }) {
           untrusted output
         </span>
         {report.runId !== undefined && report.runId.length > 0 && (
-          <span className="ml-auto shrink-0 truncate font-mono">run {report.runId}</span>
+          <button
+            type="button"
+            data-slot="sub-agent-open-run"
+            onClick={() => useAgentPanelStore.getState().open(report.runId as string)}
+            className="text-muted hover:text-ink focus-visible:ring-accent-rule ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm font-mono transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <SquareArrowOutUpRight className="size-2.5" aria-hidden="true" />
+            Open run {report.runId}
+          </button>
         )}
       </div>
     </div>

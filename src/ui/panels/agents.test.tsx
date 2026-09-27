@@ -13,22 +13,51 @@ const running = vi.hoisted(() => ({
   tier: "high",
   status: "running",
   prompt: "map the repo",
-  events: [
-    { type: "text-delta", text: "scanning files" },
-    { type: "tool-call", toolName: "read_file", toolCallId: "c1", input: {} },
+  messages: [
+    { id: "run-1-prompt", role: "user", parts: [{ type: "text", text: "map the repo" }] },
+    {
+      id: "run-1-a0",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-list_dir",
+          toolCallId: "c1",
+          state: "input-available",
+          input: { path: "src" },
+        },
+      ],
+    },
   ],
-  text: "scanning files",
+  text: "",
   toolCalls: 1,
   approvals: [],
   startedAt: 1000,
 }));
 
+const awaitingApproval = vi.hoisted(() => ({
+  runId: "run-2",
+  parentThreadId: "t1",
+  label: "reviewer",
+  mode: "editing",
+  tier: "medium",
+  status: "interrupted",
+  prompt: "review the diff",
+  messages: [
+    { id: "run-2-prompt", role: "user", parts: [{ type: "text", text: "review the diff" }] },
+  ],
+  text: "",
+  toolCalls: 0,
+  approvals: [{ id: "a1", runId: "run-2", toolName: "write_file", input: {} }],
+  startedAt: 2000,
+}));
+
 vi.mock("../../agents/store", () => ({
   agentRunStore: {
-    list: () => [running],
-    get: (runId: string) => (runId === running.runId ? running : undefined),
-    pendingApprovals: () => [],
-    pendingApprovalCount: () => 0,
+    list: () => [running, awaitingApproval],
+    get: (runId: string) =>
+      [running, awaitingApproval].find((run) => run.runId === runId),
+    pendingApprovals: () => awaitingApproval.approvals,
+    pendingApprovalCount: () => awaitingApproval.approvals.length,
     subscribe: () => () => {},
     getVersion: () => 1,
     resolveApproval: vi.fn(),
@@ -55,7 +84,9 @@ vi.mock("../../session/session-context", () => ({
 }));
 
 vi.mock("../agent-approval", () => ({
-  AgentApprovalCard: () => null,
+  AgentApprovalCard: ({ label }: { label?: string }) => (
+    <div data-slot="approval-card">{label}</div>
+  ),
 }));
 
 import { useAgentPanelStore } from "../../session/agent-panel-state";
@@ -79,12 +110,6 @@ async function mount(node: ReactNode) {
   };
 }
 
-function buttonByText(container: HTMLElement, text: string): HTMLButtonElement | undefined {
-  return Array.from(container.querySelectorAll("button")).find(
-    (button) => button.textContent?.trim() === text,
-  );
-}
-
 beforeEach(() => {
   useAgentPanelStore.getState().clear();
   session.steerAgentRun.mockClear();
@@ -98,13 +123,14 @@ afterEach(() => {
 });
 
 describe("RunRow", () => {
-  it("marks the selected row with aria-current and keeps stop for running runs", () => {
+  it("marks the selected row with aria-current and keeps a stop button for a running run", () => {
     const markup = renderToStaticMarkup(
       <RunRow
         title="scout"
         tier="high"
-        mode="god"
         status="running"
+        activity="Listed src"
+        toolCalls={1}
         elapsedText="3s"
         selected
         onSelect={() => {}}
@@ -112,41 +138,81 @@ describe("RunRow", () => {
       />,
     );
     expect(markup).toContain('aria-current="true"');
-    expect(markup).toContain("Stop");
+    expect(markup).toContain("Listed src");
+    expect(markup).toContain('aria-label="Stop agent run"');
+  });
+
+  it("shows a pending-approval badge and no stop button for a settled run", () => {
+    const markup = renderToStaticMarkup(
+      <RunRow
+        title="reviewer"
+        tier="medium"
+        status="completed"
+        activity="Done."
+        toolCalls={2}
+        elapsedText="10s"
+        hasApproval
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(markup).toContain("approval");
+    expect(markup).not.toContain('aria-label="Stop agent run"');
   });
 });
 
 describe("AgentsPanel", () => {
-  it("selects a run, renders its flow, then returns to the list on back", async () => {
+  it("groups a running run and a settled run awaiting approval under Active", async () => {
     const panel = await mount(<AgentsPanel />);
-    const row = buttonByText(panel.container, "scout");
+    const activeHeading = Array.from(panel.container.querySelectorAll("p")).find((node) =>
+      node.textContent?.startsWith("Active"),
+    );
+    expect(activeHeading?.textContent).toContain("2");
+    expect(panel.container.textContent).toContain("scout");
+    expect(panel.container.textContent).toContain("reviewer");
+    expect(panel.container.textContent).toContain("approval");
+    expect(panel.container.querySelectorAll('[aria-label="Stop agent run"]')).toHaveLength(1);
+    panel.unmount();
+  });
+
+  it("shows the running tool's label as the row's activity line", async () => {
+    const panel = await mount(<AgentsPanel />);
+    expect(panel.container.textContent).toContain("Listed src");
+    panel.unmount();
+  });
+
+  it("opens a run in the shared panel store instead of rendering it in place", async () => {
+    const panel = await mount(<AgentsPanel />);
+    const row = Array.from(panel.container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("scout"),
+    );
     expect(row).not.toBeUndefined();
 
     act(() => {
       row?.click();
     });
-    expect(panel.container.querySelector("textarea")).not.toBeNull();
-    expect(panel.container.textContent).toContain("scanning files");
 
-    const back = panel.container.querySelector('[aria-label="Back to agent list"]');
-    act(() => {
-      (back as HTMLButtonElement).click();
-    });
-    const restored = buttonByText(panel.container, "scout");
-    expect(restored).not.toBeUndefined();
+    expect(useAgentPanelStore.getState().selectedRunId).toBe("run-1");
     expect(panel.container.querySelector("textarea")).toBeNull();
-    expect(document.activeElement).toBe(restored);
+    panel.unmount();
+  });
 
+  it("highlights the selected row without rendering an inline run view", async () => {
+    useAgentPanelStore.getState().open("run-1");
+    const panel = await mount(<AgentsPanel />);
+    const selected = panel.container.querySelector('[aria-current="true"]');
+    expect(selected?.textContent).toContain("scout");
+    expect(panel.container.querySelector("textarea")).toBeNull();
     panel.unmount();
   });
 
   it("force-stops a running run from its row", async () => {
     const panel = await mount(<AgentsPanel />);
-    const stop = buttonByText(panel.container, "Stop");
-    expect(stop).not.toBeUndefined();
+    const stop = panel.container.querySelector('[aria-label="Stop agent run"]');
+    expect(stop).not.toBeNull();
 
     act(() => {
-      stop?.click();
+      (stop as HTMLButtonElement).click();
     });
     expect(session.stopAgentRun).toHaveBeenCalledWith("run-1");
 

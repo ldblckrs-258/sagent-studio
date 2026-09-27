@@ -91,6 +91,7 @@ import {
   type ComponentType,
   type FC,
   type PropsWithChildren,
+  type ReactNode,
 } from "react";
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
@@ -188,6 +189,41 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
 
   return (
+    <ThreadShell
+      isEmpty={isEmpty}
+      lead={
+        <>
+          <AuiIf condition={isNewChatView}>
+            <Welcome />
+          </AuiIf>
+          <AuiIf condition={isHistoryLoadingView}>
+            <ThreadHistorySkeleton />
+          </AuiIf>
+        </>
+      }
+      afterMessages={<CompactionIndicator />}
+      footer={
+        <>
+          <ThreadFollowupSuggestions />
+          <ChatErrorBanner />
+          <Composer autoFocus={autoFocus} />
+          <ContextMeter />
+          <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
+            <ThreadSuggestions />
+          </AuiIf>
+        </>
+      }
+    />
+  );
+};
+
+export const ThreadShell: FC<{
+  isEmpty?: boolean;
+  lead?: ReactNode;
+  afterMessages?: ReactNode;
+  footer: ReactNode;
+}> = ({ isEmpty = false, lead, afterMessages, footer }) => {
+  return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root bg-background @container flex h-full flex-col"
       style={{
@@ -208,12 +244,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             isEmpty && "justify-center",
           )}
         >
-          <AuiIf condition={isNewChatView}>
-            <Welcome />
-          </AuiIf>
-          <AuiIf condition={isHistoryLoadingView}>
-            <ThreadHistorySkeleton />
-          </AuiIf>
+          {lead}
 
           <div
             data-slot="aui_message-group"
@@ -222,7 +253,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage />}
             </ThreadPrimitive.Messages>
-            <CompactionIndicator />
+            {afterMessages}
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -233,13 +264,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             )}
           >
             <ThreadScrollToBottom />
-            <ThreadFollowupSuggestions />
-            <ChatErrorBanner />
-            <Composer autoFocus={autoFocus} />
-            <ContextMeter />
-            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
-              <ThreadSuggestions />
-            </AuiIf>
+            {footer}
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
@@ -632,37 +657,50 @@ const ComposerAction: FC = () => {
           </AuiIf>
         </AuiIf>
         <AuiIf condition={(s) => !s.thread.isRunning}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
+          <ComposerSendButton />
         </AuiIf>
         <AuiIf condition={(s) => s.thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Stop generating"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
+          <ComposerCancelButton />
         </AuiIf>
       </div>
     </div>
   );
 };
+
+export const ComposerSendButton: FC<{ tooltip?: string; label?: string }> = ({
+  tooltip = "Send message",
+  label = "Send message",
+}) => (
+  <ComposerPrimitive.Send asChild>
+    <TooltipIconButton
+      tooltip={tooltip}
+      side="bottom"
+      type="button"
+      variant="default"
+      size="icon"
+      className="aui-composer-send size-7 rounded-full"
+      aria-label={label}
+    >
+      <ArrowUpIcon className="aui-composer-send-icon size-4" />
+    </TooltipIconButton>
+  </ComposerPrimitive.Send>
+);
+
+export const ComposerCancelButton: FC<{ label?: string }> = ({
+  label = "Stop generating",
+}) => (
+  <ComposerPrimitive.Cancel asChild>
+    <Button
+      type="button"
+      variant="default"
+      size="icon"
+      className="aui-composer-cancel size-7 rounded-full"
+      aria-label={label}
+    >
+      <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+    </Button>
+  </ComposerPrimitive.Cancel>
+);
 
 const MessageError: FC = () => {
   return (
@@ -839,11 +877,13 @@ const AssistantActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.FeedbackNegative>
       </AuiIf>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
+      <AuiIf condition={(s) => s.thread.capabilities.reload}>
+        <ActionBarPrimitive.Reload asChild>
+          <TooltipIconButton tooltip="Refresh">
+            <RefreshCwIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Reload>
+      </AuiIf>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
@@ -971,11 +1011,13 @@ const UserActionBar: FC = () => {
       autohide="not-last"
       className="aui-user-action-bar-root flex flex-col items-end"
     >
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
+      <AuiIf condition={(s) => s.thread.capabilities.edit}>
+        <ActionBarPrimitive.Edit asChild>
+          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+            <PencilIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
+      </AuiIf>
     </ActionBarPrimitive.Root>
   );
 };

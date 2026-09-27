@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 describe("delegated-run tool views", () => {
-  it("opens a background run in the Agents panel from the call header", () => {
+  it("opens a background run from the call header", () => {
     const view = mount(
       <ToolCallView
         {...PART}
@@ -95,7 +95,7 @@ describe("delegated-run tool views", () => {
     view.unmount();
   });
 
-  it("offers no panel jump when the call carries no run id", () => {
+  it("offers no open action when the call carries no run id", () => {
     const view = mount(
       <ToolCallView
         {...PART}

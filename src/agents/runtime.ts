@@ -13,7 +13,6 @@ import type {
   AgentParentContext,
   AgentReadOptions,
   AgentRequest,
-  AgentRunEvent,
   AgentRunIdentity,
   AgentRunIdentifier,
   AgentRunResult,
@@ -145,31 +144,7 @@ function createSteeringControl(controller: AbortController): AgentSteeringContro
   }
 }
 
-/** Projects a live run's prompt and event log into turns, oldest first. */
-function turnsFromRecord(record: AgentRunRecord): AgentTurn[] {
-  const turns: AgentTurn[] = [{ role: 'user', text: record.prompt }]
-  let assistant = ''
-  const flush = (): void => {
-    if (assistant.length === 0) return
-    turns.push({ role: 'assistant', text: assistant })
-    assistant = ''
-  }
-  for (const event of record.events) {
-    if (event.type === 'text-delta') {
-      assistant += event.text
-    } else if (event.type === 'tool-call') {
-      flush()
-      turns.push({ role: 'tool', text: '', toolName: event.toolName })
-    } else if (event.type === 'user-message') {
-      flush()
-      turns.push({ role: 'user', text: event.text })
-    }
-  }
-  flush()
-  return turns
-}
-
-/** Projects a settled child thread's messages into turns, oldest first. */
+/** Projects a child run's messages into turns, oldest first. */
 function turnsFromMessages(messages: UIMessage[]): AgentTurn[] {
   const turns: AgentTurn[] = []
   for (const message of messages) {
@@ -227,76 +202,11 @@ function projectTranscript(
   }
 }
 
-/**
- * Builds a durable transcript: the prompt, the assistant's streamed text, each
- * tool call, and each steering turn in the order it happened, so a reloaded flow
- * matches the live one. Tool calls become real tool parts rather than a text
- * marker, which is what lets `turnsFromMessages` and the panel project the same
- * `role: 'tool'` turn a live record does and keeps `includeTools: false` from
- * leaking the marker into assistant text.
- */
-function transcript(prompt: string, record: AgentRunRecord): UIMessage[] {
-  const messages: UIMessage[] = []
-  let parts: UIMessage['parts'] = []
-  let index = 0
-  const toolSlot = new Map<string, number>()
-  const flushAssistant = (): void => {
-    messages.push({
-      id: `${record.runId}-result-${index}`,
-      role: 'assistant',
-      parts: parts.length > 0 ? parts : [{ type: 'text', text: '' }],
-      metadata: { chatStatus: 'done' },
-    })
-    parts = []
-    toolSlot.clear()
-    index += 1
-  }
-  for (const event of record.events) {
-    if (event.type === 'text-delta') {
-      const last = parts[parts.length - 1]
-      if (last !== undefined && last.type === 'text') {
-        parts[parts.length - 1] = { type: 'text', text: last.text + event.text }
-      } else {
-        parts.push({ type: 'text', text: event.text })
-      }
-    } else if (event.type === 'tool-call') {
-      toolSlot.set(event.toolCallId, parts.length)
-      parts.push({
-        type: 'dynamic-tool',
-        toolName: event.toolName,
-        toolCallId: event.toolCallId,
-        state: 'output-available',
-        input: event.input ?? {},
-        output: {},
-      } as UIMessage['parts'][number])
-    } else if (event.type === 'tool-result') {
-      const slot = toolSlot.get(event.toolCallId)
-      if (slot !== undefined) {
-        parts[slot] = {
-          ...(parts[slot] as Record<string, unknown>),
-          output: event.output ?? {},
-        } as UIMessage['parts'][number]
-      }
-    } else if (event.type === 'user-message') {
-      flushAssistant()
-      messages.push({
-        id: `${record.runId}-steer-${index}`,
-        role: 'user',
-        parts: [{ type: 'text', text: event.text }],
-      })
-    }
-  }
-  flushAssistant()
-  return [
-    { id: `${record.runId}-prompt`, role: 'user', parts: [{ type: 'text', text: prompt }] },
-    ...messages,
-  ]
-}
-
 export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
   const controllers = new Map<string, AbortController>()
   const parents = new Map<string, string>()
   const lastPersist = new Map<string, number>()
+  const saves = new Map<string, Promise<void>>()
 
   const snapshotOf = (
     record: AgentRunRecord,
@@ -314,7 +224,7 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
     status,
     ...(record.stopReason !== undefined ? { stopReason: record.stopReason } : {}),
     prompt,
-    messages: transcript(prompt, record),
+    messages: record.messages,
     startedAt: record.startedAt,
   })
 
@@ -325,14 +235,21 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
     prompt: string,
     status: AgentRunStatus,
   ): Promise<void> => {
-    if (!deps.persistence) return
+    const persistence = deps.persistence
+    if (!persistence) return
     const snapshot = snapshotOf(record, context, prompt, status)
-    try {
-      if (kind === 'create') await deps.persistence.create(snapshot)
-      else await deps.persistence.save(snapshot)
-    } catch {
-      // Persistence is best-effort; a locked vault must not fail the run.
-    }
+    const previous = saves.get(record.runId) ?? Promise.resolve()
+    const next = previous.then(async () => {
+      try {
+        if (kind === 'create') await persistence.create(snapshot)
+        else await persistence.save(snapshot)
+      } catch {
+        // Persistence is best-effort; a locked vault must not fail the run.
+      }
+    })
+    saves.set(record.runId, next)
+    await next
+    if (saves.get(record.runId) === next) saves.delete(record.runId)
   }
 
   const limit = (scope: 'concurrent' | 'thread'): AgentSpawnOutcome => ({
@@ -407,7 +324,9 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         tier: request.tier,
         status: 'running',
         prompt: request.prompt,
-        events: [],
+        messages: [
+          { id: `${runId}-prompt`, role: 'user', parts: [{ type: 'text', text: request.prompt }] },
+        ],
         text: '',
         toolCalls: 0,
         approvals: [],
@@ -427,8 +346,8 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         steering,
       }
 
-      const onEvent = (event: AgentRunEvent) => {
-        deps.store.appendEvent(runId, event)
+      const onMessages = (messages: UIMessage[]) => {
+        deps.store.setMessages(runId, messages)
         const now = Date.now()
         const previous = lastPersist.get(runId) ?? 0
         if (now - previous > 400) {
@@ -446,7 +365,7 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         lastPersist.delete(runId)
       }
 
-      const run = runAgent({ runId, request, parent: context }, runnerDeps, controller.signal, onEvent)
+      const run = runAgent({ runId, request, parent: context }, runnerDeps, controller.signal, onMessages)
 
       if (background) {
         void run
@@ -519,7 +438,7 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         if (record.parentThreadId !== parentThreadId) return null
         return projectTranscript(
           record.runId,
-          turnsFromRecord(record),
+          turnsFromMessages(record.messages),
           record.status,
           options,
           record.label,

@@ -242,9 +242,10 @@ function noticeKeyOf(part: UIMessage["parts"][number]): string | undefined {
 }
 
 /**
- * Re-attaches any notice parts injected into the message while it streamed.
- * The streamed reconstruction replaces the message's parts, so without this a
- * notice appended mid-run would be dropped by the next chunk.
+ * Re-attaches any notice parts injected into the message while it streamed, at
+ * the part boundary where each one arrived. The streamed reconstruction
+ * replaces the message's parts, so without this a notice appended mid-run would
+ * be dropped by the next chunk, or pushed below everything streamed after it.
  */
 function mergeNoticeParts(
   streamed: UIMessage,
@@ -256,15 +257,32 @@ function mergeNoticeParts(
     const key = noticeKeyOf(part);
     if (key !== undefined) seen.add(key);
   }
-  const kept: UIMessage["parts"] = [];
+  const kept: Array<{ anchor: number; part: UIMessage["parts"][number] }> = [];
+  let preceding = 0;
   for (const part of current.parts) {
     const key = noticeKeyOf(part);
-    if (key === undefined || seen.has(key)) continue;
+    if (key === undefined) {
+      preceding += 1;
+      continue;
+    }
+    if (seen.has(key)) continue;
     seen.add(key);
-    kept.push(part);
+    kept.push({ anchor: preceding, part });
   }
   if (kept.length === 0) return streamed;
-  return { ...streamed, parts: [...streamed.parts, ...kept] };
+  const parts: UIMessage["parts"] = [];
+  let placed = 0;
+  let streamedCount = 0;
+  for (const part of streamed.parts) {
+    while (placed < kept.length && kept[placed].anchor <= streamedCount) {
+      parts.push(kept[placed].part);
+      placed += 1;
+    }
+    parts.push(part);
+    if (noticeKeyOf(part) === undefined) streamedCount += 1;
+  }
+  for (; placed < kept.length; placed += 1) parts.push(kept[placed].part);
+  return { ...streamed, parts };
 }
 
 function collectPendingApprovals(messages: UIMessage[]): PendingApproval[] {

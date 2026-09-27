@@ -294,7 +294,7 @@ describe('createSession', () => {
       tier: 'cheap',
       status: 'stopped',
       prompt: 'go',
-      events: [],
+      messages: [],
       text: '',
       toolCalls: 0,
       approvals: [],

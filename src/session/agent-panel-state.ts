@@ -1,14 +1,13 @@
 import { create } from "zustand";
 
 /**
- * Which delegated run the Agents panel is showing. The panel no longer owns
- * this locally: a click on a sub-agent tool call in the transcript has to open
- * the panel *and* select that run, so the selection lives where both entry
- * points can reach it. The shell watches `selectedRunId` to reveal the rail.
+ * Which delegated run is open in the full-width run view. Every entry point
+ * (an Agents list row, a sub-agent tool call, a sub-agent report) selects
+ * through this store, and the shell swaps the main thread for the run view.
  */
 export interface AgentPanelState {
   selectedRunId: string | null
-  /** Opens a run: selects it and asks the shell to reveal the Agents panel. */
+  /** Opens a run in the main area in place of the conversation. */
   open(runId: string): void
   clear(): void
 }

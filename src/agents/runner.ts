@@ -1,15 +1,18 @@
-import { streamText } from 'ai'
+import { readUIMessageStream, streamText, toUIMessageStream } from 'ai'
 import type {
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,
+  TextStreamPart,
   ToolApprovalConfiguration,
   ToolSet,
+  UIMessage,
 } from 'ai'
 import { createLLM } from '../ai/llm'
 import { createTierModel } from '../ai/model-tier'
 import type { ModelFactory } from '../ai/model-tier'
 import { composeSystemPrompt } from '../chat/context'
+import { sanitizePartial } from '../chat/sanitize'
 import type { SkillRegistry } from '../skills/registry'
 import { resolveApprovalStatus } from '../tools/approval'
 import type { ToolGateDescriptor } from '../tools/approval'
@@ -17,11 +20,12 @@ import type { ToolRegistry } from '../tools/registry'
 import type { ToolRuntimePorts } from '../tools/types'
 import type { Settings } from '../vault/settings'
 import type { AgentApprovalQueue } from './approval-queue'
+import { buildRunMessages, passMessages, promptMessage, toolCallCount } from './run-transcript'
+import type { RunPass } from './run-transcript'
 import { resolveAgentToolNames } from './toolset'
 import type {
   AgentParentContext,
   AgentRequest,
-  AgentRunEvent,
   AgentRunResult,
   AgentSteeringHandle,
 } from './types'
@@ -60,6 +64,19 @@ function isAbortError(error: unknown): boolean {
     error !== null &&
     (error as { name?: unknown }).name === 'AbortError'
   )
+}
+
+async function* iterate<T>(stream: ReadableStream<T>): AsyncGenerator<T> {
+  const reader = stream.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) return
+      yield value
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function describe(error: unknown): string {
@@ -112,7 +129,7 @@ export async function runAgent(
   input: AgentRunInput,
   deps: AgentRunnerDeps,
   signal: AbortSignal,
-  onEvent: (event: AgentRunEvent) => void,
+  onMessages: (messages: UIMessage[]) => void,
 ): Promise<AgentRunResult> {
   const { request, parent } = input
   const base: Pick<AgentRunResult, 'tier'> = { tier: request.tier }
@@ -171,22 +188,33 @@ export async function runAgent(
     }
 
     let text = ''
-    let toolCalls = 0
     let usage: LanguageModelUsage | undefined
     let failure: string | undefined
     let aborted = false
 
     const steering = deps.steering
     const history: ModelMessage[] = [{ role: 'user', content: request.prompt }]
-    // Steering drained inside `prepareStep` is injected into that pass's override
-    // only, so it is accumulated here and folded back into `history` once the
-    // pass resolves. Otherwise a later pass would silently lose the earlier steer.
     const injected: ModelMessage[] = []
+    const passes: RunPass[] = []
+    const opening = promptMessage(input.runId, request.prompt)
+    const frozen: UIMessage[] = []
+    let settled = false
+    const emit = (): void => {
+      if (settled) return
+      const index = passes.length - 1
+      const live = index >= 0 ? passMessages(input.runId, index, passes[index]) : []
+      onMessages([opening, ...frozen, ...live])
+    }
+    const freeze = (pass: RunPass): void => {
+      frozen.push(...passMessages(input.runId, passes.indexOf(pass), pass))
+    }
 
     const drainSteering = (): string[] => (steering ? steering.drain() : [])
 
     try {
       while (true) {
+        const pass: RunPass = { assistant: null, steers: [], after: [] }
+        passes.push(pass)
         const result = streamText({
           model,
           system,
@@ -195,64 +223,49 @@ export async function runAgent(
           toolApproval,
           stopWhen: () => false,
           abortSignal: signal,
-          prepareStep: ({ messages }) => {
+          prepareStep: ({ messages, stepNumber }) => {
             if (!canInject(messages)) return {}
             const pending = drainSteering()
             if (pending.length === 0) return {}
-            for (const message of pending) onEvent({ type: 'user-message', text: message })
+            for (const message of pending) pass.steers.push({ step: stepNumber, text: message })
+            emit()
             const additions = pending.map((content) => ({ role: 'user' as const, content }))
             injected.push(...additions)
             return { messages: [...messages, ...additions] }
           },
         })
-        for await (const part of result.fullStream) {
-          switch (part.type) {
-            case 'text-delta':
-              text += part.text
-              onEvent({ type: 'text-delta', text: part.text })
-              break
-            case 'tool-call': {
-              toolCalls += 1
-              const call = part as { toolName?: string; toolCallId?: string; input?: unknown }
-              onEvent({
-                type: 'tool-call',
-                toolName: call.toolName ?? '',
-                toolCallId: call.toolCallId ?? '',
-                input: call.input,
-              })
-              break
+        const [accounting, uiSource] = (result.stream as ReadableStream<TextStreamPart<ToolSet>>).tee()
+        const uiDone = (async (): Promise<string | undefined> => {
+          const chunks = toUIMessageStream({ stream: uiSource, tools: toolSet, onError: describe })
+          for await (const partial of readUIMessageStream({ stream: chunks })) {
+            pass.assistant = partial
+            emit()
+          }
+          return undefined
+        })().catch((error: unknown) => describe(error))
+        try {
+          for await (const part of iterate(accounting)) {
+            switch (part.type) {
+              case 'text-delta':
+                text += part.text
+                break
+              case 'finish':
+                usage = addUsage(usage, part.totalUsage)
+                break
+              case 'abort':
+                aborted = true
+                break
+              case 'error':
+                failure = describe(part.error)
+                break
+              default:
+                break
             }
-            case 'tool-result': {
-              const done = part as { toolName?: string; toolCallId?: string; output?: unknown }
-              onEvent({
-                type: 'tool-result',
-                toolName: done.toolName ?? '',
-                toolCallId: done.toolCallId ?? '',
-                ...(done.output !== undefined ? { output: done.output } : {}),
-              })
-              break
-            }
-            case 'tool-error': {
-              const failed = part as { toolName?: string; toolCallId?: string; error?: unknown }
-              onEvent({
-                type: 'tool-error',
-                toolName: failed.toolName ?? '',
-                toolCallId: failed.toolCallId ?? '',
-                error: describe(failed.error),
-              })
-              break
-            }
-            case 'finish':
-              usage = addUsage(usage, part.totalUsage)
-              break
-            case 'abort':
-              aborted = true
-              break
-            case 'error':
-              failure = describe(part.error)
-              break
-            default:
-              break
+          }
+        } finally {
+          const uiFailure = await uiDone
+          if (uiFailure !== undefined && !aborted && !signal.aborted && failure === undefined) {
+            failure = uiFailure
           }
         }
 
@@ -269,14 +282,23 @@ export async function runAgent(
         const pending = drainSteering()
         if (pending.length === 0) break
         for (const message of pending) {
-          onEvent({ type: 'user-message', text: message })
+          pass.after.push(message)
           history.push({ role: 'user', content: message })
         }
+        freeze(pass)
       }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) aborted = true
       else failure = describe(error)
     }
+
+    for (const pass of passes) {
+      if (pass.assistant) pass.assistant = sanitizePartial(pass.assistant, { expireApprovals: true })
+    }
+    const transcript = buildRunMessages(input.runId, request.prompt, passes)
+    settled = true
+    onMessages(transcript)
+    const toolCalls = toolCallCount(transcript)
 
     // The loop above is the only place a steer is delivered. Once past it the run
     // can never drain again, so close the channel and let a late steer be refused
