@@ -6,6 +6,8 @@ import { isImagePath } from "../chat/attachments";
 import { useChatStore } from "../chat/store";
 import { useWorkspaceStore } from "../session/workspace-state";
 import { useVaultStore } from "../vault/store";
+import { cn } from "../lib/utils";
+import { COMPOSER_SHELL } from "./conversation";
 import {
   WorkspaceLimitError,
   WorkspacePermissionError,
@@ -264,7 +266,10 @@ export function ComposerDropzone({ children }: { children: ReactNode }) {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
       onPaste={onPaste}
-      className="border-foreground/10 focus-within:border-foreground/25 data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
+      className={cn(
+        COMPOSER_SHELL,
+        "data-[dragging=true]:border-ring gap-2 p-(--composer-padding) data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]",
+      )}
     >
       {busy ? (
         <p

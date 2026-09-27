@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Markdown rendering and tool-view visual sync"
-status: pending
+status: completed
 priority: P1
 effort: 1d
 dependencies: []

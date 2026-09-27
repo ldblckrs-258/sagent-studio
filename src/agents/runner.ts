@@ -1,5 +1,11 @@
-import { stepCountIs, streamText } from 'ai'
-import type { LanguageModel, LanguageModelUsage, ToolApprovalConfiguration, ToolSet } from 'ai'
+import { streamText } from 'ai'
+import type {
+  LanguageModel,
+  LanguageModelUsage,
+  ModelMessage,
+  ToolApprovalConfiguration,
+  ToolSet,
+} from 'ai'
 import { createLLM } from '../ai/llm'
 import { createTierModel } from '../ai/model-tier'
 import type { ModelFactory } from '../ai/model-tier'
@@ -12,12 +18,20 @@ import type { ToolRuntimePorts } from '../tools/types'
 import type { Settings } from '../vault/settings'
 import type { AgentApprovalQueue } from './approval-queue'
 import { resolveAgentToolNames } from './toolset'
-import type { AgentParentContext, AgentRequest, AgentRunEvent, AgentRunResult } from './types'
+import type {
+  AgentParentContext,
+  AgentRequest,
+  AgentRunEvent,
+  AgentRunResult,
+  AgentSteeringHandle,
+} from './types'
 import { summarizeAgentResult } from './types'
 
-/** Hard bounds so a delegated run cannot loop or flood the parent. */
-export const MAX_AGENT_STEPS = 24
-export const MAX_AGENT_OUTPUT_CHARS = 8000
+/**
+ * Concurrency is the one hard bound: it protects the machine and the parent
+ * conversation, not the delegated task. Step count, steering, and output size
+ * are left to the agent and the user; a delegated run is not capped mid-task.
+ */
 export const MAX_CONCURRENT_AGENTS = 4
 export const MAX_AGENTS_PER_THREAD = 3
 
@@ -36,8 +50,8 @@ export interface AgentRunnerDeps {
   /** Injectable so tests can hand each model its own mock. */
   modelFactory?: ModelFactory
   queue: AgentApprovalQueue
-  maxSteps?: number
-  maxOutputChars?: number
+  /** The live steering channel for this run, when the caller supports it. */
+  steering?: AgentSteeringHandle
 }
 
 function isAbortError(error: unknown): boolean {
@@ -53,9 +67,39 @@ function describe(error: unknown): string {
   return String(error)
 }
 
-function boundedText(text: string, max: number): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false }
-  return { text: text.slice(0, max), truncated: true }
+function addTokenCounts(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0)
+}
+
+function addUsage(
+  a: LanguageModelUsage | undefined,
+  b: LanguageModelUsage | undefined,
+): LanguageModelUsage | undefined {
+  if (!a) return b
+  if (!b) return a
+  return {
+    inputTokens: addTokenCounts(a.inputTokens, b.inputTokens),
+    inputTokenDetails: {
+      noCacheTokens: addTokenCounts(a.inputTokenDetails.noCacheTokens, b.inputTokenDetails.noCacheTokens),
+      cacheReadTokens: addTokenCounts(a.inputTokenDetails.cacheReadTokens, b.inputTokenDetails.cacheReadTokens),
+      cacheWriteTokens: addTokenCounts(a.inputTokenDetails.cacheWriteTokens, b.inputTokenDetails.cacheWriteTokens),
+    },
+    outputTokens: addTokenCounts(a.outputTokens, b.outputTokens),
+    outputTokenDetails: {
+      textTokens: addTokenCounts(a.outputTokenDetails.textTokens, b.outputTokenDetails.textTokens),
+      reasoningTokens: addTokenCounts(a.outputTokenDetails.reasoningTokens, b.outputTokenDetails.reasoningTokens),
+    },
+    totalTokens: addTokenCounts(a.totalTokens, b.totalTokens),
+  }
+}
+
+/**
+ * A user turn may only be appended after a tool result or an assistant turn; a
+ * trailing tool call would otherwise be split from its result.
+ */
+function canInject(messages: ModelMessage[]): boolean {
+  const last = messages[messages.length - 1]
+  return last === undefined || last.role === 'tool' || last.role === 'assistant'
 }
 
 /**
@@ -132,63 +176,101 @@ export async function runAgent(
     let failure: string | undefined
     let aborted = false
 
+    const steering = deps.steering
+    const history: ModelMessage[] = [{ role: 'user', content: request.prompt }]
+    // Steering drained inside `prepareStep` is injected into that pass's override
+    // only, so it is accumulated here and folded back into `history` once the
+    // pass resolves. Otherwise a later pass would silently lose the earlier steer.
+    const injected: ModelMessage[] = []
+
+    const drainSteering = (): string[] => (steering ? steering.drain() : [])
+
     try {
-      const result = streamText({
-        model,
-        system,
-        prompt: request.prompt,
-        tools: toolSet,
-        toolApproval,
-        stopWhen: stepCountIs(deps.maxSteps ?? MAX_AGENT_STEPS),
-        abortSignal: signal,
-      })
-      for await (const part of result.fullStream) {
-        switch (part.type) {
-          case 'text-delta':
-            text += part.text
-            onEvent({ type: 'text-delta', text: part.text })
-            break
-          case 'tool-call': {
-            toolCalls += 1
-            const call = part as { toolName?: string; toolCallId?: string; input?: unknown }
-            onEvent({
-              type: 'tool-call',
-              toolName: call.toolName ?? '',
-              toolCallId: call.toolCallId ?? '',
-              input: call.input,
-            })
-            break
+      while (true) {
+        const result = streamText({
+          model,
+          system,
+          messages: history,
+          tools: toolSet,
+          toolApproval,
+          stopWhen: () => false,
+          abortSignal: signal,
+          prepareStep: ({ messages }) => {
+            if (!canInject(messages)) return {}
+            const pending = drainSteering()
+            if (pending.length === 0) return {}
+            for (const message of pending) onEvent({ type: 'user-message', text: message })
+            const additions = pending.map((content) => ({ role: 'user' as const, content }))
+            injected.push(...additions)
+            return { messages: [...messages, ...additions] }
+          },
+        })
+        for await (const part of result.fullStream) {
+          switch (part.type) {
+            case 'text-delta':
+              text += part.text
+              onEvent({ type: 'text-delta', text: part.text })
+              break
+            case 'tool-call': {
+              toolCalls += 1
+              const call = part as { toolName?: string; toolCallId?: string; input?: unknown }
+              onEvent({
+                type: 'tool-call',
+                toolName: call.toolName ?? '',
+                toolCallId: call.toolCallId ?? '',
+                input: call.input,
+              })
+              break
+            }
+            case 'tool-result': {
+              const done = part as { toolName?: string; toolCallId?: string; output?: unknown }
+              onEvent({
+                type: 'tool-result',
+                toolName: done.toolName ?? '',
+                toolCallId: done.toolCallId ?? '',
+                ...(done.output !== undefined ? { output: done.output } : {}),
+              })
+              break
+            }
+            case 'tool-error': {
+              const failed = part as { toolName?: string; toolCallId?: string; error?: unknown }
+              onEvent({
+                type: 'tool-error',
+                toolName: failed.toolName ?? '',
+                toolCallId: failed.toolCallId ?? '',
+                error: describe(failed.error),
+              })
+              break
+            }
+            case 'finish':
+              usage = addUsage(usage, part.totalUsage)
+              break
+            case 'abort':
+              aborted = true
+              break
+            case 'error':
+              failure = describe(part.error)
+              break
+            default:
+              break
           }
-          case 'tool-result': {
-            const done = part as { toolName?: string; toolCallId?: string }
-            onEvent({
-              type: 'tool-result',
-              toolName: done.toolName ?? '',
-              toolCallId: done.toolCallId ?? '',
-            })
-            break
-          }
-          case 'tool-error': {
-            const failed = part as { toolName?: string; toolCallId?: string; error?: unknown }
-            onEvent({
-              type: 'tool-error',
-              toolName: failed.toolName ?? '',
-              toolCallId: failed.toolCallId ?? '',
-              error: describe(failed.error),
-            })
-            break
-          }
-          case 'finish':
-            usage = part.totalUsage
-            break
-          case 'abort':
-            aborted = true
-            break
-          case 'error':
-            failure = describe(part.error)
-            break
-          default:
-            break
+        }
+
+        if (aborted || failure) break
+        try {
+          const { messages } = await result.response
+          history.push(...injected, ...messages)
+          injected.length = 0
+        } catch (error) {
+          if (signal.aborted || isAbortError(error)) aborted = true
+          else failure = describe(error)
+          break
+        }
+        const pending = drainSteering()
+        if (pending.length === 0) break
+        for (const message of pending) {
+          onEvent({ type: 'user-message', text: message })
+          history.push({ role: 'user', content: message })
         }
       }
     } catch (error) {
@@ -196,17 +278,25 @@ export async function runAgent(
       else failure = describe(error)
     }
 
-    const bounded = boundedText(text, deps.maxOutputChars ?? MAX_AGENT_OUTPUT_CHARS)
-    const status: AgentRunResult['status'] = aborted ? 'aborted' : failure ? 'error' : 'completed'
+    // The loop above is the only place a steer is delivered. Once past it the run
+    // can never drain again, so close the channel and let a late steer be refused
+    // rather than accepted into a queue nothing will read.
+    steering?.close?.()
+
+    const stopped = aborted && (steering?.stopRequested() ?? false)
+    const stopReason = stopped ? steering?.stopReason() ?? 'user_stop' : undefined
+    let status: AgentRunResult['status'] = 'completed'
+    if (aborted) status = stopped ? 'stopped' : 'aborted'
+    else if (failure) status = 'error'
     return {
       ...base,
       status,
       mode,
-      text: bounded.text,
+      text,
       toolCalls,
       ...(usage ? { usage } : {}),
       ...(failure ? { error: failure } : {}),
-      ...(bounded.truncated ? { truncated: true } : {}),
+      ...(stopReason ? { stopReason } : {}),
     }
   } catch (error) {
     return {

@@ -1,8 +1,8 @@
-import type { AgentRunStatus, ChatMode } from '../chat/types'
+import type { AgentRunStatus, AgentStopReason, ChatMode } from '../chat/types'
 import type { ModelTier } from '../vault/settings'
 import { useVaultStore } from '../vault/store'
 import type { AgentApprovalQueue, PendingAgentApproval } from './approval-queue'
-import type { AgentRunEvent, AgentRunResult } from './types'
+import type { AgentRunEvent, AgentRunResult, AgentSteeringControl } from './types'
 
 export interface AgentRunRecord {
   runId: string
@@ -20,6 +20,7 @@ export interface AgentRunRecord {
   startedAt: number
   endedAt?: number
   result?: AgentRunResult
+  stopReason?: AgentStopReason
 }
 
 /**
@@ -31,6 +32,7 @@ export interface AgentRunRecord {
 export class AgentRunStore {
   private readonly runs = new Map<string, AgentRunRecord>()
   private readonly queues = new Map<string, AgentApprovalQueue>()
+  private readonly steering = new Map<string, AgentSteeringControl>()
   private readonly listeners = new Set<() => void>()
   private version = 0
 
@@ -94,10 +96,12 @@ export class AgentRunStore {
       result,
       text: result.text,
       toolCalls: result.toolCalls,
+      ...(result.stopReason ? { stopReason: result.stopReason } : {}),
     })
   }
 
   remove(runId: string): void {
+    this.steering.delete(runId)
     if (this.runs.delete(runId)) this.notify()
   }
 
@@ -108,6 +112,42 @@ export class AgentRunStore {
   detachQueue(runId: string): void {
     this.queues.delete(runId)
     this.update(runId, { approvals: [] })
+  }
+
+  attachSteering(runId: string, handle: AgentSteeringControl): void {
+    this.steering.set(runId, handle)
+  }
+
+  detachSteering(runId: string): void {
+    this.steering.delete(runId)
+  }
+
+  /**
+   * Enqueues a steering turn for a live run. The runner records the
+   * `user-message` event when it drains the queue at the next step boundary, so
+   * the flow shows the turn at the point it was actually injected. A run that has
+   * already stopped draining (a settled step cap, an abort) refuses the steer so
+   * the caller does not keep an optimistic echo that can never be delivered.
+   */
+  steer(runId: string, text: string): boolean {
+    const handle = this.steering.get(runId)
+    if (!handle || this.runs.get(runId)?.status !== 'running') return false
+    if (handle.accepting && !handle.accepting()) return false
+    handle.enqueue(text)
+    return true
+  }
+
+  /** Records a stop reason on the live run and lets the handle abort it. */
+  requestStop(runId: string, reason: AgentStopReason): boolean {
+    const handle = this.steering.get(runId)
+    if (!handle) return false
+    handle.requestStop(reason)
+    this.notify()
+    return true
+  }
+
+  stopRequested(runId: string): boolean {
+    return this.steering.get(runId)?.stopRequested() ?? false
   }
 
   addApproval(runId: string, approval: PendingAgentApproval): void {
@@ -136,6 +176,7 @@ export class AgentRunStore {
   clear(): void {
     this.runs.clear()
     this.queues.clear()
+    this.steering.clear()
     this.notify()
   }
 }

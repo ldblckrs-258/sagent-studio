@@ -1,5 +1,6 @@
 import { Bot, TriangleAlert } from "lucide-react";
 import type { AgentNoticeMeta, AgentRunStatus } from "@/chat/types";
+import { MarkdownProse } from "@/ui/markdown-prose";
 import { Badge, type BadgeTone } from "@/ui/primitives";
 
 /**
@@ -12,6 +13,7 @@ const STATUS_TONE: Record<AgentRunStatus, { label: string; tone: BadgeTone }> = 
   completed: { label: "Completed", tone: "positive" },
   denied: { label: "Denied", tone: "caution" },
   aborted: { label: "Aborted", tone: "neutral" },
+  stopped: { label: "Stopped", tone: "caution" },
   interrupted: { label: "Interrupted", tone: "caution" },
   error: { label: "Failed", tone: "danger" },
   limit_exceeded: { label: "Limit reached", tone: "danger" },
@@ -57,9 +59,7 @@ export function SubAgentReport({ report }: { report: AgentNoticeMeta }) {
         <span className="bg-rule h-px flex-1" aria-hidden="true" />
       </div>
 
-      <p className="text-foreground/90 text-xs leading-relaxed whitespace-pre-wrap">
-        {report.response}
-      </p>
+      <MarkdownProse>{report.response}</MarkdownProse>
 
       <div className="text-faint flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
         <span className="flex items-center gap-1">

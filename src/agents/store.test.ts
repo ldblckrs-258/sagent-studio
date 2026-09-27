@@ -1,7 +1,26 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { AgentStopReason } from '../chat/types'
 import { createApprovalQueue } from './approval-queue'
 import { AgentRunStore } from './store'
 import type { AgentRunRecord } from './store'
+import type { AgentSteeringControl } from './types'
+
+function steeringControl() {
+  const pending: string[] = []
+  let reason: AgentStopReason | undefined
+  const control: AgentSteeringControl = {
+    drain: () => pending.splice(0, pending.length),
+    enqueue: (text) => {
+      pending.push(text)
+    },
+    stopRequested: () => reason !== undefined,
+    stopReason: () => reason,
+    requestStop: (next) => {
+      reason = next
+    },
+  }
+  return { control, drain: () => control.drain() }
+}
 
 const base: AgentRunRecord = {
   runId: 'run-1',
@@ -51,6 +70,87 @@ describe('AgentRunStore', () => {
     store.clear()
     expect(store.list()).toEqual([])
     expect(store.pendingApprovalCount()).toBe(0)
+  })
+
+  it('enqueues a steering message in order for a running run', () => {
+    const store = new AgentRunStore()
+    store.register(base)
+    const steering = steeringControl()
+    store.attachSteering('run-1', steering.control)
+
+    expect(store.steer('run-1', 'first')).toBe(true)
+    expect(store.steer('run-1', 'second')).toBe(true)
+
+    expect(store.get('run-1')?.events).toEqual([])
+    expect(steering.drain()).toEqual(['first', 'second'])
+  })
+
+  it('refuses to steer a run that is not live', () => {
+    const store = new AgentRunStore()
+    store.register({ ...base, status: 'completed' })
+    const steering = steeringControl()
+    store.attachSteering('run-1', steering.control)
+
+    expect(store.steer('run-1', 'too late')).toBe(false)
+    expect(steering.drain()).toEqual([])
+  })
+
+  it('refuses a steer once the channel is closed', () => {
+    const store = new AgentRunStore()
+    store.register(base)
+    let closed = false
+    const enqueue = vi.fn()
+    const control: AgentSteeringControl = {
+      drain: () => [],
+      enqueue,
+      stopRequested: () => false,
+      stopReason: () => undefined,
+      requestStop: () => {},
+      accepting: () => !closed,
+      close: () => {
+        closed = true
+      },
+    }
+    store.attachSteering('run-1', control)
+
+    expect(store.steer('run-1', 'still going')).toBe(true)
+    control.close?.()
+    expect(store.steer('run-1', 'too late')).toBe(false)
+    expect(enqueue).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains a stop reason and drops steering state on remove and clear', () => {
+    const store = new AgentRunStore()
+    store.register(base)
+    const steering = steeringControl()
+    store.attachSteering('run-1', steering.control)
+
+    expect(store.requestStop('run-1', 'user_stop')).toBe(true)
+    expect(store.stopRequested('run-1')).toBe(true)
+    expect(steering.control.stopReason()).toBe('user_stop')
+
+    store.remove('run-1')
+    expect(store.stopRequested('run-1')).toBe(false)
+
+    store.register(base)
+    store.attachSteering('run-1', steering.control)
+    store.clear()
+    expect(store.stopRequested('run-1')).toBe(false)
+  })
+
+  it('keeps the runner-provided stopped status and reason on finish', () => {
+    const store = new AgentRunStore()
+    store.register(base)
+    store.finish('run-1', {
+      status: 'stopped',
+      mode: 'editing',
+      tier: 'medium',
+      text: 'x',
+      toolCalls: 0,
+      stopReason: 'user_stop',
+    })
+    expect(store.get('run-1')?.status).toBe('stopped')
+    expect(store.get('run-1')?.stopReason).toBe('user_stop')
   })
 
   it('routes a resolution to the owning queue and removes the card', async () => {

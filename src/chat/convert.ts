@@ -184,13 +184,18 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
   // straight from the store.
   const attachments = metadata?.attachments
   // A background agent's report rides over so the transcript draws a sub-agent
-  // card for it rather than an assistant bubble that offers Regenerate.
+  // card for it rather than an assistant bubble that offers Regenerate. The
+  // notice marker survives too, so a notice without a report is still drawn as
+  // a card instead of an assistant bubble.
   const agentReport = metadata?.agentReport
+  const agentNotice =
+    (metadata as { agentNotice?: unknown } | undefined)?.agentNotice === true
   const custom = {
     ...(directive ? { skillDirective: directive } : {}),
     ...(compaction ? { compaction } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(agentReport ? { agentReport } : {}),
+    ...(agentNotice ? { agentNotice: true } : {}),
   }
 
   const like: ThreadMessageLike = {

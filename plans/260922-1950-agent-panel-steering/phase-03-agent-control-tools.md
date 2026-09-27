@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Agent control tools: stop_agent and read_agent"
-status: pending
+status: completed
 priority: P1
 effort: 1d
 dependencies: [2]

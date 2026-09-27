@@ -1,9 +1,10 @@
-import type {
-  ButtonHTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
+import {
+  forwardRef,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from "react";
 
 export type BadgeTone =
@@ -34,20 +35,20 @@ const BUTTON_SIZES: Record<ControlSize, string> = {
   md: "min-h-11 gap-2 px-3.5",
 };
 
-export function Button({
-  variant = "secondary",
-  size = "md",
-  icon,
-  children,
-  className = "",
-  ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: ButtonVariant;
-  size?: ControlSize;
-  icon?: ReactNode;
-}) {
+export const Button = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: ButtonVariant;
+    size?: ControlSize;
+    icon?: ReactNode;
+  }
+>(function Button(
+  { variant = "secondary", size = "md", icon, children, className = "", ...rest },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       {...rest}
       className={`relative inline-flex items-center justify-center rounded-sm text-sm transition-[background-color,border-color,color,transform] duration-150 ease-out-quart after:absolute after:-inset-1 after:content-[''] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_SIZES[size]} ${VARIANTS[variant]} ${className}`}
     >
@@ -55,7 +56,7 @@ export function Button({
       {children}
     </button>
   );
-}
+});
 
 export function Field({
   label,

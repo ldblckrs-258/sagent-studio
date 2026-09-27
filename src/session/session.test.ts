@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AgentRuntime } from '../agents/runtime'
+import type { AgentRunRecord } from '../agents/store'
+import type { AgentParentContext } from '../agents/types'
 import { abortersCount, useChatStore } from '../chat/store'
 import { defaultThreadConfig } from '../chat/types'
 import { db } from '../vault/db'
@@ -7,7 +10,7 @@ import { useWorkspaceStore } from './workspace-state'
 import type { CodeRunner } from '../sandbox/types'
 import { isGatedTool } from '../tools/approval'
 import type { CodeToolRunners } from '../tools/builtin/code'
-import { createSession } from './session'
+import { agentNoticeFor, createAgentPorts, createSession } from './session'
 
 function noopRunner(): CodeRunner {
   return { run: async () => ({ stdout: '', stderr: '', result: null }) }
@@ -89,22 +92,26 @@ describe('createSession', () => {
     const session = createSession()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_agent',
       'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
       'spawn_agent',
+      'stop_agent',
     ])
 
     await session.toolRegistry.hydrate()
     await session.toolRegistry.hydrate()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_agent',
       'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
       'spawn_agent',
+      'stop_agent',
     ])
 
     session.dispose()
@@ -119,17 +126,21 @@ describe('createSession', () => {
 
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_agent',
       'read_tool_guide',
       'reset_sandbox',
       'run_js',
       'run_python',
       'spawn_agent',
+      'stop_agent',
     ])
     enabled = false
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'read_agent',
       'read_tool_guide',
       'spawn_agent',
+      'stop_agent',
     ])
 
     session.dispose()
@@ -232,6 +243,80 @@ describe('createSession', () => {
     const listed = session.builtinProviders(defaultThreadConfig('p1', 'm1'))
     expect(listed.some((entry) => entry.name === 'open_preview')).toBe(true)
     session.dispose()
+  })
+
+  it('binds the agent control port to the calling parent thread', async () => {
+    const runtime = {
+      spawn: vi.fn(async () => ({ status: 'running', runId: 'run-1' })),
+      steer: vi.fn(() => true),
+      stop: vi.fn(() => true),
+      read: vi.fn(async () => null),
+      resolveRun: vi.fn(async () => null),
+    } as unknown as AgentRuntime
+    const context: AgentParentContext = {
+      parentThreadId: 't1',
+      mode: 'editing',
+      toolNames: [],
+      providerId: 'p1',
+    }
+    const port = createAgentPorts(runtime, context)
+
+    await port.spawn({ prompt: 'go', mode: 'editing', tier: 'cheap' })
+    expect(runtime.spawn).toHaveBeenCalledWith(
+      context,
+      { prompt: 'go', mode: 'editing', tier: 'cheap' },
+      undefined,
+    )
+
+    port.steer?.('run-1', 'hi')
+    expect(runtime.steer).toHaveBeenCalledWith('t1', 'run-1', 'hi')
+    port.stop?.('run-1')
+    expect(runtime.stop).toHaveBeenCalledWith('t1', 'run-1', undefined)
+    await port.read?.('run-1', { lastN: 2 })
+    expect(runtime.read).toHaveBeenCalledWith('t1', 'run-1', { lastN: 2 })
+    await port.resolveRun?.({ label: 'scout' })
+    expect(runtime.resolveRun).toHaveBeenCalledWith('t1', { label: 'scout' })
+  })
+
+  it('refuses to steer or stop a run that is not live', () => {
+    const session = createSession()
+    expect(session.steerAgentRun('missing', 'hi')).toBe(false)
+    expect(session.stopAgentRun('missing')).toBe(false)
+    session.dispose()
+  })
+
+  it('names the user stop in a settled run notice', () => {
+    const record: AgentRunRecord = {
+      runId: 'run-1',
+      parentThreadId: 't1',
+      label: 'scout',
+      mode: 'editing',
+      tier: 'cheap',
+      status: 'stopped',
+      prompt: 'go',
+      events: [],
+      text: '',
+      toolCalls: 0,
+      approvals: [],
+      startedAt: 1,
+      stopReason: 'user_stop',
+      result: {
+        status: 'stopped',
+        mode: 'editing',
+        tier: 'cheap',
+        text: '',
+        toolCalls: 0,
+        stopReason: 'user_stop',
+      },
+    }
+
+    const notice = agentNoticeFor(record)
+    expect(notice.text).toContain('stopped by the user')
+    expect(notice.report).toMatchObject({
+      status: 'stopped',
+      label: 'scout',
+      stopReason: 'user_stop',
+    })
   })
 
   it('lists the five RAG tools without a vault-locked crash', () => {

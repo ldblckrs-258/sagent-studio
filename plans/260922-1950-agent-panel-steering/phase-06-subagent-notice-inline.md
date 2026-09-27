@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Sub-agent notice appears inline at arrival"
-status: pending
+status: completed
 priority: P1
 effort: 0.75d
 dependencies: []

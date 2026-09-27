@@ -42,8 +42,9 @@ import { CompactionIndicator } from "@/ui/compaction-indicator";
 import { ComposerControls } from "@/ui/composer-controls";
 import { ContextMeter } from "@/ui/context-meter";
 import type { AttachmentRecord } from "@/chat/attachments";
-import type { AgentNoticeMeta } from "@/chat/types";
+import type { AgentNoticeMeta, AgentNoticePart } from "@/chat/types";
 import { ComposerHighlight } from "@/ui/composer-highlight";
+import { UserBubble } from "@/ui/conversation";
 import { MentionSuggestions } from "@/ui/mention-suggestions";
 import { SlashSuggestions } from "@/ui/slash-suggestions";
 import {
@@ -56,8 +57,10 @@ import {
   QueueItemPrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
+  useAssistantDataUI,
   useAuiState,
   type AssistantState,
+  type DataMessagePartComponent,
   type FileMessagePartComponent,
   type ImageMessagePartComponent,
   type TextMessagePartComponent,
@@ -244,7 +247,12 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
   );
 };
 
-const ThreadMessage: FC = () => {
+/**
+ * One message in the transcript, dispatched by role. Exported so a surface
+ * outside the main thread (the Agents panel's run view) can render the same
+ * conversation with its own runtime and get identical message bodies.
+ */
+export const ThreadMessage: FC = () => {
   const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
@@ -257,18 +265,40 @@ const ThreadMessage: FC = () => {
             skillDirective?: { name: string };
             compaction?: { replacedCount: number };
             agentReport?: AgentNoticeMeta;
+            agentNotice?: boolean;
           }
         | undefined,
   );
   const skillDirective = custom?.skillDirective;
   const compaction = custom?.compaction;
-  const agentReport = custom?.agentReport;
+  // A standalone notice message is marked; an inline notice part instead rides
+  // inside the assistant message and renders through `AssistantMessage`, so it
+  // must not short-circuit the whole message here.
+  const noticeState = useAuiState((s) => {
+    const meta = s.message.metadata.custom as
+      | { agentNotice?: boolean }
+      | undefined;
+    if (meta?.agentNotice !== true) return undefined;
+    const notice = s.message.parts.find(
+      (candidate) => candidate.type === "data" && candidate.name === "agent-notice",
+    );
+    if (notice?.type === "data") return notice.data as AgentNoticePart["data"];
+    const text = s.message.parts.find((candidate) => candidate.type === "text");
+    return text?.type === "text" ? text.text : "";
+  });
+  const noticeReport: AgentNoticeMeta | undefined =
+    custom?.agentReport ??
+    (noticeState === undefined
+      ? undefined
+      : typeof noticeState === "string"
+        ? { status: "completed", response: noticeState }
+        : noticeState);
 
   if (isEditing) return <EditComposer />;
   if (isSpoken) return <SpokenMessage />;
   if (skillDirective) return <SkillDirectiveMarker name={skillDirective.name} />;
   if (compaction) return <CompactionMarker replacedCount={compaction.replacedCount} />;
-  if (agentReport) return <SubAgentReport report={agentReport} />;
+  if (noticeReport) return <SubAgentReport report={noticeReport} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
 };
@@ -655,6 +685,10 @@ const MessageError: FC = () => {
   );
 };
 
+const AgentNoticeCard: DataMessagePartComponent<AgentNoticePart["data"]> = ({
+  data,
+}) => <SubAgentReport report={data} />;
+
 const AssistantMessage: FC = () => {
   const {
     ToolFallback: ToolFallbackComponent = ToolFallback,
@@ -663,6 +697,10 @@ const AssistantMessage: FC = () => {
     TaskGroup: TaskGroupComponent,
   } = useContext(ThreadComponentsContext);
   const groupBy = TaskGroupComponent ? taskAwareGroupBy : threadGroupBy;
+
+  // An `agent-notice` data part renders the sub-agent card in place, so a
+  // background report interrupts the streaming turn exactly where it arrived.
+  useAssistantDataUI({ name: "agent-notice", render: AgentNoticeCard });
 
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
@@ -892,11 +930,11 @@ const UserMessage: FC = () => {
       <UserAttachmentBadges />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        <div className="aui-user-message-content peer bg-paper-sunk text-foreground rounded-(--composer-radius) px-4 py-2 wrap-break-word empty:hidden">
+        <UserBubble className="aui-user-message-content peer empty:hidden">
           <MessagePrimitive.Parts
             components={{ File: UserFilePart, Image: UserImagePart }}
           />
-        </div>
+        </UserBubble>
         <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
           <UserActionBar />
         </div>

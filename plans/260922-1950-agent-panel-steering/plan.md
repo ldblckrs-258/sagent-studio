@@ -1,7 +1,7 @@
 ---
 title: "Agent panel steering and control"
 description: "Upgrade the Agents right-panel to a master/detail flow view with live steering, force-stop, markdown rendering, and main-thread stop/read tools."
-status: pending
+status: completed
 priority: P1
 effort: 5d
 branch: main
@@ -51,13 +51,13 @@ the end of the turn.
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Steering and stop runtime](./phase-01-steering-and-stop-runtime.md) | Pending |
-| 2 | [Runtime control surface and parent notices](./phase-02-runtime-control-ports.md) | Pending |
-| 3 | [Agent control tools: stop_agent and read_agent](./phase-03-agent-control-tools.md) | Pending |
-| 4 | [Markdown rendering and tool-view visual sync](./phase-04-markdown-and-visual-sync.md) | Pending |
-| 5 | [Agents panel master/detail, composer, force-stop](./phase-05-agents-panel-master-detail.md) | Pending |
-| 6 | [Sub-agent notice appears inline at arrival](./phase-06-subagent-notice-inline.md) | Pending |
-| 7 | [Docs and end-to-end verification](./phase-07-docs-and-verification.md) | Pending |
+| 1 | [Steering and stop runtime](./phase-01-steering-and-stop-runtime.md) | Completed |
+| 2 | [Runtime control surface and parent notices](./phase-02-runtime-control-ports.md) | Completed |
+| 3 | [Agent control tools: stop_agent and read_agent](./phase-03-agent-control-tools.md) | Completed |
+| 4 | [Markdown rendering and tool-view visual sync](./phase-04-markdown-and-visual-sync.md) | Completed |
+| 5 | [Agents panel master/detail, composer, force-stop](./phase-05-agents-panel-master-detail.md) | Completed |
+| 6 | [Sub-agent notice appears inline at arrival](./phase-06-subagent-notice-inline.md) | Completed |
+| 7 | [Docs and end-to-end verification](./phase-07-docs-and-verification.md) | Completed |
 
 ## Cross-Plan Dependencies
 
@@ -79,25 +79,52 @@ the end of the turn.
 
 ## Success Criteria
 
-- [ ] A running sub-agent receives a user steering message at its next step and
+- [x] A running sub-agent receives a user steering message at its next step and
   responds within the same run; the message is visible in the flow.
-- [ ] Force-stop produces `status: stopped` with reason `user_stop` on the child
+- [x] Force-stop produces `status: stopped` with reason `user_stop` on the child
   thread and in the parent notice.
-- [ ] The main model can call `stop_agent` and `read_agent` (last N turns); both
+- [x] The main model can call `stop_agent` and `read_agent` (last N turns); both
   are scoped to the calling conversation.
-- [ ] Clicking a run in the Agents panel opens its flow with a working composer
+- [x] Clicking a run in the Agents panel opens its flow with a working composer
   and force-stop, and a back action.
-- [ ] Sub-agent responses render markdown in the panel, the tool-call detail, and
+- [x] Sub-agent responses render markdown in the panel, the tool-call detail, and
   the background notice card.
-- [ ] A sub-agent report appears inline at the moment it arrives, mid-turn, and
+- [x] A sub-agent report appears inline at the moment it arrives, mid-turn, and
   survives further stream chunks and a reload.
-- [ ] `pnpm test`, `pnpm lint`, and `pnpm build` pass.
+- [x] `pnpm test`, `pnpm lint`, and `pnpm build` pass.
 
 ## Validation Log
 
 Contract confirmed with the user through the brainstorm gate (five decisions in
 the table above), plus a follow-up decision to render sub-agent reports inline
 mid-turn rather than at the end of the turn. No open questions remain.
+
+### Completion notes
+
+- All seven phases implemented; `pnpm test` (134 files, 1557 passed, 1 skipped),
+  `pnpm lint`, and `pnpm build` pass.
+- **Single-writer deviation:** Phase 1 steps 3 and 4 both recorded the steering
+  `user-message` event, which duplicated the turn in the flow. The runner now
+  records it when it drains the queue (the chronological injection point); the
+  store only enqueues. Persisted child transcripts also carry steering turns, so
+  `read_agent` and a reloaded panel flow match a live run.
+- **Independent review remediation:** a fresh-context review found and the
+  implementation fixed one High (inline notices were not model-visible: a
+  `convertDataPart` mapping now feeds them to `convertToModelMessages` in both
+  the run path and compaction) and four Medium findings (read tool-turn parity
+  across live/reloaded runs, honest `steer` rejection once a channel closes,
+  steering history continuity across `prepareStep` injection, and an aggregate
+  `read_agent` output cap). See `reports/review-remediation.md`.
+- **UI refactor (post-implementation request):** the Agents panel mounts an
+  assistant-ui runtime for the selected run and reuses the main thread's real
+  conversation rendering (`ThreadMessage`, including markdown and tool-call
+  views) and its `ComposerPrimitive` message input, instead of a bespoke
+  timeline. A live run's events are projected into the same `UIMessage` shape
+  (`src/agents/run-messages.ts`, `src/chat/use-subagent-runtime.ts`). The list is
+  sectioned (Active / Recent), and a sub-agent tool call in the transcript
+  carries an always-visible panel action that selects its run through
+  `src/session/agent-panel-state.ts`. The completed `spawn_agent` result now
+  carries its `runId` so an awaited run is openable too.
 
 ### Red Team Review
 

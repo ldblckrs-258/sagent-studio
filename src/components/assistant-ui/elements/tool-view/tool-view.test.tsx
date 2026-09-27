@@ -216,6 +216,42 @@ describe("ToolCallView dispatch", () => {
     expect(html).toContain("3 calls");
     expect(html).not.toContain("Used tool");
   });
+
+  it("headers a stop request with its target", () => {
+    const html = renderToStaticMarkup(
+      <ToolCallView
+        {...PART}
+        toolName="stop_agent"
+        args={{ label: "scout" }}
+        status={{ type: "complete" }}
+        result={{
+          ok: true,
+          code: "ok",
+          value: { runId: "run-1", label: "scout", stopped: true, reason: "user_stop" },
+        }}
+      />,
+    );
+    expect(html).toContain("Stopped scout");
+    expect(html).not.toContain("Used tool");
+  });
+
+  it("headers a read with its target", () => {
+    const html = renderToStaticMarkup(
+      <ToolCallView
+        {...PART}
+        toolName="read_agent"
+        args={{ runId: "run-7c21" }}
+        status={{ type: "complete" }}
+        result={{
+          ok: true,
+          code: "ok",
+          value: { runId: "run-7c21", status: "completed", turns: [], untrusted: true },
+        }}
+      />,
+    );
+    expect(html).toContain("Read run-7c21");
+    expect(html).not.toContain("Used tool");
+  });
 });
 
 describe("tool call grouping", () => {
@@ -408,6 +444,45 @@ describe("tool view details", () => {
     expect(html).toContain("Dispatched");
     expect(html).toContain("Running in the background.");
     expect(html).toContain("run-7c21");
+  });
+
+  it("confirms a stopped run by its id and reason", () => {
+    const html = renderDetail(
+      "stop_agent",
+      { runId: "run-7c21" },
+      {
+        ok: true,
+        code: "ok",
+        value: { runId: "run-7c21", stopped: true, reason: "user_stop" },
+      },
+    );
+    expect(html).toContain("Stopped");
+    expect(html).toContain("run-7c21");
+    expect(html).toContain("user_stop");
+  });
+
+  it("renders a read run's turns as markdown", () => {
+    const html = renderDetail(
+      "read_agent",
+      { runId: "run-7c21" },
+      {
+        ok: true,
+        code: "ok",
+        value: {
+          runId: "run-7c21",
+          status: "completed",
+          turns: [
+            { role: "user", text: "Map the callers." },
+            { role: "assistant", text: "## Findings\n\n- vault layer" },
+          ],
+          untrusted: true,
+        },
+      },
+    );
+    expect(html).toContain("<h2");
+    expect(html).toContain("Findings");
+    expect(html).toContain("Map the callers.");
+    expect(html).toContain("untrusted");
   });
 
   it("renders every registered detail with no result without throwing", () => {

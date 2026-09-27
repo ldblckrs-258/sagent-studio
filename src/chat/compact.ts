@@ -7,6 +7,7 @@ import type { PipelineDeps } from './engine'
 import { ChatError } from './errors'
 import type { ChatMessageMetadata } from './sanitize'
 import type { ChatThread, ThreadConfig } from './types'
+import { convertAgentNoticePart } from './types'
 import { contextTokensOf } from './usage'
 
 export {
@@ -42,6 +43,7 @@ export async function summarizeMessages(
   const model = modelFactory(settings, config.providerId, config.modelId)
   const history = await convertToModelMessages([...messages], {
     ignoreIncompleteToolCalls: true,
+    convertDataPart: convertAgentNoticePart,
   })
   const request =
     instructions !== undefined && instructions.trim().length > 0

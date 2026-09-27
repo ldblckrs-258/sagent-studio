@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Docs and end-to-end verification"
-status: pending
+status: completed
 priority: P2
 effort: 1d
 dependencies: [1, 2, 3, 4, 5, 6]

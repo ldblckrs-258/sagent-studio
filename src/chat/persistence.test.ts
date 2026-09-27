@@ -292,6 +292,23 @@ describe('agent run persistence', () => {
     })
   })
 
+  it('keeps a stopped run reason through a reload', async () => {
+    await saveThread(
+      thread('run-stop', {
+        agent: {
+          runId: 'run-stop',
+          parentThreadId: 'parent-1',
+          mode: 'editing',
+          tier: 'medium',
+          status: 'stopped',
+          stopReason: 'user_stop',
+        },
+      }),
+    )
+    const loaded = await loadThread('run-stop')
+    expect(loaded?.agent?.stopReason).toBe('user_stop')
+  })
+
   it('excludes child runs from the conversations list', async () => {
     await saveThread(thread('parent-1', { updatedAt: 1000 }))
     await saveThread(agentThread('run-1', 'parent-1', 'completed'))

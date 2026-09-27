@@ -32,10 +32,14 @@ export type AgentRunStatus =
   | "completed"
   | "denied"
   | "aborted"
+  | "stopped"
   | "error"
   | "interrupted"
   | "limit_exceeded"
   | "invalid_input";
+
+/** Why a run was stopped. Only a user stop exists today, distinct from a system abort. */
+export type AgentStopReason = "user_stop";
 
 /**
  * A thread that records a delegated agent run. Present only on child agent
@@ -49,6 +53,7 @@ export interface AgentThreadMeta {
   mode: ChatMode;
   tier: ModelTier;
   status: AgentRunStatus;
+  stopReason?: AgentStopReason;
 }
 
 /**
@@ -61,15 +66,53 @@ export interface AgentNoticeReport {
   status: AgentRunStatus;
   /** The run's result summary, rendered as the report body. */
   response: string;
+  stopReason?: AgentStopReason;
 }
 
 export type AgentNoticeMeta = AgentNoticeReport & { runId?: string };
+
+/**
+ * A background run's notice carried as an inline data part on the assistant
+ * message it arrived during. `text` is the model-visible framing; the rest is
+ * the structured report the transcript renders as a sub-agent card.
+ */
+export type AgentNoticePart = {
+  type: "data-agent-notice";
+  data: { text: string } & AgentNoticeMeta;
+};
+
+export function isAgentNoticePart(
+  part: { type?: unknown },
+): part is AgentNoticePart {
+  return (
+    typeof part === "object" &&
+    part !== null &&
+    (part as { type?: unknown }).type === "data-agent-notice"
+  );
+}
+
+/**
+ * Turns an inline agent notice back into model text. A data part carries no
+ * content the model would otherwise read, so without this converter the inline
+ * notice path (unlike the idle path, which also writes a text part) is dropped
+ * from the request. Any other data part converts to undefined and is ignored,
+ * which is the default the conversion path already applies.
+ */
+export function convertAgentNoticePart(
+  part: UIMessage["parts"][number],
+): { type: "text"; text: string } | undefined {
+  if (!isAgentNoticePart(part)) return undefined;
+  return typeof part.data.text === "string"
+    ? { type: "text", text: part.data.text }
+    : undefined;
+}
 
 const AGENT_RUN_STATUSES: readonly AgentRunStatus[] = [
   "running",
   "completed",
   "denied",
   "aborted",
+  "stopped",
   "error",
   "interrupted",
   "limit_exceeded",

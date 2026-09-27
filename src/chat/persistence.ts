@@ -97,6 +97,7 @@ function validateAgentMeta(value: unknown): AgentThreadMeta | undefined {
     status: candidate.status,
   }
   if (typeof candidate.label === 'string') meta.label = candidate.label
+  if (candidate.stopReason === 'user_stop') meta.stopReason = candidate.stopReason
   return meta
 }
 

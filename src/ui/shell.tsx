@@ -30,6 +30,7 @@ import { useChatStore } from "../chat/store";
 import { useChatRuntime } from "../chat/use-chat-runtime";
 import { Thread } from "../components/assistant-ui/elements/thread.aui";
 import { useMediaQuery } from "../hooks/use-media-query";
+import { useAgentPanelStore } from "../session/agent-panel-state";
 import { useFileViewStore } from "../session/file-view-state";
 import { useSession } from "../session/session-context";
 import { useVaultStore } from "../vault/store";
@@ -336,6 +337,22 @@ export function Shell({ left }: { left?: ReactNode }) {
 
   const openWorkspacePanel = () =>
     setRail((prev) => ({ ...prev, open: true, activePanel: "workspace" }));
+
+  // A sub-agent tool call in the transcript selects a run through the shared
+  // store; watch it so that click reveals the Agents panel without the caller
+  // reaching into the shell's local rail state.
+  useEffect(
+    () =>
+      useAgentPanelStore.subscribe((state) => {
+        if (state.selectedRunId === null) return;
+        setRail((prev) =>
+          prev.open && prev.activePanel === "agents"
+            ? prev
+            : { ...prev, open: true, activePanel: "agents" },
+        );
+      }),
+    [],
+  );
 
   const panels: RailPanelDef[] = [
     {

@@ -1,13 +1,22 @@
+import type { UIMessage } from 'ai'
 import type { ChatEngine, EngineDeps, ThreadStore } from '../chat/engine'
 import { createEngine, createSkillLoadPort } from '../chat/engine'
 import type { AgentParentContext } from '../agents/types'
 import { summarizeAgentResult } from '../agents/types'
 import { createAgentRuntime } from '../agents/runtime'
-import type { AgentRunPersistence, AgentRunSnapshot } from '../agents/runtime'
+import type { AgentRunPersistence, AgentRunSnapshot, AgentRuntime } from '../agents/runtime'
 import { agentRunStore } from '../agents/store'
-import type { ChatThread, ThreadConfig } from '../chat/types'
+import type { AgentRunRecord } from '../agents/store'
+import type { AgentNoticeReport, ChatThread, ThreadConfig } from '../chat/types'
 import { defaultThreadConfig } from '../chat/types'
-import { deleteThread, listThreads, loadThread, saveThread } from '../chat/persistence'
+import {
+  deleteThread,
+  listAgentRuns,
+  listThreads,
+  loadThread,
+  saveThread,
+} from '../chat/persistence'
+import { rehydrateThread } from '../chat/sanitize'
 import { useChatStore } from '../chat/store'
 import { labelConversation } from '../chat/threads'
 import { createEmbedder } from '../ai/embedder'
@@ -100,6 +109,10 @@ export interface AppSession {
   dispose(): void
   /** Aborts one delegated run by id. */
   cancelAgentRun(runId: string): void
+  /** Steers a live delegated run; false when the run is not live. */
+  steerAgentRun(runId: string, text: string): boolean
+  /** Force-stops a live delegated run; false when the run is not live. */
+  stopAgentRun(runId: string): boolean
   getWorkspace(): WorkspaceFs | null
   setWorkspace(fs: WorkspaceFs | null): void
   /** Builtin tools with availability and introspection details for the given thread config's ports. */
@@ -145,7 +158,81 @@ function agentThreadFrom(snapshot: AgentRunSnapshot): ChatThread {
       mode: snapshot.mode,
       tier: snapshot.tier,
       status: snapshot.status,
+      ...(snapshot.stopReason !== undefined ? { stopReason: snapshot.stopReason } : {}),
     },
+  }
+}
+
+/** Reads a child thread's first user message as the run prompt. */
+function promptFromMessages(messages: UIMessage[]): string {
+  const first = messages.find((message) => message.role === 'user')
+  if (!first) return ''
+  return first.parts
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .join('')
+}
+
+/** Rebuilds a run snapshot from a persisted child thread; null is not a child. */
+function agentSnapshotFrom(thread: ChatThread): AgentRunSnapshot | null {
+  const meta = thread.agent
+  if (!meta) return null
+  return {
+    runId: meta.runId,
+    parentThreadId: meta.parentThreadId,
+    providerId: thread.config.providerId,
+    ...(thread.config.modelId !== undefined ? { modelId: thread.config.modelId } : {}),
+    mode: meta.mode,
+    tier: meta.tier,
+    ...(meta.label !== undefined ? { label: meta.label } : {}),
+    status: meta.status,
+    ...(meta.stopReason !== undefined ? { stopReason: meta.stopReason } : {}),
+    prompt: promptFromMessages(thread.messages),
+    messages: thread.messages,
+    startedAt: thread.createdAt,
+  }
+}
+
+/**
+ * Words a settled run's parent notice. A user stop is named as such rather than
+ * surfacing as a generic finish, and the stop reason travels in the report.
+ */
+export function agentNoticeFor(run: AgentRunRecord): { text: string; report: AgentNoticeReport } {
+  const status = run.result?.status ?? run.status
+  const label = run.label ? ` "${run.label}"` : ''
+  const stopReason = run.result?.stopReason ?? run.stopReason
+  if (status === 'stopped') {
+    return {
+      text: `Sub-agent${label} stopped by the user.`,
+      report: {
+        status,
+        response: `The user stopped the sub-agent${label}.`,
+        ...(run.label !== undefined ? { label: run.label } : {}),
+        ...(stopReason !== undefined ? { stopReason } : {}),
+      },
+    }
+  }
+  const response = run.result ? summarizeAgentResult(run.result) : `The agent ${run.status}.`
+  return {
+    text: `Sub-agent${label} finished: ${response}`,
+    report: {
+      status,
+      response,
+      ...(run.label !== undefined ? { label: run.label } : {}),
+    },
+  }
+}
+
+/** Binds the runtime's control surface to one calling parent's context. */
+export function createAgentPorts(
+  runtime: AgentRuntime,
+  context: AgentParentContext,
+): AgentSpawnPort {
+  return {
+    spawn: (request, options) => runtime.spawn(context, request, options),
+    steer: (runId, text) => runtime.steer(context.parentThreadId, runId, text),
+    stop: (runId, reason) => runtime.stop(context.parentThreadId, runId, reason),
+    read: (runId, options) => runtime.read(context.parentThreadId, runId, options),
+    resolveRun: (identifier) => runtime.resolveRun(context.parentThreadId, identifier),
   }
 }
 
@@ -318,6 +405,16 @@ export function createSession(options: SessionOptions = {}): AppSession {
     save: async (snapshot) => {
       await saveThread(agentThreadFrom(snapshot))
     },
+    load: async (runId) => {
+      const thread = await loadThread(runId)
+      return thread ? agentSnapshotFrom(rehydrateThread(thread)) : null
+    },
+    list: async (parentThreadId) => {
+      const threads = await listAgentRuns(parentThreadId)
+      return threads
+        .map((thread) => agentSnapshotFrom(thread))
+        .filter((snapshot): snapshot is AgentRunSnapshot => snapshot !== null)
+    },
   }
   const agentRuntime = createAgentRuntime({
     getSettings,
@@ -343,17 +440,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
       if (!useChatStore.getState().threads[parentThreadId]) return;
       const engine = engines.get(parentThreadId);
       if (!engine) return;
-      const status = run.result?.status ?? run.status;
-      const response = run.result
-        ? summarizeAgentResult(run.result)
-        : `The agent ${run.status}.`;
-      const label = run.label ? ` "${run.label}"` : "";
-      engine.appendAgentNotice(
-        parentThreadId,
-        `Sub-agent${label} finished: ${response}`,
-        run.runId,
-        { status, response, ...(run.label ? { label: run.label } : {}) },
-      );
+      const notice = agentNoticeFor(run);
+      engine.appendAgentNotice(parentThreadId, notice.text, run.runId, notice.report);
     },
   })
 
@@ -362,9 +450,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     skillRegistry,
     toolRegistry,
     threadStore,
-    agentPortsFor: (context: AgentParentContext): AgentSpawnPort => ({
-      spawn: (request, spawnOptions) => agentRuntime.spawn(context, request, spawnOptions),
-    }),
+    agentPortsFor: (context) => createAgentPorts(agentRuntime, context),
     get workspace() {
       return getWorkspace() ?? undefined
     },
@@ -430,6 +516,18 @@ export function createSession(options: SessionOptions = {}): AppSession {
     disposeThread,
     dispose,
     cancelAgentRun: (runId) => agentRuntime.cancel(runId),
+    steerAgentRun: (runId, text) => {
+      // The live record knows the run's owning conversation; the runtime then
+      // re-checks that ownership before enqueuing.
+      const parentThreadId = agentRunStore.get(runId)?.parentThreadId
+      if (parentThreadId === undefined) return false
+      return agentRuntime.steer(parentThreadId, runId, text)
+    },
+    stopAgentRun: (runId) => {
+      const parentThreadId = agentRunStore.get(runId)?.parentThreadId
+      if (parentThreadId === undefined) return false
+      return agentRuntime.stop(parentThreadId, runId)
+    },
     getWorkspace,
     setWorkspace(fs) {
       useWorkspaceStore.getState().setFs(fs)

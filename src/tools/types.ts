@@ -1,8 +1,13 @@
 import type { Tool } from 'ai'
 import type {
+  AgentReadOptions,
   AgentRequest,
+  AgentRunIdentifier,
+  AgentRunIdentity,
   AgentSpawnOptions,
   AgentSpawnOutcome,
+  AgentStopReason,
+  AgentTranscript,
 } from '../agents/types'
 import type { RagPort } from '../rag/port'
 import type { CodeRunner } from '../sandbox/types'
@@ -229,6 +234,15 @@ export interface ApprovalPolicyPort {
  */
 export interface AgentSpawnPort {
   spawn(request: AgentRequest, options?: AgentSpawnOptions): Promise<AgentSpawnOutcome>
+  /**
+   * The control surface the session-provided port implements. Optional so a
+   * caller that only delegates (a test double, an older port) stays assignable;
+   * every method re-checks the caller's parent thread where it acts.
+   */
+  steer?(runId: string, text: string): boolean
+  stop?(runId: string, reason?: AgentStopReason): boolean
+  read?(runId: string, options?: AgentReadOptions): Promise<AgentTranscript | null>
+  resolveRun?(identifier: AgentRunIdentifier): Promise<AgentRunIdentity | null>
 }
 
 export interface ToolRuntimePorts {

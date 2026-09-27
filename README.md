@@ -112,22 +112,30 @@ model is waiting on you.
 
 ## Delegating work to sub-agents
 
-The model can hand a bounded, self-contained task to a nested **sub-agent** with the
+The model can hand a self-contained task to a nested **sub-agent** with the
 `spawn_agent` tool. This keeps a big piece of work out of the main conversation's context, or
 lets a task run while you keep going.
 
 - **Inline or background.** An awaited agent returns its result as the tool result. A
   background agent returns immediately, streams into the **Agents** panel, and appends one
-  summary notice to the conversation when it settles. The conversation does not continue on
-  its own.
+  summary notice to the conversation when it settles. That notice lands inline in the turn
+  that was still streaming when the agent finished, or as its own card when the
+  conversation is idle. The conversation does not continue on its own.
+- **Steer or force-stop a live run.** Select a run in the **Agents** panel to open its flow,
+  send it a steering message it picks up at its next step, or force-stop it. A stopped run
+  settles with the **stopped** status (reason `user_stop`) instead of a failure. The main
+  model can do the same with the `stop_agent` tool, and read a run's most recent turns with
+  `read_agent`.
 - **In the transcript.** A `spawn_agent` call renders as a two-part card: the brief that was
   delegated, then the agent's returned text, with its tier and mode on the header and a tool
   call and token count on the result. A background run lands as its own sub-agent report card
-  when it settles, carrying the agent's name, its outcome, and the returned text.
+  when it settles, carrying the agent's name, its outcome, and the returned text. The call's
+  card also has an **Open in panel** action that jumps straight to that run in the Agents panel.
 - **Mode is capped.** A sub-agent never runs above the conversation's own mode. In an
   *Editing* conversation, a request for *Full access* runs as *Editing*.
 - **A subset of your tools.** A sub-agent can only use tools you already have, and never
-  `spawn_agent`, `change_mode`, `update_plan`, or `restore`. Delegation is one level deep.
+  `spawn_agent`, `stop_agent`, `read_agent`, `change_mode`, `update_plan`, or `restore`.
+  Delegation is one level deep.
 - **Model tiers.** A delegation picks a tier; when it does not, the mode chooses one for it
   (read-only → Spark, editing → Forge, full access → Prime). Oracle is used only when
   explicitly requested.
@@ -140,6 +148,9 @@ A run is saved as a child thread, so its transcript survives a reload; a run tha
 in flight when you reloaded shows as **interrupted** rather than running forever. Delegations
 run against the same configured providers and add no new network egress, and every detached
 run is abortable and stops on vault lock.
+
+The model reads the full `agents` operations guide through `read_tool_guide`; this section
+only summarizes it (source: [`src/tools/builtin/guides/agents.md`](src/tools/builtin/guides/agents.md)).
 
 ---
 

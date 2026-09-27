@@ -1,7 +1,7 @@
 import type { LanguageModel } from 'ai'
 import { jsonSchema, tool } from 'ai'
 import { MockLanguageModelV4 } from 'ai/test'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SkillRegistry } from '../skills/registry'
 import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
@@ -10,7 +10,12 @@ import { defaultSettings } from '../vault/settings'
 import { createApprovalQueue } from './approval-queue'
 import { runAgent } from './runner'
 import type { AgentRunInput } from './runner'
-import type { AgentParentContext } from './types'
+import type {
+  AgentParentContext,
+  AgentRunEvent,
+  AgentSteeringControl,
+  AgentStopReason,
+} from './types'
 
 type Chunk =
   | { type: 'stream-start'; warnings: never[] }
@@ -100,13 +105,38 @@ function parent(mode: AgentParentContext['mode'] = 'editing'): AgentParentContex
   }
 }
 
+function steeringControl(): {
+  control: AgentSteeringControl
+  enqueue(text: string): void
+  requestStop(reason: AgentStopReason): void
+} {
+  const pending: string[] = []
+  let reason: AgentStopReason | undefined
+  const control: AgentSteeringControl = {
+    drain: () => pending.splice(0, pending.length),
+    enqueue: (text) => {
+      pending.push(text)
+    },
+    stopRequested: () => reason !== undefined,
+    stopReason: () => reason,
+    requestStop: (next) => {
+      reason = next
+    },
+  }
+  return {
+    control,
+    enqueue: (text) => control.enqueue(text),
+    requestStop: (next) => control.requestStop(next),
+  }
+}
+
 function buildDeps(
   model: MockLanguageModelV4,
   executed: string[],
   overrides: {
     settings?: ReturnType<typeof defaultSettings>
-    maxSteps?: number
     queue?: ReturnType<typeof createApprovalQueue>
+    steering?: AgentSteeringControl
   } = {},
 ) {
   const controller = new AbortController()
@@ -120,7 +150,7 @@ function buildDeps(
     ports: {} as ToolRuntimePorts,
     modelFactory: () => model as unknown as LanguageModel,
     queue,
-    ...(overrides.maxSteps !== undefined ? { maxSteps: overrides.maxSteps } : {}),
+    ...(overrides.steering !== undefined ? { steering: overrides.steering } : {}),
   }
   return { controller, deps, queue }
 }
@@ -192,25 +222,164 @@ describe('runAgent', () => {
     const result = await run
 
     expect(result.status).toBe('aborted')
+    expect(result.stopReason).toBeUndefined()
     expect(queue.pending()).toHaveLength(0)
     expect(executed).toEqual([])
   })
 
-  it('stops after the step cap', async () => {
+  it('returns stopped with the user_stop reason when a stop was requested', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{ stream: streamOf(toolStep('c1', 'create_skill', {})) }],
+    })
+    const executed: string[] = []
+    const steering = steeringControl()
+    const { controller, deps, queue } = buildDeps(model, executed, { steering: steering.control })
+
+    const run = runAgent(input(), deps, controller.signal, () => {})
+    await waitFor(() => queue.pending().length > 0)
+    steering.requestStop('user_stop')
+    controller.abort()
+    const result = await run
+
+    expect(result.status).toBe('stopped')
+    expect(result.stopReason).toBe('user_stop')
+  })
+
+  it('delivers a steering message in a continuation pass and records it', async () => {
     const model = new MockLanguageModelV4({
       doStream: [
         { stream: streamOf(toolStep('c1', 'read_file')) },
-        { stream: streamOf(toolStep('c2', 'read_file')) },
-        { stream: streamOf(toolStep('c3', 'read_file')) },
+        { stream: streamOf(textStep('t2', 'first answer')) },
+        { stream: streamOf(textStep('t3', 'steered answer')) },
       ],
     })
     const executed: string[] = []
-    const { controller, deps } = buildDeps(model, executed, { maxSteps: 2 })
+    const steering = steeringControl()
+    const { controller, deps } = buildDeps(model, executed, { steering: steering.control })
+    const events: AgentRunEvent[] = []
+    let enqueued = false
+
+    const result = await runAgent(input(), deps, controller.signal, (event) => {
+      events.push(event)
+      if (!enqueued && event.type === 'text-delta') {
+        enqueued = true
+        steering.enqueue('please steer')
+      }
+    })
+
+    expect(result.status).toBe('completed')
+    expect(model.doStreamCalls).toHaveLength(3)
+    expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain('please steer')
+    expect(
+      events.some((event) => event.type === 'user-message' && event.text === 'please steer'),
+    ).toBe(true)
+    expect(result.text).toContain('steered answer')
+  })
+
+  it('keeps draining steering turns with no fixed budget', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: Array.from({ length: 35 }, (_, index) => ({
+        stream: streamOf(textStep(`t${index}`, 'ok')),
+      })),
+    })
+    const executed: string[] = []
+    let drained = 0
+    const steering: AgentSteeringControl = {
+      drain: () => (drained < 30 ? ((drained += 1), ['keep going']) : []),
+      enqueue: () => {},
+      stopRequested: () => false,
+      stopReason: () => undefined,
+      requestStop: () => {},
+    }
+    const { controller, deps } = buildDeps(model, executed, { steering })
+    let userMessages = 0
+
+    await runAgent(input(), deps, controller.signal, (event) => {
+      if (event.type === 'user-message') userMessages += 1
+    })
+
+    expect(userMessages).toBe(30)
+    expect(model.doStreamCalls).toHaveLength(31)
+  })
+
+  it('keeps a prepareStep-injected steer in a later pass\u2019s history', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'read_file')) },
+        { stream: streamOf(textStep('t2', 'first answer')) },
+        { stream: streamOf(textStep('t3', 'second answer')) },
+      ],
+    })
+    const executed: string[] = []
+    const pending: string[] = []
+    const steering: AgentSteeringControl = {
+      drain: () => pending.splice(0, pending.length),
+      enqueue: (text) => {
+        pending.push(text)
+      },
+      stopRequested: () => false,
+      stopReason: () => undefined,
+      requestStop: () => {},
+    }
+    const { controller, deps } = buildDeps(model, executed, { steering })
+    let enqueuedSecond = false
+
+    const result = await runAgent(input(), deps, controller.signal, (event) => {
+      // The tool result lets the next step's prepareStep inject; the second
+      // steer is queued too late for that step, so it triggers the next pass.
+      if (event.type === 'tool-call') steering.enqueue('first steer')
+      if (!enqueuedSecond && event.type === 'text-delta' && event.text === 'first answer') {
+        enqueuedSecond = true
+        steering.enqueue('second steer')
+      }
+    })
+
+    expect(result.status).toBe('completed')
+    expect(model.doStreamCalls).toHaveLength(3)
+    // Pass 1 injected 'first steer' through its `prepareStep` override; pass 2
+    // (the third model call) must still carry it in its own prompt.
+    expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain('first steer')
+  })
+
+  it('closes the steering channel once the run settles', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{ stream: streamOf(textStep('t1', 'done')) }],
+    })
+    const executed: string[] = []
+    const close = vi.fn()
+    const steering: AgentSteeringControl = {
+      drain: () => [],
+      enqueue: () => {},
+      stopRequested: () => false,
+      stopReason: () => undefined,
+      requestStop: () => {},
+      accepting: () => true,
+      close,
+    }
+    const { controller, deps } = buildDeps(model, executed, { steering })
 
     const result = await runAgent(input(), deps, controller.signal, () => {})
 
-    expect(result.toolCalls).toBe(2)
-    expect(model.doStreamCalls).toHaveLength(2)
+    expect(result.status).toBe('completed')
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs every tool step the model asks for, with no step cap', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        ...Array.from({ length: 30 }, (_, index) => ({
+          stream: streamOf(toolStep(`c${index}`, 'read_file')),
+        })),
+        { stream: streamOf(textStep('final', 'finished')) },
+      ],
+    })
+    const executed: string[] = []
+    const { controller, deps } = buildDeps(model, executed)
+
+    const result = await runAgent(input(), deps, controller.signal, () => {})
+
+    expect(result.toolCalls).toBe(30)
+    expect(result.status).toBe('completed')
   })
 
   it('reports invalid_input for an unknown requested skill', async () => {

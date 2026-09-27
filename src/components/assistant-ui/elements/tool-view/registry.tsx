@@ -103,18 +103,30 @@ function SpecializedToolView({
   const label = spec.label(record, envelope);
   const meta = spec.meta?.(record, envelope);
   const chips = spec.chips?.(record, envelope);
+  const action = spec.action?.(record, envelope);
   const Detail = spec.Detail ?? GenericDetail;
   const detailProps: ToolDetailProps = { args: record, envelope, status };
 
+  const trigger = (
+    <ToolViewTrigger
+      icon={spec.icon}
+      label={label}
+      meta={meta}
+      {...(chips !== undefined ? { chips } : {})}
+      status={status}
+    />
+  );
+
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
-      <ToolViewTrigger
-        icon={spec.icon}
-        label={label}
-        meta={meta}
-        {...(chips !== undefined ? { chips } : {})}
-        status={status}
-      />
+      {action !== undefined && action !== null ? (
+        <div className="flex items-center gap-1">
+          <div className="min-w-0 flex-1">{trigger}</div>
+          {action}
+        </div>
+      ) : (
+        trigger
+      )}
       <ToolFallbackContent>
         <ToolFailure envelope={envelope} status={status} />
         {shouldRenderApproval && (

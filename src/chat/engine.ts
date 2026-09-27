@@ -66,7 +66,15 @@ import { registerAbortAll, useChatStore } from "./store";
 import { contextTokensOf, outputCharsOf, turnUsageFrom } from "./usage";
 import { normalizeTitle, patchThreadMode } from "./threads";
 import { countUserMessages, generateConversationTitle, shouldGenerateTitle } from "./title";
-import type { AgentNoticeReport, ChatMode, ChatThread, ThreadConfig } from "./types";
+import { convertAgentNoticePart, isAgentNoticePart } from "./types";
+import type {
+  AgentNoticeMeta,
+  AgentNoticePart,
+  AgentNoticeReport,
+  ChatMode,
+  ChatThread,
+  ThreadConfig,
+} from "./types";
 
 export interface PipelineDeps {
   getSettings(): Settings | null;
@@ -137,11 +145,13 @@ export interface ChatEngine {
   compact(threadId: string, instructions?: string): Promise<void>;
   cancel(threadId: string): Promise<void>;
   /**
-   * Appends a background-agent notice. When a run or a compaction is in flight
-   * for the thread the notice is queued and flushed once it settles, so it can
-   * never be clobbered by the run's own message writes. The optional `report`
-   * carries the run's identity and response so the transcript can render the
-   * notice as a sub-agent card; the `text` stays the model-visible framing.
+   * Appends a background-agent notice immediately. When the thread's run is
+   * still streaming, the notice is appended inline to that assistant message at
+   * the point it arrived and is preserved across the remaining chunks; when the
+   * thread is idle, it is written as a standalone notice message. The optional
+   * `report` carries the run's identity and response so the transcript can
+   * render the notice as a sub-agent card; the `text` stays the model-visible
+   * framing.
    */
   appendAgentNotice(
     threadId: string,
@@ -216,6 +226,45 @@ function toolNameOf(part: Record<string, unknown>): string {
     return type.slice("tool-".length);
   }
   return typeof part.toolName === "string" ? part.toolName : "";
+}
+
+/**
+ * A stable identity for a notice part, used to keep an injected notice from
+ * being added twice when the streaming loop re-merges it. A run id is the
+ * natural key; a run without one falls back to its payload, which is the best
+ * available identity.
+ */
+function noticeKeyOf(part: UIMessage["parts"][number]): string | undefined {
+  if (!isAgentNoticePart(part)) return undefined;
+  const { runId, text, status, response } = part.data;
+  if (runId !== undefined && runId.length > 0) return `run:${runId}`;
+  return `notice:${text}\u0000${status}\u0000${response}`;
+}
+
+/**
+ * Re-attaches any notice parts injected into the message while it streamed.
+ * The streamed reconstruction replaces the message's parts, so without this a
+ * notice appended mid-run would be dropped by the next chunk.
+ */
+function mergeNoticeParts(
+  streamed: UIMessage,
+  current: UIMessage | undefined,
+): UIMessage {
+  if (!current) return streamed;
+  const seen = new Set<string>();
+  for (const part of streamed.parts) {
+    const key = noticeKeyOf(part);
+    if (key !== undefined) seen.add(key);
+  }
+  const kept: UIMessage["parts"] = [];
+  for (const part of current.parts) {
+    const key = noticeKeyOf(part);
+    if (key === undefined || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(part);
+  }
+  if (kept.length === 0) return streamed;
+  return { ...streamed, parts: [...streamed.parts, ...kept] };
 }
 
 function collectPendingApprovals(messages: UIMessage[]): PendingApproval[] {
@@ -397,6 +446,7 @@ export async function buildRunStream(
     {
       tools: toolSet,
       ignoreIncompleteToolCalls: true,
+      convertDataPart: convertAgentNoticePart,
     },
   );
 
@@ -463,14 +513,6 @@ class DefaultEngine implements ChatEngine {
   private readonly controllers = new Map<string, AbortController>();
   private readonly runs = new Map<string, Promise<void>>();
   private readonly unregisterAbort: () => void;
-  /** Runs plus compactions in flight for this engine's thread. */
-  private inFlight = 0;
-  private noticeQueue: Array<{
-    threadId: string;
-    text: string;
-    runId?: string;
-    report?: AgentNoticeReport;
-  }> = [];
 
   constructor(deps: EngineDeps) {
     this.deps = deps;
@@ -628,12 +670,12 @@ class DefaultEngine implements ChatEngine {
       );
     }
     const thread = await this.requireThread(threadId);
+    const beforeIds = new Set(thread.messages.map((message) => message.id));
     // Registered like a run so `cancel` and `dispose` can abort a summarization
     // in flight, and so a vault lock does not leave one running against a
     // cleared store.
     const controller = new AbortController();
     this.controllers.set(threadId, controller);
-    this.inFlight += 1;
     useChatStore.getState().beginCompaction(threadId);
     try {
       const compacted = await compactThread(
@@ -644,14 +686,22 @@ class DefaultEngine implements ChatEngine {
       );
       // Only the messages move: a whole-object write would also restore the
       // `plan`, `mode` and `config` captured before the await.
-      this.setThreadMessages(threadId, compacted.messages);
+      const live = useChatStore.getState().threads[threadId];
+      const compactedIds = new Set(compacted.messages.map((message) => message.id));
+      // A notice can settle onto the thread while the summary call is running;
+      // carry those appended messages over so compaction does not drop them.
+      const added = live
+        ? live.messages.filter(
+            (message) =>
+              !beforeIds.has(message.id) && !compactedIds.has(message.id),
+          )
+        : [];
+      this.setThreadMessages(threadId, [...compacted.messages, ...added]);
       await this.persist(threadId);
     } finally {
       useChatStore.getState().endCompaction(threadId);
       if (this.controllers.get(threadId) === controller)
         this.controllers.delete(threadId);
-      this.inFlight = Math.max(0, this.inFlight - 1);
-      this.flushNotices();
     }
   }
 
@@ -668,15 +718,6 @@ class DefaultEngine implements ChatEngine {
     runId?: string,
     report?: AgentNoticeReport,
   ): void {
-    if (this.inFlight > 0) {
-      this.noticeQueue.push({
-        threadId,
-        text,
-        ...(runId !== undefined ? { runId } : {}),
-        ...(report !== undefined ? { report } : {}),
-      });
-      return;
-    }
     void this.writeNotice(threadId, text, runId, report);
   }
 
@@ -688,10 +729,45 @@ class DefaultEngine implements ChatEngine {
   ): Promise<void> {
     const thread = useChatStore.getState().threads[threadId];
     if (!thread) return;
+    const data: { text: string } & AgentNoticeMeta = {
+      text,
+      ...(runId !== undefined ? { runId } : {}),
+      ...report,
+      status: report?.status ?? "completed",
+      response: report?.response ?? text,
+    };
+    const part: AgentNoticePart = { type: "data-agent-notice", data };
+
+    const streaming = thread.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        (message.metadata as { chatStatus?: unknown } | undefined)?.chatStatus ===
+          "streaming",
+    );
+    if (streaming) {
+      const key = noticeKeyOf(part);
+      if (
+        key !== undefined &&
+        streaming.parts.some((existing) => noticeKeyOf(existing) === key)
+      ) {
+        return;
+      }
+      await this.saveNotice(threadId, {
+        ...thread,
+        messages: thread.messages.map((message) =>
+          message.id === streaming.id
+            ? { ...message, parts: [...message.parts, part] }
+            : message,
+        ),
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+
     const message: UIMessage = {
       id: createMessageId(),
       role: "assistant",
-      parts: [{ type: "text", text }],
+      parts: [{ type: "text", text }, part],
       metadata: {
         chatStatus: "done",
         agentNotice: true,
@@ -702,11 +778,14 @@ class DefaultEngine implements ChatEngine {
           : {}),
       },
     };
-    const next: ChatThread = {
+    await this.saveNotice(threadId, {
       ...thread,
       messages: [...thread.messages, message],
       updatedAt: Date.now(),
-    };
+    });
+  }
+
+  private async saveNotice(threadId: string, next: ChatThread): Promise<void> {
     useChatStore.getState().setThread(next);
     try {
       await this.deps.threadStore.saveThread(next);
@@ -714,16 +793,8 @@ class DefaultEngine implements ChatEngine {
       // Notices are fire-and-forget; a failed write must never surface as an
       // unhandled rejection. A lock drops the thread the same way a run's own
       // persist does.
-      if (error instanceof VaultLockedError) useChatStore.getState().removeThread(threadId);
-    }
-  }
-
-  private flushNotices(): void {
-    if (this.noticeQueue.length === 0) return;
-    const queued = this.noticeQueue;
-    this.noticeQueue = [];
-    for (const notice of queued) {
-      void this.writeNotice(notice.threadId, notice.text, notice.runId, notice.report);
+      if (error instanceof VaultLockedError)
+        useChatStore.getState().removeThread(threadId);
     }
   }
 
@@ -741,6 +812,32 @@ class DefaultEngine implements ChatEngine {
     const current = useChatStore.getState().threads[threadId];
     if (!current) return;
     useChatStore.getState().setThread({ ...current, messages });
+  }
+
+  /**
+   * Replaces the run's assistant message in place, by id, reading the current
+   * store synchronously. A notice injected mid-run therefore survives every
+   * chunk and the final write, and no sibling message is disturbed.
+   */
+  private updateAssistantMessage(
+    threadId: string,
+    messageId: string,
+    update: (current: UIMessage | undefined) => UIMessage,
+  ): void {
+    const thread = useChatStore.getState().threads[threadId];
+    if (!thread) return;
+    let replaced = false;
+    const messages = thread.messages.map((message) => {
+      if (message.id !== messageId) return message;
+      replaced = true;
+      return update(message);
+    });
+    if (!replaced) messages.push(update(undefined));
+    useChatStore.getState().setThread({
+      ...thread,
+      messages,
+      updatedAt: Date.now(),
+    });
   }
 
   /**
@@ -848,7 +945,6 @@ class DefaultEngine implements ChatEngine {
     const thread = await this.requireThread(threadId);
     const controller = new AbortController();
     this.controllers.set(threadId, controller);
-    this.inFlight += 1;
     useChatStore.getState().beginRun(threadId);
     useChatStore.getState().setError(null);
 
@@ -871,8 +967,18 @@ class DefaultEngine implements ChatEngine {
         if (resume) {
           this.setThreadMessages(threadId, runBase);
         } else {
+          // Carry over any message that landed while the pre-run compaction was
+          // in flight (a notice) so appending the placeholder does not drop it.
+          const live = useChatStore.getState().threads[threadId];
+          const known = new Set(runBase.map((message) => message.id));
+          const extra = live
+            ? live.messages.filter(
+                (message) => !known.has(message.id) && message.id !== assistantId,
+              )
+            : [];
           this.setThreadMessages(threadId, [
             ...runBase,
+            ...extra,
             {
               id: assistantId,
               role: "assistant",
@@ -905,8 +1011,6 @@ class DefaultEngine implements ChatEngine {
         if (this.controllers.get(threadId) === controller)
           this.controllers.delete(threadId);
         useChatStore.getState().endRun(threadId);
-        this.inFlight = Math.max(0, this.inFlight - 1);
-        this.flushNotices();
       }
     })();
 
@@ -977,13 +1081,20 @@ class DefaultEngine implements ChatEngine {
       } catch (error) {
         // A pre-stream failure (bad provider config, conversion error) must not
         // leave the streaming placeholder behind, or it re-enters later turns.
-        this.setThreadMessages(thread.id, baseMessages);
+        // Any notice that landed meanwhile stays.
+        const live = useChatStore.getState().threads[thread.id];
+        const known = new Set(baseMessages.map((message) => message.id));
+        const extra = live
+          ? live.messages.filter(
+              (message) => !known.has(message.id) && message.id !== assistantId,
+            )
+          : [];
+        this.setThreadMessages(thread.id, [...baseMessages, ...extra]);
         await this.persist(thread.id);
         throw error;
       }
     })();
 
-    const siblings = baseMessages.filter((message) => message.id !== assistantId);
     const existing = baseMessages.find((message) => message.id === assistantId);
     let latest: UIMessage = existing ?? {
       id: assistantId,
@@ -1012,7 +1123,9 @@ class DefaultEngine implements ChatEngine {
         terminateOnError: true,
       })) {
         latest = partial;
-        this.setThreadMessages(thread.id, [...siblings, setChatStatus(partial, "streaming")]);
+        this.updateAssistantMessage(thread.id, assistantId, (current) =>
+          mergeNoticeParts(setChatStatus(partial, "streaming"), current),
+        );
         const stats = useChatStore.getState().liveStats[thread.id];
         if (stats)
           useChatStore
@@ -1029,7 +1142,9 @@ class DefaultEngine implements ChatEngine {
     useChatStore.getState().clearLiveStats(thread.id);
 
     const finished = sanitizePartial(latest);
-    this.setThreadMessages(thread.id, [...siblings, finished]);
+    this.updateAssistantMessage(thread.id, assistantId, (current) =>
+      mergeNoticeParts(finished, current),
+    );
     await this.persist(thread.id);
 
     if (failure && !controller.signal.aborted && !isAbortError(failure))

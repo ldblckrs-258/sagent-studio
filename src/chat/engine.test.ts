@@ -14,9 +14,10 @@ import { useVaultStore } from "../vault/store";
 import type { ResolvedAttachments } from "./attachments";
 import type { EngineDeps } from "./engine";
 import { createEngine } from "./engine";
+import { rehydrateThread } from "./sanitize";
 import { abortersCount, useChatStore } from "./store";
 import type { ChatMode, ChatThread } from "./types";
-import { defaultThreadConfig } from "./types";
+import { convertAgentNoticePart, defaultThreadConfig } from "./types";
 
 type Usage = {
   inputTokens: {
@@ -1215,6 +1216,63 @@ describe("chat engine", () => {
     expect(useChatStore.getState().threads).toEqual({});
     expect(useChatStore.getState().status).toBe("idle");
   });
+
+  it("converts only an inline agent notice data part, leaving other data parts out", () => {
+    const notice: UIMessage = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        {
+          type: "data-agent-notice",
+          data: { text: "NOTICE_TEXT", status: "completed", response: "done" },
+        } as unknown as UIMessage["parts"][number],
+      ],
+    };
+    expect(convertAgentNoticePart(notice.parts[0])).toEqual({
+      type: "text",
+      text: "NOTICE_TEXT",
+    });
+    const other = {
+      type: "data-something-else",
+      data: { text: "IGNORED" },
+    } as unknown as UIMessage["parts"][number];
+    expect(convertAgentNoticePart(other)).toBeUndefined();
+    const malformed = {
+      type: "data-agent-notice",
+      data: { text: 42 },
+    } as unknown as UIMessage["parts"][number];
+    expect(convertAgentNoticePart(malformed)).toBeUndefined();
+  });
+
+  it("makes an inline agent notice visible to the model on the next turn", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "ok")) }]);
+    const { engine } = setup({ model });
+    const withNotice: UIMessage = {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "parent answer" },
+        {
+          type: "data-agent-notice",
+          data: {
+            text: "INLINE_NOTICE_MARKER",
+            status: "completed",
+            response: "sub result",
+          },
+        } as unknown as UIMessage["parts"][number],
+      ],
+      metadata: { chatStatus: "done" },
+    };
+    seed("th1", [user("u1", "delegate"), withNotice]);
+
+    await engine.sendTurn("th1", "next");
+
+    // Without `convertDataPart` wired into `buildRunStream`, the data part is
+    // dropped and the model never reads the notice it was shown.
+    expect(JSON.stringify(model.doStreamCalls[0].prompt)).toContain(
+      "INLINE_NOTICE_MARKER",
+    );
+  });
 });
 
 describe("progressive skill disclosure", () => {
@@ -1581,8 +1639,10 @@ describe("compact", () => {
   });
 });
 
-function isAgentNotice(message: UIMessage): boolean {
-  return (message.metadata as { agentNotice?: unknown } | undefined)?.agentNotice === true;
+function noticePartOf(message: UIMessage) {
+  return message.parts.find((part) => part.type === "data-agent-notice") as
+    | { type: "data-agent-notice"; data: { text: string } & Record<string, unknown> }
+    | undefined;
 }
 
 describe("chat engine agent notices", () => {
@@ -1603,6 +1663,10 @@ describe("chat engine agent notices", () => {
       untrusted: true,
       runId: "run-1",
     });
+    expect(noticePartOf(notice)).toMatchObject({
+      data: { text: "Sub-agent finished: done", runId: "run-1" },
+    });
+    expect(notice.id).not.toBe(useChatStore.getState().threads.th1.messages[0].id);
     await vi.waitFor(async () =>
       expect((await store.loadThread("th1"))?.messages).toHaveLength(2),
     );
@@ -1630,33 +1694,76 @@ describe("chat engine agent notices", () => {
     });
   });
 
-  it("queues a notice during a run and flushes it once the run settles", async () => {
+  it("shows a notice inline while the run streams, across chunks and a reload", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const model = new MockLanguageModelV4({
-      doStream: async ({ abortSignal }) => ({
+      doStream: async () => ({
         stream: new ReadableStream<Chunk>({
-          start(controller) {
-            const onAbort = () =>
-              controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
-            if (abortSignal?.aborted) onAbort();
-            else abortSignal?.addEventListener("abort", onAbort, { once: true });
+          async start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({ type: "text-start", id: "t1" });
+            controller.enqueue({ type: "text-delta", id: "t1", delta: "first " });
+            await gate;
+            controller.enqueue({ type: "text-delta", id: "t1", delta: "second" });
+            controller.enqueue({ type: "text-end", id: "t1" });
+            controller.enqueue({
+              type: "finish",
+              usage: usage(),
+              finishReason: { unified: "stop", raw: undefined },
+            });
+            controller.close();
           },
         }),
       }),
     });
-    const { engine } = setup({ model });
+    const { engine, store } = setup({ model });
     seed("th1", [user("u1", "hi")]);
 
     const running = engine.sendTurn("th1", "do it");
-    await vi.waitFor(() => expect(useChatStore.getState().status).toBe("streaming"));
+    await vi.waitFor(() => {
+      const last = useChatStore.getState().threads.th1.messages.at(-1);
+      expect(last && textOf(last)).toBe("first ");
+    });
 
-    engine.appendAgentNotice("th1", "arrived mid-run", "run-2");
-    // The in-flight run owns the message array, so the notice is not visible yet.
-    expect(useChatStore.getState().threads.th1.messages.some(isAgentNotice)).toBe(false);
+    engine.appendAgentNotice("th1", "arrived mid-run", "run-2", {
+      label: "audit",
+      status: "completed",
+      response: "Four call sites.",
+    });
 
-    await engine.cancel("th1");
+    // Visible immediately, inside the still-streaming assistant message.
+    const streaming = useChatStore.getState().threads.th1.messages.at(-1)!;
+    expect(streaming.metadata).toMatchObject({ chatStatus: "streaming" });
+    expect(noticePartOf(streaming)?.data).toMatchObject({
+      text: "arrived mid-run",
+      runId: "run-2",
+      label: "audit",
+      status: "completed",
+      response: "Four call sites.",
+    });
+    // The seeded user turn, this turn's user message, and the streaming reply.
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(3);
+
+    release();
     await running;
-    await vi.waitFor(() =>
-      expect(useChatStore.getState().threads.th1.messages.some(isAgentNotice)).toBe(true),
-    );
+
+    // The later chunk and the final write keep the notice.
+    const settled = useChatStore.getState().threads.th1.messages.at(-1)!;
+    expect(textOf(settled)).toBe("first second");
+    expect(settled.metadata).toMatchObject({ chatStatus: "done" });
+    expect(noticePartOf(settled)?.data).toMatchObject({ runId: "run-2" });
+
+    // A reload keeps it: sanitize/rehydrate only rewrite tool parts.
+    const saved = store.get("th1");
+    expect(saved).toBeDefined();
+    const reloaded = rehydrateThread(saved!);
+    expect(noticePartOf(reloaded.messages.at(-1)!)?.data).toMatchObject({
+      text: "arrived mid-run",
+      label: "audit",
+      response: "Four call sites.",
+    });
   });
 });

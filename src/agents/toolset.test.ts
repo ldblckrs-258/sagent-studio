@@ -18,6 +18,8 @@ const TOOL_NAMES = [
   'update_plan',
   'restore',
   'spawn_agent',
+  'stop_agent',
+  'read_agent',
   'load_skill',
   'search_skills',
   'read_tool_guide',
@@ -88,7 +90,15 @@ describe('resolveAgentToolNames', () => {
 
   it('subtracts blocked tools even when a skill names them', () => {
     const { toolRegistry, skillRegistry } = build({
-      allowedTools: ['read_file', 'change_mode', 'update_plan', 'restore', 'spawn_agent'],
+      allowedTools: [
+        'read_file',
+        'change_mode',
+        'update_plan',
+        'restore',
+        'spawn_agent',
+        'stop_agent',
+        'read_agent',
+      ],
     })
     const result = resolveAgentToolNames({
       toolRegistry,
@@ -100,7 +110,14 @@ describe('resolveAgentToolNames', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.names).toContain('read_file')
-    for (const blocked of ['change_mode', 'update_plan', 'restore', 'spawn_agent']) {
+    for (const blocked of [
+      'change_mode',
+      'update_plan',
+      'restore',
+      'spawn_agent',
+      'stop_agent',
+      'read_agent',
+    ]) {
       expect(result.names).not.toContain(blocked)
     }
   })

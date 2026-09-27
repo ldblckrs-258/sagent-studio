@@ -40,6 +40,12 @@ export interface ToolViewSpec {
    * decision always opens regardless.
    */
   autoOpen?: (args: Record<string, unknown>, envelope: ToolEnvelope | null) => boolean;
+  /**
+   * An action rendered beside the disclosure header, always visible even when
+   * the body is collapsed. It sits outside the trigger button, so it must be a
+   * real `<button>` of its own.
+   */
+  action?: (args: Record<string, unknown>, envelope: ToolEnvelope | null) => ReactNode;
   /** Structured body. Falls back to `GenericDetail` when omitted. */
   Detail?: FC<ToolDetailProps>;
 }
