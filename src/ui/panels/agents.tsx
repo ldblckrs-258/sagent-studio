@@ -10,7 +10,7 @@ import { useAgentPanelStore } from "../../session/agent-panel-state";
 import { useSession } from "../../session/session-context";
 import { pluralize } from "../../components/assistant-ui/elements/tool-view/helpers";
 import { ToolChip } from "../../components/assistant-ui/elements/tool-view/primitives";
-import { asTier, TierChip } from "../agent-chips";
+import { asTier, ProfileChip, TierChip } from "../agent-chips";
 import { AgentApprovalCard } from "../agent-approval";
 import { activityOf, elapsed, isRunning, STATUS_DOT, toolCallCount } from "../agent-status";
 import { Button, EmptyState } from "../primitives";
@@ -18,6 +18,7 @@ import { useRegistryVersion } from "../use-registry-version";
 
 export function RunRow({
   title,
+  profile,
   tier,
   status,
   activity,
@@ -31,6 +32,7 @@ export function RunRow({
   rowRef,
 }: {
   title: string;
+  profile?: string | undefined;
   tier: string;
   status: string;
   activity: string;
@@ -80,6 +82,7 @@ export function RunRow({
             {activity.length > 0 ? activity : " "}
           </span>
           <span className="flex flex-wrap items-center gap-1.5 pl-[18px]">
+            {profile !== undefined ? <ProfileChip profile={profile} /> : null}
             <TierChip tier={asTier(tier)} />
             <span className="text-faint text-[10px]">· {pluralize(toolCalls, "tool")} ·</span>
             <span className="numeric text-faint ms-auto font-mono text-[10px]">{elapsedText}</span>
@@ -106,6 +109,8 @@ export function AgentsPanel() {
   const activeThreadId = useChatStore((s) => s.activeThreadId);
   const selectedRunId = useAgentPanelStore((s) => s.selectedRunId);
   useRegistryVersion(agentRunStore);
+  useRegistryVersion(session.agentProfiles);
+  const profileErrors = session.agentProfiles.loadErrors();
   const [persisted, setPersisted] = useState<ChatThread[]>([]);
   const [stopping, setStopping] = useState<ReadonlySet<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
@@ -180,6 +185,15 @@ export function AgentsPanel() {
 
   return (
     <div className="flex min-w-0 flex-col py-1">
+      {profileErrors.length > 0 ? (
+        <div data-slot="agent-profile-errors" role="alert" className="flex flex-col gap-1 px-3 py-1.5">
+          {profileErrors.map((entry) => (
+            <p key={entry.path} className="text-caution text-[11px] break-words">
+              <span className="font-mono">{entry.path}</span>: {entry.message}
+            </p>
+          ))}
+        </div>
+      ) : null}
       {approvalsWithLabel.map(({ approval, label }) => (
         <AgentApprovalCard key={approval.id} approval={approval} {...(label ? { label } : {})} />
       ))}
@@ -203,6 +217,7 @@ export function AgentsPanel() {
             <RunRow
               key={run.runId}
               title={run.label || run.prompt.slice(0, 60) || "Agent run"}
+              profile={run.profile}
               tier={run.tier}
               status={run.status}
               activity={activityOf(run.messages, run.status)}
@@ -227,6 +242,7 @@ export function AgentsPanel() {
             <RunRow
               key={run.runId}
               title={run.label || run.prompt.slice(0, 60) || "Agent run"}
+              profile={run.profile}
               tier={run.tier}
               status={run.status}
               activity={activityOf(run.messages, run.status)}
@@ -247,6 +263,7 @@ export function AgentsPanel() {
               <RunRow
                 key={thread.id}
                 title={meta.label || thread.title}
+                profile={meta.profile}
                 tier={meta.tier}
                 status={meta.status}
                 activity={activityOf(thread.messages, meta.status)}

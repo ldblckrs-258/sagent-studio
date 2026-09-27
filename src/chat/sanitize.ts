@@ -17,6 +17,8 @@ export type ChatMessageMetadata = {
   attachments?: AttachmentRecord[]
   /** The structured report on a background sub-agent's notice message. */
   agentReport?: AgentNoticeMeta
+  autoContinue?: { runId?: string; label?: string }
+  rewind?: { seq: number; workspace?: string }
 }
 
 type MessagePart = UIMessage['parts'][number]

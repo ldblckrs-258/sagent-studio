@@ -77,6 +77,11 @@ const session = vi.hoisted(() => ({
   steerAgentRun: vi.fn(() => true),
   stopAgentRun: vi.fn(() => true),
   cancelAgentRun: vi.fn(),
+  agentProfiles: {
+    subscribe: () => () => {},
+    getVersion: () => 0,
+    loadErrors: vi.fn((): Array<{ path: string; message: string }> => []),
+  },
 }));
 
 vi.mock("../../session/session-context", () => ({
@@ -116,6 +121,7 @@ beforeEach(() => {
   session.stopAgentRun.mockClear();
   session.cancelAgentRun.mockClear();
   session.stopAgentRun.mockReturnValue(true);
+  session.agentProfiles.loadErrors.mockReturnValue([]);
 });
 
 afterEach(() => {
@@ -123,6 +129,37 @@ afterEach(() => {
 });
 
 describe("RunRow", () => {
+  it("shows the run's profile as a chip next to its tier", () => {
+    const withProfile = renderToStaticMarkup(
+      <RunRow
+        title="audit"
+        profile="reviewer"
+        tier="high"
+        status="completed"
+        activity=""
+        toolCalls={0}
+        elapsedText="3s"
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+    const without = renderToStaticMarkup(
+      <RunRow
+        title="audit"
+        tier="high"
+        status="completed"
+        activity=""
+        toolCalls={0}
+        elapsedText="3s"
+        selected={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(withProfile).toContain('data-slot="agent-profile-chip"');
+    expect(withProfile).toContain("reviewer");
+    expect(without).not.toContain('data-slot="agent-profile-chip"');
+  });
+
   it("marks the selected row with aria-current and keeps a stop button for a running run", () => {
     const markup = renderToStaticMarkup(
       <RunRow
@@ -216,6 +253,17 @@ describe("AgentsPanel", () => {
     });
     expect(session.stopAgentRun).toHaveBeenCalledWith("run-1");
 
+    panel.unmount();
+  });
+
+  it("reports a broken workspace profile file so its author can fix it", async () => {
+    session.agentProfiles.loadErrors.mockReturnValue([
+      { path: ".agents/agents/broken.md", message: '"mode" must be one of read_only, editing, god.' },
+    ]);
+    const panel = await mount(<AgentsPanel />);
+    const alert = panel.container.querySelector('[data-slot="agent-profile-errors"]');
+    expect(alert?.textContent).toContain(".agents/agents/broken.md");
+    expect(alert?.textContent).toContain('"mode"');
     panel.unmount();
   });
 });

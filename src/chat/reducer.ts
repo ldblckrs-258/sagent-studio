@@ -44,6 +44,12 @@ export function truncateAfter(messages: UIMessage[], id: string): UIMessage[] {
   return messages.slice(0, index + 1)
 }
 
+export function truncateBefore(messages: UIMessage[], id: string): UIMessage[] {
+  const index = indexOf(messages, id)
+  if (index === -1) return messages
+  return messages.slice(0, index)
+}
+
 export function undoLastTurn(messages: UIMessage[]): UIMessage[] {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index].role === 'user') return messages.slice(0, index)

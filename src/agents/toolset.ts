@@ -55,10 +55,12 @@ export function resolveAgentToolNames(input: {
   }
 
   const excluded = new Set(input.request.excludeTools ?? [])
+  const allowed = input.request.allowTools ? new Set(input.request.allowTools) : null
   const pool = new Set(
     input.parent.toolNames.filter(
       (name) =>
         !excluded.has(name) &&
+        (allowed === null || allowed.has(name)) &&
         isWithinCeiling(mode, descriptorFor(input.toolRegistry, name)),
     ),
   )

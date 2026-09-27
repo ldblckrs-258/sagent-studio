@@ -64,13 +64,19 @@ function parseSnapshot(value: unknown): JournalSnapshot | null {
   if (typeof value !== 'object' || value === null) return null
   const envelope = value as { version?: unknown; journal?: unknown }
   if (typeof envelope.version !== 'number' || envelope.version > JOURNAL_ENVELOPE_VERSION) return null
-  const journal = envelope.journal as { seq?: unknown; entries?: unknown; checkpoints?: unknown } | undefined
+  const journal = envelope.journal as
+    | { seq?: unknown; entries?: unknown; checkpoints?: unknown; evictedRuns?: unknown }
+    | undefined
   if (typeof journal !== 'object' || journal === null) return null
   if (!Array.isArray(journal.entries) || !Array.isArray(journal.checkpoints)) return null
+  const evictedRuns = Array.isArray(journal.evictedRuns)
+    ? journal.evictedRuns.filter((entry): entry is string => typeof entry === 'string')
+    : []
   return {
     seq: typeof journal.seq === 'number' && Number.isFinite(journal.seq) ? journal.seq : 0,
     entries: journal.entries as JournalEntry[],
     checkpoints: journal.checkpoints as JournalCheckpoint[],
+    ...(evictedRuns.length > 0 ? { evictedRuns } : {}),
   }
 }
 

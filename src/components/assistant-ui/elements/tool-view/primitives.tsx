@@ -108,6 +108,30 @@ export function ToolSection({
   );
 }
 
+export function ToolDiff({ text }: { text: string }) {
+  const lines = text.split("\n").slice(0, 400);
+  return (
+    <pre className="max-h-64 overflow-auto rounded-sm border border-rule bg-paper-sunk/50 p-2 font-mono text-xs leading-relaxed whitespace-pre">
+      {lines.map((line, index) => {
+        const tone = line.startsWith("+++") || line.startsWith("---")
+          ? "text-faint"
+          : line.startsWith("+")
+            ? "text-positive"
+            : line.startsWith("-")
+              ? "text-danger"
+              : line.startsWith("@@")
+                ? "text-accent"
+                : "text-foreground/90";
+        return (
+          <span key={index} className={cn("block", tone)}>
+            {line.length > 0 ? line : "\u00a0"}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
 /** A mono block for code, file contents, diffs, and console output. */
 export function ToolCode({
   text,

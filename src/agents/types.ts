@@ -1,8 +1,8 @@
 import type { LanguageModelUsage } from 'ai'
-import type { AgentRunStatus, AgentStopReason, ChatMode } from '../chat/types'
+import type { AgentRunSpec, AgentRunStatus, AgentStopReason, ChatMode } from '../chat/types'
 import type { ModelTier } from '../vault/settings'
 
-export type { AgentRunStatus, AgentStopReason }
+export type { AgentRunSpec, AgentRunStatus, AgentStopReason }
 
 /**
  * Tools a delegated agent may never use: `spawn_agent`, `stop_agent`, and
@@ -15,6 +15,8 @@ export const BLOCKED_AGENT_TOOLS: readonly string[] = [
   'spawn_agent',
   'stop_agent',
   'read_agent',
+  'message_agent',
+  'wait_agents',
   'change_mode',
   'update_plan',
   'restore',
@@ -31,6 +33,14 @@ export interface AgentRequest {
   excludeTools?: readonly string[]
   background?: boolean
   label?: string
+  outputSchema?: Record<string, unknown>
+  agent?: string
+  allowTools?: readonly string[]
+}
+
+export type AgentSpawnRequest = Omit<AgentRequest, 'mode' | 'tier'> & {
+  mode?: ChatMode
+  tier?: ModelTier
 }
 
 export interface AgentParentContext {
@@ -55,6 +65,10 @@ export interface AgentRunResult {
   error?: string
   truncated?: boolean
   stopReason?: AgentStopReason
+  structured?: unknown
+  structuredError?: string
+  filesChanged?: string[]
+  filesChangedIncomplete?: boolean
 }
 
 /** The read side of a run's steering channel, consumed by the runner. */
@@ -126,10 +140,40 @@ export interface AgentSpawnOptions {
   label?: string
 }
 
+export interface AgentContinueOptions {
+  background?: boolean
+}
+
+export const DEFAULT_WAIT_TIMEOUT_MS = 300_000
+export const MAX_WAIT_TIMEOUT_MS = 1_800_000
+
+export interface AgentWaitOptions {
+  runIds?: readonly string[]
+  labels?: readonly string[]
+  mode?: 'all' | 'any'
+  timeoutMs?: number
+}
+
+export interface AgentWaitRun {
+  runId: string
+  label?: string
+  status: AgentRunStatus
+  result?: string
+  structured?: unknown
+  structuredError?: string
+  filesChanged?: string[]
+  filesChangedIncomplete?: boolean
+}
+
+export type AgentWaitOutcome =
+  | { ok: true; runs: AgentWaitRun[]; timedOut: boolean; aborted: boolean }
+  | { ok: false; message: string }
+
 export type AgentSpawnOutcome =
   | { status: 'completed'; runId: string; label?: string; result: AgentRunResult }
   | { status: 'running'; runId: string; label?: string }
   | { status: 'limit_exceeded'; message: string }
+  | { status: 'invalid_input'; message: string }
   | { status: 'error'; message: string }
 
 /** A short, bounded summary of a run, for a tool result or a background notice. */

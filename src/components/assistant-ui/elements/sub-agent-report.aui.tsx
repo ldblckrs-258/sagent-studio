@@ -3,6 +3,8 @@ import type { AgentNoticeMeta, AgentRunStatus } from "@/chat/types";
 import { useAgentPanelStore } from "@/session/agent-panel-state";
 import { MarkdownProse } from "@/ui/markdown-prose";
 import { Badge, type BadgeTone } from "@/ui/primitives";
+import { pluralize } from "./tool-view/helpers";
+import { ValueView } from "./tool-view/primitives";
 
 /**
  * How a settled run's status reads on the report card. Tone carries the outcome
@@ -62,11 +64,28 @@ export function SubAgentReport({ report }: { report: AgentNoticeMeta }) {
 
       <MarkdownProse>{report.response}</MarkdownProse>
 
+      {"structured" in report ? (
+        <div data-slot="sub-agent-structured" className="flex flex-col gap-1">
+          <span className="label-micro">Structured result</span>
+          <ValueView value={report.structured} depth={1} />
+        </div>
+      ) : null}
+      {report.structuredError !== undefined ? (
+        <p className="text-caution text-xs break-words">
+          Structured result unavailable: {report.structuredError}
+        </p>
+      ) : null}
+
       <div className="text-faint flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px]">
         <span className="flex items-center gap-1">
           <TriangleAlert className="size-2.5 shrink-0" aria-hidden="true" />
           untrusted output
         </span>
+        {report.filesChanged !== undefined && report.filesChanged.length > 0 ? (
+          <span data-slot="sub-agent-files-changed" title={report.filesChanged.join("\n")}>
+            {pluralize(report.filesChanged.length, "file")} changed
+          </span>
+        ) : null}
         {report.runId !== undefined && report.runId.length > 0 && (
           <button
             type="button"

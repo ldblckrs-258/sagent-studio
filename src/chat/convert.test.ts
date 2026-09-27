@@ -246,6 +246,19 @@ describe('toThreadMessageLike', () => {
   })
 })
 
+describe('auto-continue marker', () => {
+  it('carries the marker so the transcript draws a line instead of a user bubble', () => {
+    const message: UIMessage = {
+      id: 'm1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Sub-agent "audit" finished; continue using its result.' }],
+      metadata: { autoContinue: { runId: 'run-1', label: 'audit' } },
+    }
+    const like = toThreadMessageLike(message, 0)
+    expect(like.metadata?.custom).toMatchObject({ autoContinue: { runId: 'run-1', label: 'audit' } })
+  })
+})
+
 describe('toUiParts', () => {
   it('round-trips a text message', () => {
     const original = message('user', [{ type: 'text', text: 'hello' }])

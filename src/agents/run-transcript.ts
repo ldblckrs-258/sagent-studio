@@ -8,10 +8,20 @@ export interface RunSteer {
   text: string
 }
 
+export interface RunCompaction {
+  step: number
+  at: number
+  tokensBefore: number
+  replacedCount: number
+  summary?: string
+  error?: string
+}
+
 export interface RunPass {
   assistant: UIMessage | null
   steers: RunSteer[]
   after: string[]
+  compactions?: RunCompaction[]
 }
 
 const LOST_RESULT = 'The result of this call was not recorded.'
@@ -38,6 +48,48 @@ export function promptMessage(runId: string, prompt: string): UIMessage {
   return userMessage(`${runId}-prompt`, prompt)
 }
 
+export function continuationMessage(runId: string, passIndex: number, text: string): UIMessage {
+  return userMessage(`${runId}-c${passIndex}`, text)
+}
+
+export function nextPassIndex(runId: string, messages: readonly UIMessage[]): number {
+  const pattern = new RegExp(`^${runId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(?:[asuk](\\d+)-\\d+|c(\\d+))$`)
+  let next = 0
+  for (const message of messages) {
+    const match = pattern.exec(message.id)
+    if (!match) continue
+    const index = Number(match[1] ?? match[2])
+    if (Number.isFinite(index)) next = Math.max(next, index + 1)
+  }
+  return next
+}
+
+function compactionMessage(id: string, compaction: RunCompaction): UIMessage {
+  return {
+    id,
+    role: 'assistant',
+    parts: [
+      {
+        type: 'text',
+        text: compaction.summary ?? `The context could not be compacted: ${compaction.error ?? 'unknown error'}`,
+      },
+    ],
+    metadata: {
+      chatStatus: 'done',
+      compaction: {
+        at: compaction.at,
+        replacedCount: compaction.replacedCount,
+        tokensBefore: compaction.tokensBefore,
+        ...(compaction.error !== undefined ? { error: compaction.error } : {}),
+      },
+    },
+  }
+}
+
+export function isCompactionMessage(message: UIMessage): boolean {
+  return (message.metadata as { compaction?: unknown } | undefined)?.compaction !== undefined
+}
+
 export function passMessages(runId: string, passIndex: number, pass: RunPass): UIMessage[] {
   const messages: UIMessage[] = []
   const parts = pass.assistant?.parts ?? []
@@ -54,12 +106,22 @@ export function passMessages(runId: string, passIndex: number, pass: RunPass): U
     })
     segment += 1
   }
-  pass.steers.forEach((steer, steerIndex) => {
-    const at = Math.max(start, stepOffset(parts, steer.step))
+  const events = [
+    ...pass.steers.map((steer, index) => ({
+      step: steer.step,
+      message: userMessage(`${runId}-s${passIndex}-${index}`, steer.text),
+    })),
+    ...(pass.compactions ?? []).map((compaction, index) => ({
+      step: compaction.step,
+      message: compactionMessage(`${runId}-k${passIndex}-${index}`, compaction),
+    })),
+  ].sort((a, b) => a.step - b.step)
+  for (const event of events) {
+    const at = Math.max(start, stepOffset(parts, event.step))
     pushAssistant(parts.slice(start, at))
-    messages.push(userMessage(`${runId}-s${passIndex}-${steerIndex}`, steer.text))
+    messages.push(event.message)
     start = at
-  })
+  }
   pushAssistant(parts.slice(start))
   pass.after.forEach((text, afterIndex) => {
     messages.push(userMessage(`${runId}-u${passIndex}-${afterIndex}`, text))
@@ -67,14 +129,28 @@ export function passMessages(runId: string, passIndex: number, pass: RunPass): U
   return messages
 }
 
+export interface RunSeed {
+  messages: UIMessage[]
+  text: string
+  passOffset: number
+}
+
+export function openingMessages(runId: string, prompt: string, seed?: RunSeed): UIMessage[] {
+  return seed
+    ? [...seed.messages, continuationMessage(runId, seed.passOffset, seed.text)]
+    : [promptMessage(runId, prompt)]
+}
+
 export function buildRunMessages(
   runId: string,
   prompt: string,
   passes: readonly RunPass[],
+  seed?: RunSeed,
 ): UIMessage[] {
+  const offset = seed?.passOffset ?? 0
   return [
-    promptMessage(runId, prompt),
-    ...passes.flatMap((pass, passIndex) => passMessages(runId, passIndex, pass)),
+    ...openingMessages(runId, prompt, seed),
+    ...passes.flatMap((pass, passIndex) => passMessages(runId, offset + passIndex, pass)),
   ]
 }
 

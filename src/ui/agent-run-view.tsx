@@ -2,7 +2,7 @@
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type { UIMessage } from "ai";
-import { ArrowLeft, Loader } from "lucide-react";
+import { ArrowLeft, Loader, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { repairLegacyRunMessages } from "../agents/run-transcript";
 import { agentRunStore } from "../agents/store";
@@ -14,24 +14,36 @@ import { ThreadShell } from "../components/assistant-ui/elements/thread.aui";
 import { useAgentPanelStore } from "../session/agent-panel-state";
 import { useSession } from "../session/session-context";
 import { AgentApprovalCard } from "./agent-approval";
-import { asMode, asTier, ModeChip, TierChip } from "./agent-chips";
+import { asMode, asTier, ModeChip, ProfileChip, TierChip } from "./agent-chips";
+import { formatTokens } from "./context-meter-view";
 import { elapsed, STATUS_DOT, STATUS_TINT, toolCallCount } from "./agent-status";
 import { Button } from "./primitives";
+import { RunChanges } from "./run-changes";
 import { UserBubble } from "./conversation";
 import { SteerComposer } from "./steer-composer";
 import { useRegistryVersion } from "./use-registry-version";
 
 const CLOSED_REASON: Record<string, string> = {
-  completed: "This run finished; steering is closed.",
-  stopped: "You stopped this run; steering is closed.",
-  interrupted: "This run was interrupted; steering is closed.",
-  denied: "This run was denied; steering is closed.",
-  aborted: "This run was aborted; steering is closed.",
+  completed: "This run finished.",
+  stopped: "You stopped this run.",
+  interrupted: "This run was interrupted.",
+  denied: "This run was denied.",
+  aborted: "This run was aborted.",
 };
 
-function closedReasonFor(status: string, stopping: boolean): string | null {
+const RESUMABLE = new Set(["interrupted", "stopped"]);
+const RESUME_MESSAGE = "Continue where you left off.";
+
+function closedReasonFor(
+  status: string,
+  stopping: boolean,
+  state: { available: boolean; continuable: boolean; starting: boolean },
+): string | null {
   if (status === "running") return stopping ? "Stopping the run…" : null;
-  return CLOSED_REASON[status] ?? "This run ended; steering is closed.";
+  if (!state.available) return "This run is not available.";
+  if (state.starting) return "Starting the agent…";
+  if (state.continuable) return null;
+  return `${CLOSED_REASON[status] ?? "This run ended."} It was recorded before runs could be continued, so it cannot take new messages.`;
 }
 
 function reconcileOptimistic(
@@ -89,6 +101,7 @@ export function AgentRunView({ runId }: { runId: string }) {
   const label = record?.label ?? thread?.agent?.label ?? thread?.title ?? "Agent run";
   const mode = asMode(record?.mode ?? thread?.agent?.mode);
   const tier = asTier(record?.tier ?? thread?.agent?.tier);
+  const profile = record?.profile ?? thread?.agent?.profile;
   const startedAt = record?.startedAt ?? thread?.createdAt ?? 0;
   const endedAt = record ? record.endedAt : thread?.updatedAt;
 
@@ -113,12 +126,40 @@ export function AgentRunView({ runId }: { runId: string }) {
     [messages, optimistic, isRunning],
   );
 
-  const onSteer = useCallback(
-    (text: string): void => {
-      if (!session.steerAgentRun(runId, text)) return;
-      setOptimistic((previous) => [...previous, text]);
+  const spec = record?.spec ?? thread?.agent?.spec;
+  const available = record !== undefined || (thread !== undefined && thread !== null);
+  const continuable = !isRunning && available && spec !== undefined;
+  const [starting, setStarting] = useState(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
+
+  const continueRun = useCallback(
+    async (text: string): Promise<void> => {
+      setStarting(true);
+      setContinueError(null);
+      try {
+        const outcome = await session.continueAgentRun(runId, text);
+        if (outcome.status !== "running" && outcome.status !== "completed") {
+          setContinueError(outcome.message);
+        }
+      } catch (cause) {
+        setContinueError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setStarting(false);
+      }
     },
     [session, runId],
+  );
+
+  const onSend = useCallback(
+    (text: string): void => {
+      if (isRunning) {
+        if (!session.steerAgentRun(runId, text)) return;
+        setOptimistic((previous) => [...previous, text]);
+        return;
+      }
+      if (continuable && !starting) void continueRun(text);
+    },
+    [session, runId, isRunning, continuable, starting, continueRun],
   );
 
   const onStop = useCallback((): void => {
@@ -126,7 +167,7 @@ export function AgentRunView({ runId }: { runId: string }) {
     if (!session.stopAgentRun(runId)) setStopping(false);
   }, [session, runId]);
 
-  const runtime = useSubAgentRuntime(messages, { isRunning, onSteer, onStop });
+  const runtime = useSubAgentRuntime(messages, { isRunning, onSend, onStop });
 
   const back = useCallback((): void => {
     const target = returnFocus.current;
@@ -188,8 +229,30 @@ export function AgentRunView({ runId }: { runId: string }) {
             {isStopping ? "stopping" : status}
           </span>
         </span>
+        {continuable && RESUMABLE.has(status) ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            icon={<RotateCw size={13} strokeWidth={1.75} />}
+            onClick={() => void continueRun(RESUME_MESSAGE)}
+            disabled={starting}
+            aria-label="Resume the agent run"
+          >
+            Resume
+          </Button>
+        ) : null}
+        {profile !== undefined ? <ProfileChip profile={profile} /> : null}
         <ModeChip mode={mode} />
         <TierChip tier={tier} />
+        {record?.contextTokens !== undefined && record.contextCap !== undefined ? (
+          <span
+            data-slot="agent-context-meter"
+            title="Context used by this run's next model call"
+            className="numeric text-faint font-mono text-[11px]"
+          >
+            ctx {formatTokens(record.contextTokens)} / {formatTokens(record.contextCap)}
+          </span>
+        ) : null}
         <span className="numeric text-faint font-mono text-[11px]">
           {toolCallCount(messages)} tools · {elapsed(startedAt, endedAt, now)}
         </span>
@@ -203,6 +266,12 @@ export function AgentRunView({ runId }: { runId: string }) {
                 {approvals.map((approval) => (
                   <AgentApprovalCard key={approval.id} approval={approval} label={label} />
                 ))}
+                {available ? <RunChanges runId={runId} status={status} /> : null}
+                {continueError ? (
+                  <p role="alert" className="text-danger text-xs break-words">
+                    {continueError}
+                  </p>
+                ) : null}
                 {error ? (
                   <p
                     role="alert"
@@ -232,7 +301,14 @@ export function AgentRunView({ runId }: { runId: string }) {
                     <span className="text-faint text-[11px]">Waiting for the agent’s next step</span>
                   </div>
                 ) : null}
-                <SteerComposer closedReason={closedReasonFor(status, isStopping)} />
+                <SteerComposer
+                  closedReason={closedReasonFor(status, isStopping, {
+                    available,
+                    continuable,
+                    starting,
+                  })}
+                  continuing={!isRunning}
+                />
               </>
             }
           />

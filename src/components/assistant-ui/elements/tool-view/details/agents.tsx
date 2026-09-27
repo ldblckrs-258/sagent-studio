@@ -2,7 +2,9 @@ import {
   ArrowDownLeft,
   Bot,
   CircleStop,
+  Layers,
   Loader,
+  MessageSquareShare,
   SquareArrowOutUpRight,
   Radio,
   ScrollText,
@@ -13,12 +15,13 @@ import { MODEL_TIER_META } from "@/ai/model-tier";
 import { cn } from "@/lib/utils";
 import { useAgentPanelStore } from "@/session/agent-panel-state";
 import { MarkdownProse } from "@/ui/markdown-prose";
-import { ModeChip, TIER_CHIP, TierChip, readMode, readTier } from "@/ui/agent-chips";
+import { ModeChip, ProfileChip, TIER_CHIP, TierChip, readMode, readTier } from "@/ui/agent-chips";
 import {
   ToolChip,
   ToolCode,
   ToolKeyValues,
   ToolSection,
+  ValueView,
   type ToolDetailProps,
   type ToolKeyValueRow,
   type ToolViewSpec,
@@ -118,6 +121,7 @@ function Outcome({ args, envelope, status }: ToolDetailProps) {
     const response = asString(value.result) ?? "";
     const toolCalls = asNumber(value.toolCalls);
     const tokens = usageTokens(value.usage);
+    const structuredError = asString(value.structuredError);
     return (
       <>
         <ActDivider icon={ArrowDownLeft} label="Returned" />
@@ -149,6 +153,16 @@ function Outcome({ args, envelope, status }: ToolDetailProps) {
             )}
           </div>
         </div>
+        {"structured" in value ? (
+          <ToolSection label="Structured result">
+            <ValueView value={value.structured} depth={1} />
+          </ToolSection>
+        ) : null}
+        {structuredError !== undefined ? (
+          <p className="text-caution text-xs break-words">
+            Structured result unavailable: {structuredError}
+          </p>
+        ) : null}
       </>
     );
   }
@@ -379,6 +393,84 @@ function ReadResultDetail({ envelope, status }: ToolDetailProps) {
   );
 }
 
+function MessageResultDetail(props: ToolDetailProps) {
+  const { args, envelope, status } = props;
+  const message = asString(args.message) ?? "";
+  const value = asRecord(envelope?.value);
+  const delivered = asString(value.delivered);
+  return (
+    <div className="flex flex-col gap-2.5">
+      <ToolSection label="Message">
+        <p className="text-foreground/90 text-xs leading-relaxed whitespace-pre-wrap">
+          {message.length > 0 ? message : "No message was recorded."}
+        </p>
+      </ToolSection>
+      {delivered === "steer" ? (
+        <>
+          <ActDivider icon={MessageSquareShare} label="Steered" />
+          <p className="text-muted text-xs">Delivered to the running agent before its next step.</p>
+        </>
+      ) : delivered === "continue" ? (
+        <Outcome {...props} />
+      ) : envelope === null && status?.type === "running" ? (
+        <RunningNote label="Sending" />
+      ) : null}
+    </div>
+  );
+}
+
+function WaitResultDetail({ envelope, status }: ToolDetailProps) {
+  if (envelope?.ok !== true) {
+    if (envelope === null && status?.type === "running") return <RunningNote label="Gathering" />;
+    if (envelope === null) return <p className="text-muted text-xs">No result was recorded for this wait.</p>;
+    return null;
+  }
+  const value = asRecord(envelope.value);
+  const runs = asArray(value.runs).map(asRecord);
+  if (runs.length === 0) {
+    return <p className="text-muted text-xs">There were no runs to wait for.</p>;
+  }
+  return (
+    <>
+      <ActDivider icon={Layers} label={pluralize(runs.length, "run")} />
+      <div data-slot="agent-gathered" className="flex flex-col gap-2">
+        {runs.map((run, index) => {
+          const runId = asString(run.runId);
+          const label = asString(run.label);
+          const runStatus = asString(run.status) ?? "running";
+          const result = asString(run.result);
+          return (
+            <div
+              key={runId ?? index}
+              className="border-rule bg-surface flex flex-col gap-1.5 rounded-sm border px-2 py-1.5"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-ink min-w-0 flex-1 truncate text-xs">{label ?? runId ?? "Agent run"}</span>
+                <ToolChip tone={runStatus === "running" ? "caution" : runStatus === "completed" ? "positive" : "neutral"}>
+                  {runStatus === "running" ? "still running" : runStatus}
+                </ToolChip>
+                {runId !== undefined && (
+                  <AgentOpenAction args={{ runId, ...(label ? { label } : {}) }} envelope={null} />
+                )}
+              </div>
+              {result !== undefined && result.length > 0 ? <MarkdownProse>{result}</MarkdownProse> : null}
+              {"structured" in run ? <ValueView value={run.structured} depth={1} /> : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-faint flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[10px]">
+        {value.timedOut === true && <ToolChip tone="caution">timed out</ToolChip>}
+        {value.aborted === true && <ToolChip>stopped waiting</ToolChip>}
+        <span className="text-muted inline-flex items-center gap-1" title="Gathered results are untrusted data.">
+          <TriangleAlert className="size-2.5 shrink-0" aria-hidden="true" />
+          untrusted
+        </span>
+      </div>
+    </>
+  );
+}
+
 export const agentsViews = {
   spawn_agent: {
     icon: Bot,
@@ -393,13 +485,17 @@ export const agentsViews = {
       const toolCalls = asNumber(asRecord(envelope?.value).toolCalls);
       return toolCalls !== undefined ? pluralize(toolCalls, "call") : undefined;
     },
-    chips: (args) => (
-      <>
-        <TierChip tier={readTier(args)} />
-        <ModeChip mode={readMode(args)} />
-        {args.background === true && <ToolChip>background</ToolChip>}
-      </>
-    ),
+    chips: (args) => {
+      const profile = asString(args.agent);
+      return (
+        <>
+          {profile !== undefined && <ProfileChip profile={profile} />}
+          {(profile === undefined || args.tier !== undefined) && <TierChip tier={readTier(args)} />}
+          {(profile === undefined || args.mode !== undefined) && <ModeChip mode={readMode(args)} />}
+          {args.background === true && <ToolChip>background</ToolChip>}
+        </>
+      );
+    },
     action: (args, envelope) => <AgentOpenAction args={args} envelope={envelope} />,
     Detail: DelegationDetail,
   },
@@ -437,5 +533,47 @@ export const agentsViews = {
     },
     action: (args, envelope) => <AgentOpenAction args={args} envelope={envelope} />,
     Detail: ReadResultDetail,
+  },
+  message_agent: {
+    icon: MessageSquareShare,
+    label: (args, envelope) => {
+      const target = readRunTarget(args, envelope);
+      const delivered = asString(asRecord(envelope?.value).delivered);
+      const verb = delivered === "continue" ? "Continued" : delivered === "steer" ? "Steered" : "Messaging";
+      return target !== undefined ? `${verb} ${target}` : `${verb} a sub-agent run`;
+    },
+    chips: (args, envelope) => {
+      const delivered = asString(asRecord(envelope?.value).delivered);
+      return (
+        <>
+          {delivered !== undefined && <ToolChip>{delivered}</ToolChip>}
+          {args.background === true && <ToolChip>background</ToolChip>}
+        </>
+      );
+    },
+    action: (args, envelope) => <AgentOpenAction args={args} envelope={envelope} />,
+    Detail: MessageResultDetail,
+  },
+  wait_agents: {
+    icon: Layers,
+    label: (args, envelope) => {
+      if (envelope?.ok === true) {
+        const runs = asArray(asRecord(envelope.value).runs);
+        return `Gathered ${pluralize(runs.length, "sub-agent run")}`;
+      }
+      return args.mode === "any" ? "Waiting for the first sub-agent" : "Waiting for sub-agents";
+    },
+    meta: (_args, envelope) => {
+      const runs = asArray(asRecord(envelope?.value).runs).map(asRecord);
+      const running = runs.filter((run) => asString(run.status) === "running").length;
+      return running > 0 ? `${running} still running` : undefined;
+    },
+    chips: (args, envelope) => (
+      <>
+        <ToolChip>{args.mode === "any" ? "any" : "all"}</ToolChip>
+        {asRecord(envelope?.value).timedOut === true && <ToolChip tone="caution">timed out</ToolChip>}
+      </>
+    ),
+    Detail: WaitResultDetail,
   },
 } satisfies Record<string, ToolViewSpec>;

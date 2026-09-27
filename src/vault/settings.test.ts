@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_JS_TIMEOUT_MS } from '../sandbox/js-runner'
 import { DEFAULT_PY_TIMEOUT_MS } from '../sandbox/py-runner'
 import {
+  agentSettingsOf,
   DEFAULT_SANDBOX_IDLE_TIMEOUT_MS,
   DEFAULT_SANDBOX_JS_TIMEOUT_MS,
   DEFAULT_SANDBOX_PY_TIMEOUT_MS,
@@ -322,5 +323,22 @@ describe('last-used model settings', () => {
     expect(migrate(1, { lastModel: { providerId: 7, modelId: {} } }).lastModel).toBeUndefined()
     expect(migrate(1, { lastModel: { providerId: '  ', modelId: '' } }).lastModel).toBeUndefined()
     expect('lastModel' in migrate(1, { lastModel: { providerId: '' } })).toBe(false)
+  })
+})
+
+describe('agent settings', () => {
+  it('keeps auto-continue off with a cap of 3 when a vault has no agents block', () => {
+    const settings = migrate(SETTINGS_VERSION, { providers: [] })
+    expect(settings.agents).toBeUndefined()
+    expect(agentSettingsOf(settings)).toEqual({ autoContinue: false, maxAutoContinues: 3 })
+  })
+
+  it('round-trips a valid block and repairs an out-of-range cap instead of failing the unlock', () => {
+    expect(
+      migrate(SETTINGS_VERSION, { agents: { autoContinue: true, maxAutoContinues: 5 } }).agents,
+    ).toEqual({ autoContinue: true, maxAutoContinues: 5 })
+    expect(
+      migrate(SETTINGS_VERSION, { agents: { autoContinue: 'yes', maxAutoContinues: 99 } }).agents,
+    ).toEqual({ autoContinue: false, maxAutoContinues: 3 })
   })
 })

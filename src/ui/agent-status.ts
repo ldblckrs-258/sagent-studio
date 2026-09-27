@@ -6,6 +6,7 @@ import {
   readEnvelope,
 } from "../components/assistant-ui/elements/tool-view/helpers";
 import { TOOL_VIEWS } from "../components/assistant-ui/elements/tool-view/registry";
+import { isCompactionMessage } from "../agents/run-transcript";
 
 export const STATUS_TINT: Record<string, string> = {
   running: "text-accent",
@@ -80,7 +81,7 @@ function findRunningToolLabel(messages: readonly UIMessage[]): string | undefine
 function lastAssistantTextLine(messages: readonly UIMessage[]): string {
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex];
-    if (message.role !== "assistant") continue;
+    if (message.role !== "assistant" || isCompactionMessage(message)) continue;
     const text = message.parts
       .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
       .map((part) => part.text)

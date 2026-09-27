@@ -190,7 +190,9 @@ export function toThreadMessageLike(message: UIMessage, index: number): ThreadMe
   const agentReport = metadata?.agentReport
   const agentNotice =
     (metadata as { agentNotice?: unknown } | undefined)?.agentNotice === true
+  const autoContinue = message.role === 'user' ? metadata?.autoContinue : undefined
   const custom = {
+    ...(autoContinue ? { autoContinue } : {}),
     ...(directive ? { skillDirective: directive } : {}),
     ...(compaction ? { compaction } : {}),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),

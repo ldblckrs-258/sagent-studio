@@ -4,12 +4,13 @@ import type { ModelTier } from '../vault/settings'
 import { useVaultStore } from '../vault/store'
 import type { AgentApprovalQueue, PendingAgentApproval } from './approval-queue'
 import { toolCallCount } from './run-transcript'
-import type { AgentRunResult, AgentSteeringControl } from './types'
+import type { AgentRunResult, AgentRunSpec, AgentSteeringControl } from './types'
 
 export interface AgentRunRecord {
   runId: string
   parentThreadId: string
   label?: string
+  profile?: string
   mode: ChatMode
   tier: ModelTier
   status: AgentRunStatus
@@ -22,6 +23,9 @@ export interface AgentRunRecord {
   endedAt?: number
   result?: AgentRunResult
   stopReason?: AgentStopReason
+  contextTokens?: number
+  contextCap?: number
+  spec?: AgentRunSpec
 }
 
 /**

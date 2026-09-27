@@ -1,6 +1,14 @@
 "use client";
 
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { cn } from "@/lib/utils";
+import { cva, type VariantProps } from "class-variance-authority";
+import { BrainIcon, ChevronDownIcon } from "lucide-react";
+import {
   createContext,
   useCallback,
   useContext,
@@ -9,14 +17,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { cva, type VariantProps } from "class-variance-authority";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { cn } from "@/lib/utils";
 
 export const ANIMATION_DURATION = 200;
 
@@ -197,7 +197,7 @@ function ReasoningTrigger({
       <ChevronDownIcon
         data-slot="reasoning-trigger-chevron"
         className={cn(
-          "aui-reasoning-trigger-chevron mt-0.5 size-4 shrink-0",
+          "aui-reasoning-trigger-chevron size-4 shrink-0",
           "transition-transform duration-(--animation-duration) ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
           "-rotate-90",
           "group-data-open/trigger:rotate-0",
@@ -320,10 +320,10 @@ function ReasoningText({
 }
 
 export {
-  ReasoningRoot,
-  ReasoningTrigger,
   ReasoningContent,
-  ReasoningText,
   ReasoningFade,
+  ReasoningRoot,
+  ReasoningText,
+  ReasoningTrigger,
   reasoningVariants,
 };

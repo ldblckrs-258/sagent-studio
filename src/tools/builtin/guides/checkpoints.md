@@ -7,5 +7,6 @@ Workspace writes, including writes from the sandbox bridge, are recorded in the 
 - Checkpoint ids are process-local and expire with the retained journal window, so an id from before a reload returns `not_found`. Take a fresh checkpoint instead of reusing an old id.
 - `diff` shows what changed in one file, against the previous journaled state by default or against a checkpoint id passed as `since`.
 - `history` lists recent journaled changes with hashes and kinds, optionally filtered to one path. It never returns file contents.
+- The user can rewind the conversation to one of their messages. A rewind restores files to the moment that message was sent and appears in `history` as `restore` entries.
 
 Changes made outside the app are not journaled and cannot be restored.

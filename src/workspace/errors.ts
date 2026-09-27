@@ -1,3 +1,5 @@
+import type { RestoreOutcome } from './journal'
+
 export class WorkspaceError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -54,5 +56,17 @@ export class WorkspaceInvalidInputError extends WorkspaceError {
   ) {
     super(message, options)
     this.name = 'WorkspaceInvalidInputError'
+  }
+}
+
+export class RestoreApplyError extends WorkspaceError {
+  readonly path: string
+  readonly outcome: RestoreOutcome
+
+  constructor(path: string, outcome: RestoreOutcome, options?: ErrorOptions) {
+    super(`Restoring "${path}" failed.`, options)
+    this.name = 'RestoreApplyError'
+    this.path = path
+    this.outcome = outcome
   }
 }

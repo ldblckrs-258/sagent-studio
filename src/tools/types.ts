@@ -1,13 +1,16 @@
 import type { Tool } from 'ai'
 import type {
+  AgentContinueOptions,
   AgentReadOptions,
-  AgentRequest,
   AgentRunIdentifier,
   AgentRunIdentity,
   AgentSpawnOptions,
   AgentSpawnOutcome,
+  AgentSpawnRequest,
   AgentStopReason,
   AgentTranscript,
+  AgentWaitOptions,
+  AgentWaitOutcome,
 } from '../agents/types'
 import type { RagPort } from '../rag/port'
 import type { CodeRunner } from '../sandbox/types'
@@ -232,8 +235,14 @@ export interface ApprovalPolicyPort {
  * mutable parent context filled with the final tool names after the toolset is
  * built, so a delegated agent may only draw from the parent's own tools.
  */
+export interface AgentProfileSummary {
+  id: string
+  description: string
+  source: 'builtin' | 'workspace'
+}
+
 export interface AgentSpawnPort {
-  spawn(request: AgentRequest, options?: AgentSpawnOptions): Promise<AgentSpawnOutcome>
+  spawn(request: AgentSpawnRequest, options?: AgentSpawnOptions): Promise<AgentSpawnOutcome>
   /**
    * The control surface the session-provided port implements. Optional so a
    * caller that only delegates (a test double, an older port) stays assignable;
@@ -243,6 +252,9 @@ export interface AgentSpawnPort {
   stop?(runId: string, reason?: AgentStopReason): boolean
   read?(runId: string, options?: AgentReadOptions): Promise<AgentTranscript | null>
   resolveRun?(identifier: AgentRunIdentifier): Promise<AgentRunIdentity | null>
+  profiles?(): AgentProfileSummary[]
+  continue?(runId: string, text: string, options?: AgentContinueOptions): Promise<AgentSpawnOutcome>
+  wait?(options: AgentWaitOptions, signal?: AbortSignal): Promise<AgentWaitOutcome>
 }
 
 export interface ToolRuntimePorts {

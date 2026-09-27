@@ -14,6 +14,7 @@ export type CompactionMeta = {
   replacedCount: number
   tokensBefore: number
   instructions?: string
+  error?: string
 }
 
 function isBoundary(message: UIMessage): boolean {

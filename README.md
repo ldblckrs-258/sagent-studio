@@ -120,7 +120,8 @@ lets a task run while you keep going.
   background agent returns immediately, streams into the **Agents** panel, and appends one
   summary notice to the conversation when it settles. That notice lands inline in the turn
   that was still streaming when the agent finished, or as its own card when the
-  conversation is idle. The conversation does not continue on its own.
+  conversation is idle. By default the conversation does not continue on its own; see
+  **Auto-continue** below.
 - **Open a run like a conversation.** The **Agents** panel lists runs with their status,
   current activity, tool count, and elapsed time. Selecting one opens it full-width in place
   of the conversation, with the same messages, tool results, and composer as the main thread;
@@ -130,6 +131,52 @@ lets a task run while you keep going.
   settles with the **stopped** status (reason `user_stop`) instead of a failure. The main
   model can do the same with the `stop_agent` tool, and read a run's most recent turns with
   `read_agent`.
+- **Continue or resume a finished run.** A completed, stopped, or interrupted run keeps its
+  composer open as **Continue the agent…**; your message starts a new turn with the agent's
+  earlier history, even after a reload, and the transcript grows in place. Stopped and
+  interrupted runs also offer **Resume**. The model does the same with `message_agent`, which
+  steers a running run and continues a settled one. Runs recorded before this feature say
+  why they cannot be continued.
+- **Fan out and gather.** The model can start several background agents and collect them in
+  one turn with `wait_agents` (all or first, with a timeout). A gathered run adds no separate
+  notice; a run still going at the timeout reports back as usual.
+- **Profiles.** `spawn_agent` accepts a named profile through `agent`: `explorer`, `reviewer`,
+  `planner`, and `worker` are built in. A profile sets the mode, tier, tool allowlist, skills,
+  and instructions, and shows as a chip on the run. Add your own as
+  `.agents/agents/<id>.md` in the workspace:
+
+  ```markdown
+  ---
+  name: Security reviewer
+  description: Audits auth code
+  mode: read_only
+  tier: high
+  tools: [read_file, search]
+  exclude-tools: [write_file]
+  skills: [owasp]
+  inherit-instructions: false
+  ---
+  Check every auth path and report findings with file:line.
+  ```
+
+  A file with the same id as a built-in replaces it. A broken file is listed at the top of
+  the Agents panel, and the others still load. `inherit-instructions: true` also passes the
+  conversation's own system instruction to the agent.
+- **Typed results.** A delegation can ask for `outputSchema` (a JSON object schema, 8 KB at
+  most) and gets a validated `structured` value next to the text, shown under **Structured
+  result** on the card.
+- **Files changed and revert.** Every file a sub-agent writes is recorded against its run. The
+  run view lists the changed files with line counts and diffs, and **Revert this run** (with a
+  confirmation) restores them. A file changed after the run, or one too large to have been
+  recorded, is skipped and listed. The revert is itself recorded, so a checkpoint restore can
+  undo it. Notices and results list the changed files too.
+- **Long runs.** A sub-agent summarizes its older steps when its context passes the same
+  auto-compaction threshold as the conversation. The run shows a compaction marker and a
+  `ctx` meter in its header.
+- **Auto-continue.** In **Config → Models → Delegation**, turn on auto-continue so a
+  background agent finishing while the conversation is idle starts a new turn behind an
+  "auto-continue" marker. It is off by default and runs at most 3 times (configurable, up to
+  10) after your latest message.
 - **In the transcript.** A `spawn_agent` call renders as a two-part card: the brief that was
   delegated, then the agent's returned text, with its tier and mode on the header and a tool
   call and token count on the result. A background run lands as its own sub-agent report card
@@ -138,8 +185,8 @@ lets a task run while you keep going.
 - **Mode is capped.** A sub-agent never runs above the conversation's own mode. In an
   *Editing* conversation, a request for *Full access* runs as *Editing*.
 - **A subset of your tools.** A sub-agent can only use tools you already have, and never
-  `spawn_agent`, `stop_agent`, `read_agent`, `change_mode`, `update_plan`, or `restore`.
-  Delegation is one level deep.
+  `spawn_agent`, `stop_agent`, `read_agent`, `message_agent`, `wait_agents`, `change_mode`,
+  `update_plan`, or `restore`. Delegation is one level deep.
 - **Model tiers.** A delegation picks a tier; when it does not, the mode chooses one for it
   (read-only → Spark, editing → Forge, full access → Prime). Oracle is used only when
   explicitly requested.
@@ -168,6 +215,13 @@ only summarizes it (source: [`src/tools/builtin/guides/agents.md`](src/tools/bui
 - **Attach the file you're viewing** in the File panel with one click. That chip follows
   the file *you* opened by hand and drops away the moment the model's own output is on
   screen.
+- **Rewind to a message** with the button in the bar under it (shown on hover, next to
+  Edit). A confirmation lists what will change. Rewind removes that message and everything
+  after it, restores workspace files to the moment it was sent, and puts its text back in
+  the composer. A file changed outside the agent since then is listed and left as is. It is
+  unavailable while a run, a sub-agent, or a compaction is active. If the message predates
+  this feature, or the conversation now uses another folder, only the conversation is
+  rewound.
 
 Attachments are resolved when the message is actually sent, so an edit you make between
 attaching and sending is picked up.

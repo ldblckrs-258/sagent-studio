@@ -28,6 +28,7 @@ vi.mock("../chat/persistence", () => ({
 const session = vi.hoisted(() => ({
   steerAgentRun: vi.fn(() => true),
   stopAgentRun: vi.fn(() => true),
+  continueAgentRun: vi.fn(async () => ({ status: "running", runId: "run-1" }) as { status: string; runId?: string; message?: string }),
 }));
 
 vi.mock("../session/session-context", () => ({
@@ -138,6 +139,8 @@ beforeEach(() => {
   session.stopAgentRun.mockClear();
   session.steerAgentRun.mockReturnValue(true);
   session.stopAgentRun.mockReturnValue(true);
+  session.continueAgentRun.mockClear();
+  session.continueAgentRun.mockResolvedValue({ status: "running", runId: "run-1" });
   useAgentPanelStore.getState().open("run-1");
 });
 
@@ -268,13 +271,77 @@ describe("AgentRunView", () => {
     view.unmount();
   });
 
-  it("closes the composer with a reason once the run is settled", () => {
+  it("closes the composer with a reason once a legacy run without a spec is settled", () => {
     store.record = record({ status: "completed", endedAt: 3000 });
     const view = mount(<AgentRunView runId="run-1" />);
 
     expect(textarea(view.container).disabled).toBe(true);
     expect(textarea(view.container).placeholder).toContain("This run finished");
+    expect(textarea(view.container).placeholder).toContain("before runs could be continued");
     expect(byLabel(view.container, "Send steering message")).toBeNull();
+    expect(byLabel(view.container, "Resume the agent run")).toBeNull();
+    view.unmount();
+  });
+
+  it("continues a settled run from the composer", async () => {
+    store.record = record({
+      status: "completed",
+      endedAt: 3000,
+      spec: { mode: "editing", toolNames: ["read_file"] },
+    });
+    const view = mount(<AgentRunView runId="run-1" />);
+    const field = textarea(view.container);
+
+    expect(field.disabled).toBe(false);
+    expect(field.placeholder).toBe("Continue the agent…");
+    await act(async () => {
+      typeInto(field, "also check the tests");
+    });
+    await act(async () => {
+      byLabel(view.container, "Continue the agent run")?.click();
+    });
+    await flush();
+
+    expect(session.continueAgentRun).toHaveBeenCalledWith("run-1", "also check the tests");
+    expect(session.steerAgentRun).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("resumes a stopped run and shows why a continuation was refused", async () => {
+    session.continueAgentRun.mockResolvedValue({ status: "limit_exceeded", message: "At most 3 agents may run per conversation." });
+    store.record = record({
+      status: "stopped",
+      stopReason: "user_stop",
+      endedAt: 3000,
+      spec: { mode: "editing", toolNames: ["read_file"] },
+    });
+    const view = mount(<AgentRunView runId="run-1" />);
+
+    await act(async () => {
+      byLabel(view.container, "Resume the agent run")?.click();
+    });
+    await flush();
+
+    expect(session.continueAgentRun).toHaveBeenCalledWith("run-1", "Continue where you left off.");
+    expect(view.container.textContent).toContain("At most 3 agents may run per conversation.");
+    view.unmount();
+  });
+
+  it("shows the run's profile and how full its context is in the header", () => {
+    store.record = record({ profile: "reviewer", contextTokens: 45_000, contextCap: 200_000 });
+    const view = mount(<AgentRunView runId="run-1" />);
+
+    expect(view.container.querySelector('[data-slot="agent-profile-chip"]')?.textContent).toBe("reviewer");
+    expect(view.container.querySelector('[data-slot="agent-context-meter"]')?.textContent).toBe("ctx 45k / 200k");
+    view.unmount();
+  });
+
+  it("hides the context meter until the run has measured its context", () => {
+    store.record = record();
+    const view = mount(<AgentRunView runId="run-1" />);
+
+    expect(view.container.querySelector('[data-slot="agent-context-meter"]')).toBeNull();
+    expect(view.container.querySelector('[data-slot="agent-profile-chip"]')).toBeNull();
     view.unmount();
   });
 

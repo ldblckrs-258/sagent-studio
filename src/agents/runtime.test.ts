@@ -7,6 +7,8 @@ import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
 import type { ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { defaultSettings } from '../vault/settings'
+import { createWorkspaceJournal } from '../workspace/journal'
+import { tagJournal } from '../workspace/run-journal'
 import { createAgentRuntime } from './runtime'
 import type { AgentRunPersistence, AgentRunSnapshot } from './runtime'
 import { AgentRunStore } from './store'
@@ -466,5 +468,529 @@ describe('createAgentRuntime', () => {
     })
     await expect(runtime.resolveRun('parent-1', { runId: 'run-q' })).resolves.toBeNull()
     await expect(runtime.resolveRun('parent-1', { label: 'absent' })).resolves.toBeNull()
+  })
+
+  describe('continue', () => {
+    function textOfMessage(message: UIMessage): string {
+      return message.parts.map((part) => (part.type === 'text' ? part.text : '')).join('')
+    }
+
+    function buildWith(model: MockLanguageModelV4, persistence?: AgentRunPersistence, store = new AgentRunStore()) {
+      const toolRegistry = new ToolRegistry()
+      toolRegistry.registerProvider(recorderProvider())
+      const onSettle = vi.fn()
+      const runtime = createAgentRuntime({
+        getSettings: () => defaultSettings(),
+        skillRegistry: new SkillRegistry(skillStore),
+        toolRegistry,
+        store,
+        modelFactory: () => model as unknown as LanguageModel,
+        portsFor: () => ({}) as ToolRuntimePorts,
+        onSettle,
+        ...(persistence ? { persistence } : {}),
+      })
+      return { runtime, store, onSettle }
+    }
+
+    it('continues a finished run with its own history and extends the transcript in place', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: [
+          { stream: toolStep('c1', 'read_file') },
+          { stream: textStep('t2', 'first answer') },
+          { stream: textStep('t3', 'second answer') },
+        ],
+      })
+      const { runtime, store } = buildWith(model)
+      const first = await runtime.spawn(context(), { prompt: 'look', mode: 'editing', tier: 'medium' })
+      if (first.status !== 'completed') throw new Error('expected an awaited run')
+      const before = store.get(first.runId)?.messages ?? []
+      const statuses: string[] = []
+      const unsubscribe = store.subscribe(() => {
+        const status = store.get(first.runId)?.status
+        if (status && statuses[statuses.length - 1] !== status) statuses.push(status)
+      })
+
+      const next = await runtime.continue(context(), first.runId, 'now check the tests')
+      unsubscribe()
+
+      expect(next.status).toBe('completed')
+      if (next.status === 'completed') expect(next.result.text).toBe('second answer')
+      expect(statuses).toEqual(['running', 'completed'])
+      const prompt = JSON.stringify(model.doStreamCalls[2].prompt)
+      expect(prompt).toContain('first answer')
+      expect(prompt).toContain('read_file:ok')
+      expect(prompt).toContain('now check the tests')
+      const after = store.get(first.runId)?.messages ?? []
+      expect(after.slice(0, before.length)).toEqual(before)
+      expect(after.slice(before.length).map((message) => [message.role, textOfMessage(message)])).toEqual([
+        ['user', 'now check the tests'],
+        ['assistant', 'second answer'],
+      ])
+      expect(new Set(after.map((message) => message.id)).size).toBe(after.length)
+    })
+
+    it('continues a run that only exists in persistence, as after a reload', async () => {
+      const persistence = persistenceOver()
+      const model = new MockLanguageModelV4({
+        doStream: [{ stream: textStep('t1', 'first answer') }, { stream: textStep('t2', 'resumed') }],
+      })
+      const first = await buildWith(model, persistence).runtime.spawn(context(), {
+        prompt: 'look',
+        mode: 'read_only',
+        tier: 'cheap',
+      })
+      if (first.status !== 'completed') throw new Error('expected an awaited run')
+
+      const reloaded = buildWith(model, persistence, new AgentRunStore())
+      const next = await reloaded.runtime.continue(context(), first.runId, 'keep going')
+
+      expect(next.status).toBe('completed')
+      expect(JSON.stringify(model.doStreamCalls[1].prompt)).toContain('first answer')
+      const saved = await persistence.load(first.runId)
+      expect(saved?.messages.map((message) => textOfMessage(message))).toEqual([
+        'look',
+        'first answer',
+        'keep going',
+        'resumed',
+      ])
+    })
+
+    it('applies the per-conversation limit to continues', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: async ({ abortSignal }) => ({ stream: pendingStream(abortSignal) }),
+      })
+      const { runtime, store } = buildWith(model)
+      store.register(settledRecord({ runId: 'done', spec: { mode: 'editing', toolNames: ['read_file'] } }))
+      for (const prompt of ['1', '2', '3']) {
+        await runtime.spawn(context(), { prompt, mode: 'editing', tier: 'medium', background: true })
+      }
+
+      const outcome = await runtime.continue(context(), 'done', 'more')
+
+      expect(outcome.status).toBe('limit_exceeded')
+      runtime.dispose()
+    })
+
+    it('holds the limits and a single live stream when continues race each other', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: async ({ abortSignal }) => ({ stream: pendingStream(abortSignal) }),
+      })
+      const persistence = persistenceOver(
+        ['r1', 'r2', 'r3', 'r4'].map((runId) =>
+          snapshot({ runId, spec: { mode: 'editing', toolNames: ['read_file'] } }),
+        ),
+      )
+      const { runtime } = buildWith(model, persistence)
+
+      const outcomes = await Promise.all(
+        ['r1', 'r2', 'r3', 'r4'].map((runId) => runtime.continue(context(), runId, 'more', { background: true })),
+      )
+      const duplicate = await Promise.all([
+        runtime.continue(context('parent-2'), 'r1', 'again', { background: true }),
+        runtime.continue(context(), 'r1', 'again', { background: true }),
+      ])
+
+      expect(outcomes.filter((outcome) => outcome.status === 'running')).toHaveLength(3)
+      expect(outcomes.filter((outcome) => outcome.status === 'limit_exceeded')).toHaveLength(1)
+      expect(runtime.activeForThread('parent-1')).toBe(3)
+      expect(duplicate.map((outcome) => outcome.status)).not.toContain('running')
+      expect(runtime.activeCount()).toBe(3)
+      runtime.dispose()
+    })
+
+    it('never starts two streams for one run when the same continue is sent twice at once', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: async ({ abortSignal }) => ({ stream: pendingStream(abortSignal) }),
+      })
+      const persistence = persistenceOver([snapshot({ runId: 'r1', spec: { mode: 'editing', toolNames: ['read_file'] } })])
+      const { runtime } = buildWith(model, persistence)
+
+      const [first, second] = await Promise.all([
+        runtime.continue(context(), 'r1', 'one', { background: true }),
+        runtime.continue(context(), 'r1', 'two', { background: true }),
+      ])
+
+      expect([first.status, second.status].sort()).toEqual(['invalid_input', 'running'])
+      expect(runtime.activeCount()).toBe(1)
+      expect(runtime.stop('parent-1', 'r1')).toBe(true)
+      runtime.dispose()
+    })
+
+    it('clamps a continued run to the parent mode as it is now', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: [{ stream: textStep('t1', 'edited') }, { stream: textStep('t2', 'read only now') }],
+      })
+      const { runtime } = buildWith(model)
+      const first = await runtime.spawn(context(), { prompt: 'edit', mode: 'editing', tier: 'medium' })
+      if (first.status !== 'completed') throw new Error('expected an awaited run')
+      expect(first.result.mode).toBe('editing')
+
+      const next = await runtime.continue({ ...context(), mode: 'read_only' }, first.runId, 'again')
+
+      expect(next.status).toBe('completed')
+      if (next.status === 'completed') expect(next.result.mode).toBe('read_only')
+    })
+
+    it('refuses a running run, a foreign run, and a legacy run without a spec', async () => {
+      const { runtime, store } = buildWith(pendingModel(), persistenceOver([snapshot({ runId: 'legacy' })]))
+      const live = await runtime.spawn(context(), { prompt: 'x', mode: 'editing', tier: 'medium', background: true })
+      if (live.status !== 'running') throw new Error('expected a background run')
+      store.register(settledRecord({ runId: 'foreign', parentThreadId: 'parent-2', spec: { mode: 'editing', toolNames: [] } }))
+
+      const running = await runtime.continue(context(), live.runId, 'more')
+      const foreign = await runtime.continue(context(), 'foreign', 'more')
+      const legacy = await runtime.continue(context(), 'legacy', 'more')
+
+      expect(running).toMatchObject({ status: 'invalid_input', message: expect.stringContaining('steer') })
+      expect(foreign.status).toBe('invalid_input')
+      expect(legacy).toMatchObject({
+        status: 'invalid_input',
+        message: expect.stringContaining('before runs could be continued'),
+      })
+      runtime.dispose()
+    })
+
+    it('settles a background continue through onSettle like a spawn', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: [{ stream: textStep('t1', 'one') }, { stream: textStep('t2', 'two') }],
+      })
+      const { runtime, store, onSettle } = buildWith(model)
+      const first = await runtime.spawn(context(), { prompt: 'x', mode: 'editing', tier: 'medium' })
+      if (first.status !== 'completed') throw new Error('expected an awaited run')
+
+      const next = await runtime.continue(context(), first.runId, 'more', { background: true })
+      expect(next.status).toBe('running')
+      await waitForStatus(store, first.runId)
+
+      expect(onSettle).toHaveBeenCalledTimes(1)
+      expect(onSettle.mock.calls[0][1].text).toBe('two')
+    })
+  })
+
+  describe('wait', () => {
+    function gatedModel() {
+      const gates = new Map<string, () => void>()
+      const opened = new Set<string>()
+      const release = (prompt: string): void => {
+        opened.add(prompt)
+        gates.get(prompt)?.()
+      }
+      const model = new MockLanguageModelV4({
+        doStream: async ({ prompt, abortSignal }) => {
+          const task = JSON.stringify(prompt).match(/task-[a-z]/)?.[0] ?? 'task-?'
+          const stream = new ReadableStream<Chunk>({
+            start(controller) {
+              const finish = () => {
+                controller.enqueue({ type: 'stream-start', warnings: [] })
+                controller.enqueue({ type: 'text-start', id: 't' })
+                controller.enqueue({ type: 'text-delta', id: 't', delta: `${task} done` })
+                controller.enqueue({ type: 'text-end', id: 't' })
+                controller.enqueue({ type: 'finish', usage, finishReason: { unified: 'stop', raw: undefined } })
+                controller.close()
+              }
+              abortSignal?.addEventListener(
+                'abort',
+                () => controller.error(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+                { once: true },
+              )
+              if (opened.has(task)) finish()
+              else gates.set(task, finish)
+            },
+          })
+          return { stream }
+        },
+      })
+      return { model, release }
+    }
+
+    async function spawnBackground(runtime: ReturnType<typeof build>['runtime'], task: string, parent = context()) {
+      const outcome = await runtime.spawn(parent, {
+        prompt: task,
+        mode: 'read_only',
+        tier: 'cheap',
+        background: true,
+        label: task,
+      })
+      if (outcome.status !== 'running') throw new Error('expected a background run')
+      return outcome.runId
+    }
+
+    it('gathers every run with mode all and appends no notice for them', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const b = await spawnBackground(runtime, 'task-b')
+
+      const waiting = runtime.wait('parent-1', { runIds: [a, b], mode: 'all' })
+      release('task-a')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      let settled = false
+      void waiting.then(() => {
+        settled = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(settled).toBe(false)
+      release('task-b')
+      const outcome = await waiting
+
+      expect(outcome).toMatchObject({ ok: true, timedOut: false })
+      if (outcome.ok) {
+        expect(outcome.runs.map((run) => [run.label, run.status, run.result])).toEqual([
+          ['task-a', 'completed', 'task-a done'],
+          ['task-b', 'completed', 'task-b done'],
+        ])
+      }
+      expect(onSettle).not.toHaveBeenCalled()
+    })
+
+    it('returns at the first run with mode any and lets the rest report back later', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle, store } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const b = await spawnBackground(runtime, 'task-b')
+
+      const waiting = runtime.wait('parent-1', { labels: ['task-a', 'task-b'], mode: 'any' })
+      release('task-b')
+      const outcome = await waiting
+
+      if (!outcome.ok) throw new Error(outcome.message)
+      expect(outcome.runs.find((run) => run.runId === b)?.status).toBe('completed')
+      expect(outcome.runs.find((run) => run.runId === a)?.status).toBe('running')
+      expect(onSettle).not.toHaveBeenCalled()
+
+      release('task-a')
+      await waitForStatus(store, a)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle).toHaveBeenCalledTimes(1)
+      expect(onSettle.mock.calls[0][0].runId).toBe(a)
+    })
+
+    it('returns settled results at the timeout and keeps the notice for the pending run', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle, store } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const b = await spawnBackground(runtime, 'task-b')
+      release('task-a')
+      await waitForStatus(store, a)
+      onSettle.mockClear()
+
+      const outcome = await runtime.wait('parent-1', { runIds: [a, b], timeoutMs: 30 })
+
+      if (!outcome.ok) throw new Error(outcome.message)
+      expect(outcome.timedOut).toBe(true)
+      expect(outcome.runs.map((run) => run.status)).toEqual(['completed', 'running'])
+      release('task-b')
+      await waitForStatus(store, b)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle).toHaveBeenCalledTimes(1)
+      expect(onSettle.mock.calls[0][0].runId).toBe(b)
+    })
+
+    it('stops waiting when the parent turn aborts but leaves the runs going', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle, store } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const controller = new AbortController()
+
+      const waiting = runtime.wait('parent-1', {}, controller.signal)
+      controller.abort()
+      const outcome = await waiting
+
+      expect(outcome).toMatchObject({ ok: true, aborted: true })
+      expect(store.get(a)?.status).toBe('running')
+      release('task-a')
+      await waitForStatus(store, a)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle).toHaveBeenCalledTimes(1)
+    })
+
+    it('still reports a run that finished during a wait the parent then abandoned', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle, store } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const b = await spawnBackground(runtime, 'task-b')
+      const controller = new AbortController()
+
+      const waiting = runtime.wait('parent-1', { runIds: [a, b] }, controller.signal)
+      release('task-a')
+      await waitForStatus(store, a)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle).not.toHaveBeenCalled()
+      controller.abort()
+      await waiting
+
+      expect(onSettle.mock.calls.map((call) => call[0].runId)).toEqual([a])
+      release('task-b')
+      await waitForStatus(store, b)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle.mock.calls.map((call) => call[0].runId)).toEqual([a, b])
+    })
+
+    it('returns at once in any mode when a target has already finished', async () => {
+      const { model, release } = gatedModel()
+      const { runtime, onSettle, store } = build(model)
+      const a = await spawnBackground(runtime, 'task-a')
+      const b = await spawnBackground(runtime, 'task-b')
+      release('task-a')
+      await waitForStatus(store, a)
+      onSettle.mockClear()
+
+      const outcome = await runtime.wait('parent-1', { runIds: [a, b], mode: 'any', timeoutMs: 60_000 })
+
+      if (!outcome.ok) throw new Error(outcome.message)
+      expect(outcome.runs.map((run) => [run.runId, run.status])).toEqual([
+        [a, 'completed'],
+        [b, 'running'],
+      ])
+      expect(outcome.timedOut).toBe(false)
+      release('task-b')
+      await waitForStatus(store, b)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(onSettle).toHaveBeenCalledTimes(1)
+      runtime.dispose()
+    })
+
+    it('reports a run that finishes while an abandoned wait is still reading a stored run', async () => {
+      const { model, release } = gatedModel()
+      let loads = 0
+      let openLoad!: () => void
+      const loadGate = new Promise<void>((resolve) => {
+        openLoad = resolve
+      })
+      const stored = persistenceOver([snapshot({ runId: 'old', label: 'old' })])
+      const persistence: AgentRunPersistence = {
+        ...stored,
+        load: async (runId) => {
+          loads += 1
+          if (runId === 'old' && loads > 1) await loadGate
+          return stored.load(runId)
+        },
+      }
+      const { runtime, onSettle, store } = build(model, persistence)
+      const x = await spawnBackground(runtime, 'task-x')
+      const controller = new AbortController()
+
+      const waiting = runtime.wait('parent-1', { runIds: ['old', x] }, controller.signal)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      controller.abort()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      release('task-x')
+      await waitForStatus(store, x)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      openLoad()
+      await waiting
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(onSettle.mock.calls.map((call) => call[0].runId)).toEqual([x])
+    })
+
+    it('returns an empty gather at once when nothing is running', async () => {
+      const { model } = gatedModel()
+      const { runtime } = build(model)
+
+      const outcome = await runtime.wait('parent-1', { runIds: [], labels: [] })
+
+      expect(outcome).toEqual({ ok: true, runs: [], timedOut: false, aborted: false })
+    })
+
+    it('refuses to wait on another conversation\'s run', async () => {
+      const { model } = gatedModel()
+      const { runtime } = build(model)
+      const foreign = await spawnBackground(runtime, 'task-a', context('parent-2'))
+
+      const outcome = await runtime.wait('parent-1', { runIds: [foreign] })
+
+      expect(outcome.ok).toBe(false)
+      runtime.dispose()
+    })
+  })
+
+  describe('files changed', () => {
+    it('lists the files the run wrote in its result, its wait entry, and its settle callback', async () => {
+      const journal = createWorkspaceJournal()
+      const store = new AgentRunStore()
+      const toolRegistry = new ToolRegistry()
+      toolRegistry.registerProvider({
+        names: ['write_file'],
+        isAvailable: () => true,
+        create: (name, ports) =>
+          tool({
+            description: name,
+            inputSchema: jsonSchema({ type: 'object' }),
+            execute: async () => {
+              ports.journal?.record({ kind: 'write', path: 'src/a.ts', before: null, after: 'a' })
+              return 'written'
+            },
+          }),
+      })
+      const model = new MockLanguageModelV4({
+        doStream: [{ stream: toolStep('c1', 'write_file') }, { stream: textStep('t2', 'done') }],
+      })
+      const onSettle = vi.fn()
+      const runtime = createAgentRuntime({
+        getSettings: () => defaultSettings(),
+        skillRegistry: new SkillRegistry(skillStore),
+        toolRegistry,
+        store,
+        modelFactory: () => model as unknown as LanguageModel,
+        portsFor: (_context, runId) => ({ journal: runId ? tagJournal(journal, runId) : journal }) as ToolRuntimePorts,
+        onSettle,
+      })
+      journal.record({ kind: 'write', path: 'parent.ts', before: null, after: 'p' })
+
+      const outcome = await runtime.spawn(
+        { ...context(), mode: 'god', toolNames: ['write_file'] },
+        { prompt: 'write', mode: 'god', tier: 'high', background: true },
+      )
+      if (outcome.status !== 'running') throw new Error('expected a background run')
+      const gathered = await runtime.wait('parent-1', { runIds: [outcome.runId] })
+
+      expect(store.get(outcome.runId)?.result?.filesChanged).toEqual(['src/a.ts'])
+      expect(store.get(outcome.runId)?.result?.filesChangedIncomplete).toBeUndefined()
+      if (!gathered.ok) throw new Error(gathered.message)
+      expect(gathered.runs[0].filesChanged).toEqual(['src/a.ts'])
+      expect(onSettle).not.toHaveBeenCalled()
+    })
+
+    it('says the list is incomplete when the journal has already dropped some of the run\'s writes', async () => {
+      const journal = createWorkspaceJournal()
+      const toolRegistry = new ToolRegistry()
+      toolRegistry.registerProvider({
+        names: ['write_file'],
+        isAvailable: () => true,
+        create: (name, ports) =>
+          tool({
+            description: name,
+            inputSchema: jsonSchema({ type: 'object' }),
+            execute: async () => {
+              ports.journal?.record({ kind: 'write', path: 'src/early.ts', before: null, after: 'a' })
+              for (let index = 0; index < 500; index += 1) {
+                journal.record({ kind: 'write', path: `other-${index}.ts`, before: null, after: 'o' })
+              }
+              return 'written'
+            },
+          }),
+      })
+      const model = new MockLanguageModelV4({
+        doStream: [{ stream: toolStep('c1', 'write_file') }, { stream: textStep('t2', 'done') }],
+      })
+      const runtime = createAgentRuntime({
+        getSettings: () => defaultSettings(),
+        skillRegistry: new SkillRegistry(skillStore),
+        toolRegistry,
+        store: new AgentRunStore(),
+        modelFactory: () => model as unknown as LanguageModel,
+        portsFor: (_context, runId) => ({ journal: runId ? tagJournal(journal, runId) : journal }) as ToolRuntimePorts,
+      })
+
+      const outcome = await runtime.spawn(
+        { ...context(), mode: 'god', toolNames: ['write_file'] },
+        { prompt: 'write', mode: 'god', tier: 'high' },
+      )
+
+      if (outcome.status !== 'completed') throw new Error('expected an awaited run')
+      expect(outcome.result.filesChanged).toBeUndefined()
+      expect(outcome.result.filesChangedIncomplete).toBe(true)
+    })
   })
 })

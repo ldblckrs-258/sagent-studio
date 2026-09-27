@@ -92,6 +92,7 @@ describe('createSession', () => {
     const session = createSession()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'message_agent',
       'read_agent',
       'read_tool_guide',
       'reset_sandbox',
@@ -99,12 +100,14 @@ describe('createSession', () => {
       'run_python',
       'spawn_agent',
       'stop_agent',
+      'wait_agents',
     ])
 
     await session.toolRegistry.hydrate()
     await session.toolRegistry.hydrate()
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'message_agent',
       'read_agent',
       'read_tool_guide',
       'reset_sandbox',
@@ -112,6 +115,7 @@ describe('createSession', () => {
       'run_python',
       'spawn_agent',
       'stop_agent',
+      'wait_agents',
     ])
 
     session.dispose()
@@ -126,6 +130,7 @@ describe('createSession', () => {
 
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'message_agent',
       'read_agent',
       'read_tool_guide',
       'reset_sandbox',
@@ -133,14 +138,17 @@ describe('createSession', () => {
       'run_python',
       'spawn_agent',
       'stop_agent',
+      'wait_agents',
     ])
     enabled = false
     expect(session.toolRegistry.availableNames({})).toEqual([
       'change_mode',
+      'message_agent',
       'read_agent',
       'read_tool_guide',
       'spawn_agent',
       'stop_agent',
+      'wait_agents',
     ])
 
     session.dispose()
@@ -317,6 +325,42 @@ describe('createSession', () => {
       label: 'scout',
       stopReason: 'user_stop',
     })
+  })
+
+  it('puts a structured result in the notice report and in the model-visible text', () => {
+    const record: AgentRunRecord = {
+      runId: 'run-2',
+      parentThreadId: 't1',
+      label: 'counter',
+      mode: 'read_only',
+      tier: 'cheap',
+      status: 'completed',
+      prompt: 'count',
+      messages: [],
+      text: 'three',
+      toolCalls: 0,
+      approvals: [],
+      startedAt: 1,
+      result: {
+        status: 'completed',
+        mode: 'read_only',
+        tier: 'cheap',
+        text: 'three',
+        toolCalls: 0,
+        structured: { count: 3 },
+      },
+    }
+
+    const notice = agentNoticeFor(record)
+    const partial = agentNoticeFor({
+      ...record,
+      result: { ...record.result!, filesChanged: ['a.ts'], filesChangedIncomplete: true },
+    })
+    expect(partial.text).toContain('may be incomplete')
+    expect(partial.report.filesChangedIncomplete).toBe(true)
+    expect(notice.report.structured).toEqual({ count: 3 })
+    expect(notice.text).toContain('```json')
+    expect(notice.text).toContain('"count": 3')
   })
 
   it('lists the five RAG tools without a vault-locked crash', () => {

@@ -7,20 +7,20 @@ import type { IncomingContent } from './convert'
 
 export interface SubAgentRuntimeOptions {
   isRunning: boolean
-  onSteer: (text: string) => void
+  onSend: (text: string) => void
   onStop: () => void
 }
 
 export function useSubAgentRuntime(
   messages: readonly UIMessage[],
-  { isRunning, onSteer, onStop }: SubAgentRuntimeOptions,
+  { isRunning, onSend, onStop }: SubAgentRuntimeOptions,
 ) {
   const deliver = useCallback(
     (message: AppendMessage) => {
       const text = extractText(message.content as unknown as IncomingContent)
-      if (text.trim().length > 0) onSteer(text)
+      if (text.trim().length > 0) onSend(text)
     },
-    [onSteer],
+    [onSend],
   )
 
   const queue = useMemo<ExternalThreadQueueAdapter>(

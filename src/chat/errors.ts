@@ -25,3 +25,13 @@ export class ChatRunError extends ChatError {
     this.name = 'ChatRunError'
   }
 }
+
+export class ChatRewindBusyError extends ChatError {
+  constructor(
+    message = 'Wait for the run, sub-agents, and compaction to finish before rewinding.',
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
+    this.name = 'ChatRewindBusyError'
+  }
+}

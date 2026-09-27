@@ -1,4 +1,4 @@
-import { readUIMessageStream, streamText, toUIMessageStream } from 'ai'
+import { convertToModelMessages, readUIMessageStream, streamText, toUIMessageStream } from 'ai'
 import type {
   LanguageModel,
   LanguageModelUsage,
@@ -9,9 +9,11 @@ import type {
   UIMessage,
 } from 'ai'
 import { createLLM } from '../ai/llm'
-import { createTierModel } from '../ai/model-tier'
+import { createTierModel, resolveTierModel } from '../ai/model-tier'
 import type { ModelFactory } from '../ai/model-tier'
-import { composeSystemPrompt } from '../chat/context'
+import { summarizeModelMessages } from '../chat/compact'
+import type { ProjectInstruction } from '../chat/context'
+import { resolveContextCap, shouldAutoCompact } from '../chat/context-cap'
 import { sanitizePartial } from '../chat/sanitize'
 import type { SkillRegistry } from '../skills/registry'
 import { resolveApprovalStatus } from '../tools/approval'
@@ -20,8 +22,18 @@ import type { ToolRegistry } from '../tools/registry'
 import type { ToolRuntimePorts } from '../tools/types'
 import type { Settings } from '../vault/settings'
 import type { AgentApprovalQueue } from './approval-queue'
-import { buildRunMessages, passMessages, promptMessage, toolCallCount } from './run-transcript'
-import type { RunPass } from './run-transcript'
+import { compactPrefix, estimateModelMessagesTokens, safeCutIndex } from './compaction'
+import { composeAgentSystemPrompt } from './prompt'
+import type { AgentPromptProfile } from './prompt'
+import {
+  buildRunMessages,
+  isCompactionMessage,
+  openingMessages,
+  passMessages,
+  toolCallCount,
+} from './run-transcript'
+import type { RunPass, RunSeed } from './run-transcript'
+import { extractStructured } from './structured'
 import { resolveAgentToolNames } from './toolset'
 import type {
   AgentParentContext,
@@ -43,6 +55,8 @@ export interface AgentRunInput {
   runId: string
   request: AgentRequest
   parent: AgentParentContext
+  profile?: AgentPromptProfile
+  seed?: RunSeed
 }
 
 export interface AgentRunnerDeps {
@@ -56,6 +70,8 @@ export interface AgentRunnerDeps {
   queue: AgentApprovalQueue
   /** The live steering channel for this run, when the caller supports it. */
   steering?: AgentSteeringHandle
+  projectInstruction?: ProjectInstruction | null
+  onContext?(context: { tokens: number; cap: number }): void
 }
 
 function isAbortError(error: unknown): boolean {
@@ -165,7 +181,14 @@ export async function runAgent(
       }
     }
 
-    const system = composeSystemPrompt(request.prompt, resolved.skills, resolved.names, { mode })
+    const system = composeAgentSystemPrompt({
+      ...(input.profile ? { profile: input.profile } : {}),
+      ...(deps.projectInstruction !== undefined ? { projectInstruction: deps.projectInstruction } : {}),
+      ...(parent.systemInstruction !== undefined ? { parentInstruction: parent.systemInstruction } : {}),
+      skills: resolved.skills,
+      toolNames: resolved.names,
+      mode,
+    })
     const descriptorFor = (name: string): ToolGateDescriptor => {
       const kind = deps.toolRegistry.userToolKind(name)
       return kind ? { name, kind } : { name }
@@ -193,28 +216,81 @@ export async function runAgent(
     let aborted = false
 
     const steering = deps.steering
-    const history: ModelMessage[] = [{ role: 'user', content: request.prompt }]
-    const injected: ModelMessage[] = []
+    const seed = input.seed
+    const passOffset = seed?.passOffset ?? 0
+    let history: ModelMessage[] = seed
+      ? [
+          ...(await convertToModelMessages(
+            seed.messages.filter((message) => !isCompactionMessage(message)),
+            { tools: toolSet, ignoreIncompleteToolCalls: true },
+          )),
+          { role: 'user', content: seed.text },
+        ]
+      : [{ role: 'user', content: request.prompt }]
     const passes: RunPass[] = []
-    const opening = promptMessage(input.runId, request.prompt)
+    const cap = resolveContextCap(
+      settings,
+      (settings ? resolveTierModel(settings, request.tier) : null) ?? {
+        providerId: parent.providerId,
+        ...(parent.modelId !== undefined ? { modelId: parent.modelId } : {}),
+      },
+    )
+    let contextTokens = 0
+    let compactionFailed = false
+    const reportContext = (tokens: number): void => {
+      contextTokens = tokens
+      deps.onContext?.({ tokens, cap: cap.maxContextTokens })
+    }
+    reportContext(estimateModelMessagesTokens(history))
+    const opening = openingMessages(input.runId, request.prompt, seed)
     const frozen: UIMessage[] = []
     let settled = false
     const emit = (): void => {
       if (settled) return
       const index = passes.length - 1
-      const live = index >= 0 ? passMessages(input.runId, index, passes[index]) : []
-      onMessages([opening, ...frozen, ...live])
+      const live = index >= 0 ? passMessages(input.runId, passOffset + index, passes[index]) : []
+      onMessages([...opening, ...frozen, ...live])
     }
     const freeze = (pass: RunPass): void => {
-      frozen.push(...passMessages(input.runId, passes.indexOf(pass), pass))
+      frozen.push(...passMessages(input.runId, passOffset + passes.indexOf(pass), pass))
     }
 
     const drainSteering = (): string[] => (steering ? steering.drain() : [])
 
     try {
       while (true) {
-        const pass: RunPass = { assistant: null, steers: [], after: [] }
+        const pass: RunPass = { assistant: null, steers: [], after: [], compactions: [] }
         passes.push(pass)
+        let stepMessages = history
+        const compact = async (
+          messages: ModelMessage[],
+          stepNumber: number,
+        ): Promise<ModelMessage[] | null> => {
+          if (compactionFailed || !shouldAutoCompact(contextTokens, cap)) return null
+          const cut = safeCutIndex(messages)
+          if (cut <= 0) return null
+          const tokensBefore = contextTokens
+          try {
+            const summary = await summarizeModelMessages(model, messages.slice(0, cut), {}, signal)
+            const compacted = compactPrefix(messages, summary, cut, request.prompt)
+            pass.compactions?.push({ step: stepNumber, at: Date.now(), tokensBefore, replacedCount: cut, summary })
+            reportContext(estimateModelMessagesTokens(compacted))
+            emit()
+            return compacted
+          } catch (error) {
+            if (signal.aborted || isAbortError(error)) return null
+            compactionFailed = true
+            pass.compactions?.push({
+              step: stepNumber,
+              at: Date.now(),
+              tokensBefore,
+              replacedCount: 0,
+              error: describe(error),
+            })
+            emit()
+            return null
+          }
+        }
         const result = streamText({
           model,
           system,
@@ -223,15 +299,27 @@ export async function runAgent(
           toolApproval,
           stopWhen: () => false,
           abortSignal: signal,
-          prepareStep: ({ messages, stepNumber }) => {
-            if (!canInject(messages)) return {}
-            const pending = drainSteering()
-            if (pending.length === 0) return {}
-            for (const message of pending) pass.steers.push({ step: stepNumber, text: message })
-            emit()
-            const additions = pending.map((content) => ({ role: 'user' as const, content }))
-            injected.push(...additions)
-            return { messages: [...messages, ...additions] }
+          prepareStep: async ({ messages, stepNumber, steps }) => {
+            let next = messages
+            let changed = false
+            if (canInject(next)) {
+              const pending = drainSteering()
+              if (pending.length > 0) {
+                for (const message of pending) pass.steers.push({ step: stepNumber, text: message })
+                emit()
+                next = [...next, ...pending.map((content) => ({ role: 'user' as const, content }))]
+                changed = true
+              }
+            }
+            const measured = steps[steps.length - 1]?.usage.inputTokens
+            reportContext(Math.max(measured ?? 0, estimateModelMessagesTokens(next)))
+            const compacted = await compact(next, stepNumber)
+            if (compacted) {
+              next = compacted
+              changed = true
+            }
+            stepMessages = next
+            return changed ? { messages: next } : {}
           },
         })
         const [accounting, uiSource] = (result.stream as ReadableStream<TextStreamPart<ToolSet>>).tee()
@@ -248,6 +336,9 @@ export async function runAgent(
             switch (part.type) {
               case 'text-delta':
                 text += part.text
+                break
+              case 'finish-step':
+                if (part.usage.inputTokens !== undefined) reportContext(part.usage.inputTokens)
                 break
               case 'finish':
                 usage = addUsage(usage, part.totalUsage)
@@ -272,8 +363,7 @@ export async function runAgent(
         if (aborted || failure) break
         try {
           const { messages } = await result.response
-          history.push(...injected, ...messages)
-          injected.length = 0
+          history = [...stepMessages, ...messages]
         } catch (error) {
           if (signal.aborted || isAbortError(error)) aborted = true
           else failure = describe(error)
@@ -295,7 +385,7 @@ export async function runAgent(
     for (const pass of passes) {
       if (pass.assistant) pass.assistant = sanitizePartial(pass.assistant, { expireApprovals: true })
     }
-    const transcript = buildRunMessages(input.runId, request.prompt, passes)
+    const transcript = buildRunMessages(input.runId, request.prompt, passes, seed)
     settled = true
     onMessages(transcript)
     const toolCalls = toolCallCount(transcript)
@@ -310,6 +400,31 @@ export async function runAgent(
     let status: AgentRunResult['status'] = 'completed'
     if (aborted) status = stopped ? 'stopped' : 'aborted'
     else if (failure) status = 'error'
+
+    let structured: { value: unknown } | undefined
+    let structuredError: string | undefined
+    if (status === 'completed' && request.outputSchema) {
+      try {
+        const extraction = await extractStructured({
+          model,
+          history,
+          schema: request.outputSchema,
+          signal,
+        })
+        structured = { value: extraction.value }
+        usage = addUsage(usage, extraction.usage)
+      } catch (error) {
+        usage = addUsage(usage, (error as { usage?: LanguageModelUsage }).usage)
+        const cause = (error as { cause?: unknown }).cause
+        structuredError =
+          signal.aborted || isAbortError(error)
+            ? 'The structured result was not extracted because the run was stopped.'
+            : cause instanceof Error
+              ? `${describe(error)} ${cause.message}`
+              : describe(error)
+      }
+    }
+
     return {
       ...base,
       status,
@@ -319,6 +434,8 @@ export async function runAgent(
       ...(usage ? { usage } : {}),
       ...(failure ? { error: failure } : {}),
       ...(stopReason ? { stopReason } : {}),
+      ...(structured ? { structured: structured.value } : {}),
+      ...(structuredError !== undefined ? { structuredError } : {}),
     }
   } catch (error) {
     return {

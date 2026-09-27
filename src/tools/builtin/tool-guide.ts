@@ -59,7 +59,7 @@ const ENTRIES: readonly ToolGuideEntry[] = [
   {
     topic: 'agents',
     summary: 'Delegating a bounded task to a nested sub-agent, inline or in the background.',
-    covers: ['spawn_agent'],
+    covers: ['spawn_agent', 'message_agent', 'wait_agents'],
     guide: agentsGuide,
   },
 ]

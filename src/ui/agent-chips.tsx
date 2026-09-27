@@ -77,3 +77,11 @@ export function ModeChip({ mode }: { mode: ChatMode }) {
   const spec = MODE_CHIP[mode]
   return <ToolChip tone={spec.tone}>{spec.label}</ToolChip>
 }
+
+export function ProfileChip({ profile }: { profile: string }) {
+  return (
+    <span data-slot="agent-profile-chip" title={`Agent profile ${profile}`}>
+      <ToolChip tone="accent">{profile}</ToolChip>
+    </span>
+  )
+}

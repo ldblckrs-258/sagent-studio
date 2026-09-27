@@ -116,6 +116,8 @@ describe('modeCeiling and resolveApprovalStatus', () => {
         'search_skills',
         'read_tool_guide',
         'spawn_agent',
+        'message_agent',
+        'wait_agents',
         'stat',
         'update_plan',
         'verify_citation',

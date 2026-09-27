@@ -50,7 +50,14 @@ function streamOf(chunks: Chunk[]): ReadableStream<Chunk> {
   })
 }
 
-function toolStep(id: string, toolName: string, input: unknown = {}): Chunk[] {
+function usageWithInput(inputTokens: number): Usage {
+  return {
+    inputTokens: { total: inputTokens, noCache: inputTokens, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 1, text: 1, reasoning: 0 },
+  }
+}
+
+function toolStep(id: string, toolName: string, input: unknown = {}, stepUsage: Usage = usage): Chunk[] {
   const text = JSON.stringify(input)
   return [
     { type: 'stream-start', warnings: [] },
@@ -58,7 +65,7 @@ function toolStep(id: string, toolName: string, input: unknown = {}): Chunk[] {
     { type: 'tool-input-delta', id, delta: text },
     { type: 'tool-input-end', id },
     { type: 'tool-call', toolCallId: id, toolName, input: text },
-    { type: 'finish', usage, finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
+    { type: 'finish', usage: stepUsage, finishReason: { unified: 'tool-calls', raw: 'tool_calls' } },
   ]
 }
 
@@ -203,6 +210,28 @@ describe('runAgent', () => {
     expect(result.toolCalls).toBe(1)
     expect(executed).toEqual(['read_file'])
     expect(result.text).toContain('all done')
+  })
+
+  it('sends the task as the first user turn and keeps it out of the system prompt', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{ stream: streamOf(textStep('t1', 'done')) }],
+    })
+    const { controller, deps } = buildDeps(model, [])
+
+    await runAgent(
+      input({ prompt: 'Summarize src/a.ts' }),
+      { ...deps, projectInstruction: { path: 'AGENTS.md', text: 'Always use pnpm.' } },
+      controller.signal,
+      () => {},
+    )
+
+    const prompt = model.doStreamCalls[0].prompt
+    const system = prompt.find((message) => message.role === 'system')
+    const firstUser = prompt.find((message) => message.role === 'user')
+    expect(system?.content).toContain('You are a delegated agent')
+    expect(system?.content).toContain('Always use pnpm.')
+    expect(system?.content).not.toContain('Summarize src/a.ts')
+    expect(JSON.stringify(firstUser?.content)).toContain('Summarize src/a.ts')
   })
 
   it('carries each tool call\u2019s real output into the transcript, never an empty result', async () => {
@@ -352,6 +381,32 @@ describe('runAgent', () => {
     expect(result.text).toContain('steered answer')
   })
 
+  it('carries the whole previous pass, final answer included and nothing twice, into the next pass', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'read_file')) },
+        { stream: streamOf(textStep('t2', 'first answer')) },
+        { stream: streamOf(textStep('t3', 'steered answer')) },
+      ],
+    })
+    const steering = steeringControl()
+    const { controller, deps } = buildDeps(model, [], { steering: steering.control })
+    let enqueued = false
+
+    await runAgent(input(), deps, controller.signal, (messages) => {
+      const last = messages[messages.length - 1]
+      if (!enqueued && last?.role === 'assistant' && textOf(last).includes('first answer')) {
+        enqueued = true
+        steering.enqueue('please steer')
+      }
+    })
+
+    const prompt = model.doStreamCalls[2].prompt
+    expect(prompt.map((message) => message.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user'])
+    expect(JSON.stringify(prompt)).toContain('first answer')
+    expect(JSON.stringify(prompt).match(/"toolCallId":"c1"/g)).toHaveLength(2)
+  })
+
   it('keeps draining steering turns with no fixed budget', async () => {
     const model = new MockLanguageModelV4({
       doStream: Array.from({ length: 35 }, (_, index) => ({
@@ -479,5 +534,269 @@ describe('runAgent', () => {
     const result = await runAgent(input({ skills: ['missing'] }), deps, controller.signal, () => {})
 
     expect(result.status).toBe('invalid_input')
+  })
+
+  describe('context compaction', () => {
+    function compactingSettings(enabled = true) {
+      const settings = defaultSettings()
+      settings.context = { maxContextTokens: 1000, autoCompactRatio: 0.5, autoCompactEnabled: enabled }
+      return settings
+    }
+
+    function longRun(summary: string | Error): MockLanguageModelV4 {
+      return new MockLanguageModelV4({
+        doStream: [
+          { stream: streamOf(toolStep('c1', 'read_file', { path: 'first.txt' })) },
+          { stream: streamOf(toolStep('c2', 'read_file', { path: 'second.txt' })) },
+          { stream: streamOf(toolStep('c3', 'read_file', { path: 'third.txt' }, usageWithInput(900))) },
+          { stream: streamOf(toolStep('c4', 'read_file', { path: 'fourth.txt' }, usageWithInput(120))) },
+          { stream: streamOf(textStep('t5', 'done')) },
+        ],
+        doGenerate: async () => {
+          if (summary instanceof Error) throw summary
+          return {
+            content: [{ type: 'text' as const, text: summary }],
+            finishReason: { unified: 'stop' as const, raw: undefined },
+            usage,
+            warnings: [],
+          }
+        },
+      })
+    }
+
+    it('summarizes the old prefix once the context passes the threshold, keeping recent steps', async () => {
+      const model = longRun('EARLIER WORK')
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+
+      const result = await runAgent(input(), deps, controller.signal, () => {})
+
+      expect(result.status).toBe('completed')
+      expect(model.doGenerateCalls).toHaveLength(1)
+      const compactedPrompt = JSON.stringify(model.doStreamCalls[3].prompt)
+      expect(compactedPrompt).toContain('EARLIER WORK')
+      expect(compactedPrompt).toContain('do the thing')
+      expect(compactedPrompt).not.toContain('first.txt')
+      expect(compactedPrompt).toContain('second.txt')
+      expect(compactedPrompt).toContain('third.txt')
+      const afterPrompt = JSON.stringify(model.doStreamCalls[4].prompt)
+      expect(afterPrompt).toContain('EARLIER WORK')
+      expect(afterPrompt).not.toContain('first.txt')
+    })
+
+    it('does not summarize again once the context is back under the threshold', async () => {
+      const model = longRun('EARLIER WORK')
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+
+      await runAgent(input(), deps, controller.signal, () => {})
+
+      expect(model.doGenerateCalls).toHaveLength(1)
+      expect(model.doStreamCalls).toHaveLength(5)
+    })
+
+    it('never summarizes when auto-compaction is switched off', async () => {
+      const model = longRun('EARLIER WORK')
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings(false) })
+
+      await runAgent(input(), deps, controller.signal, () => {})
+
+      expect(model.doGenerateCalls).toHaveLength(0)
+      expect(JSON.stringify(model.doStreamCalls[4].prompt)).toContain('first.txt')
+    })
+
+    it('finishes the run uncompacted and leaves a marker when the summary fails', async () => {
+      const model = longRun(new Error('summary provider down'))
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+      let latest: UIMessage[] = []
+
+      const result = await runAgent(input(), deps, controller.signal, (messages) => {
+        latest = messages
+      })
+
+      expect(result.status).toBe('completed')
+      expect(model.doGenerateCalls).toHaveLength(1)
+      expect(JSON.stringify(model.doStreamCalls[4].prompt)).toContain('first.txt')
+      const marker = latest.find(
+        (message) => (message.metadata as { compaction?: { error?: string } } | undefined)?.compaction,
+      )
+      expect((marker?.metadata as { compaction: { error?: string } }).compaction.error).toContain(
+        'summary provider down',
+      )
+    })
+
+    it('shows the compaction marker between the steps it separated', async () => {
+      const model = longRun('EARLIER WORK')
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+      let latest: UIMessage[] = []
+
+      await runAgent(input(), deps, controller.signal, (messages) => {
+        latest = messages
+      })
+
+      const markerIndex = latest.findIndex(
+        (message) => (message.metadata as { compaction?: unknown } | undefined)?.compaction !== undefined,
+      )
+      expect(markerIndex).toBeGreaterThan(0)
+      const marker = latest[markerIndex]
+      expect(textOf(marker)).toBe('EARLIER WORK')
+      const before = toolParts(latest.slice(0, markerIndex)).map((part) => part.type)
+      const after = toolParts(latest.slice(markerIndex + 1)).map((part) => part.type)
+      expect(before).toHaveLength(3)
+      expect(after).toHaveLength(1)
+      expect(textOf(latest[latest.length - 1])).toBe('done')
+      expect(new Set(latest.map((message) => message.id)).size).toBe(latest.length)
+    })
+
+    it('still compacts when the provider reports no input tokens, from an estimate of the history', async () => {
+      const bulky = 'x'.repeat(3000)
+      const noUsage: Usage = {
+        inputTokens: { total: undefined as unknown as number, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+        outputTokens: { total: 1, text: 1, reasoning: 0 },
+      }
+      const model = new MockLanguageModelV4({
+        doStream: [
+          { stream: streamOf(toolStep('c1', 'read_file', { path: 'first.txt', pad: bulky }, noUsage)) },
+          { stream: streamOf(toolStep('c2', 'read_file', { path: 'second.txt' }, noUsage)) },
+          { stream: streamOf(toolStep('c3', 'read_file', { path: 'third.txt' }, noUsage)) },
+          { stream: streamOf(textStep('t4', 'done')) },
+        ],
+        doGenerate: async () => ({
+          content: [{ type: 'text' as const, text: 'EARLIER WORK' }],
+          finishReason: { unified: 'stop' as const, raw: undefined },
+          usage,
+          warnings: [],
+        }),
+      })
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+
+      await runAgent(input(), deps, controller.signal, () => {})
+
+      expect(model.doGenerateCalls.length).toBeGreaterThanOrEqual(1)
+      expect(JSON.stringify(model.doStreamCalls[3].prompt)).not.toContain('first.txt')
+    })
+
+    it('reports the measured context so the run view can show a meter', async () => {
+      const model = longRun('EARLIER WORK')
+      const { controller, deps } = buildDeps(model, [], { settings: compactingSettings() })
+      const reports: Array<{ tokens: number; cap: number }> = []
+
+      await runAgent(input(), { ...deps, onContext: (report) => reports.push(report) }, controller.signal, () => {})
+
+      expect(reports.some((report) => report.tokens === 900)).toBe(true)
+      expect(reports.every((report) => report.cap === 1000)).toBe(true)
+    })
+  })
+
+  it('continues from its earlier transcript without resending a compaction summary as history', async () => {
+    const model = new MockLanguageModelV4({ doStream: [{ stream: streamOf(textStep('t1', 'picked up')) }] })
+    const { controller, deps } = buildDeps(model, [])
+    const prior: UIMessage[] = [
+      { id: 'run-1-prompt', role: 'user', parts: [{ type: 'text', text: 'do the thing' }] },
+      { id: 'run-1-a0-0', role: 'assistant', parts: [{ type: 'text', text: 'EARLY STEP' }] },
+      {
+        id: 'run-1-k0-0',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'OLD SUMMARY' }],
+        metadata: { compaction: { at: 1, replacedCount: 2, tokensBefore: 900 } },
+      },
+      { id: 'run-1-a0-1', role: 'assistant', parts: [{ type: 'text', text: 'LATE STEP' }] },
+    ]
+    let latest: UIMessage[] = []
+
+    const result = await runAgent(
+      { ...input(), seed: { messages: prior, text: 'keep going', passOffset: 1 } },
+      deps,
+      controller.signal,
+      (messages) => {
+        latest = messages
+      },
+    )
+
+    expect(result.status).toBe('completed')
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt)
+    expect(prompt).toContain('EARLY STEP')
+    expect(prompt).toContain('LATE STEP')
+    expect(prompt).toContain('keep going')
+    expect(prompt).not.toContain('OLD SUMMARY')
+    expect(latest.slice(0, prior.length)).toEqual(prior)
+    expect(latest.map((message) => message.id).slice(prior.length)).toEqual(['run-1-c1', 'run-1-a1-0'])
+  })
+
+  describe('structured output', () => {
+    const schema = {
+      type: 'object',
+      properties: { count: { type: 'integer' } },
+      required: ['count'],
+    }
+
+    function withExtraction(json: string): MockLanguageModelV4 {
+      return new MockLanguageModelV4({
+        doStream: [{ stream: streamOf(textStep('t1', 'There are 3 files.')) }],
+        doGenerate: async () => ({
+          content: [{ type: 'text' as const, text: json }],
+          finishReason: { unified: 'stop' as const, raw: undefined },
+          usage: usageWithInput(40),
+          warnings: [],
+        }),
+      })
+    }
+
+    it('returns a validated structured value alongside the text report', async () => {
+      const model = withExtraction('{"count":3}')
+      const { controller, deps } = buildDeps(model, [])
+
+      const result = await runAgent(input({ outputSchema: schema }), deps, controller.signal, () => {})
+
+      expect(result.status).toBe('completed')
+      expect(result.text).toContain('3 files')
+      expect(result.structured).toEqual({ count: 3 })
+      expect(result.structuredError).toBeUndefined()
+      expect(result.usage?.inputTokens).toBe(41)
+      expect(JSON.stringify(model.doGenerateCalls[0].prompt)).toContain('There are 3 files.')
+    })
+
+    it('keeps the run completed and reports structuredError when the value does not match', async () => {
+      const model = withExtraction('{"count":"three"}')
+      const { controller, deps } = buildDeps(model, [])
+
+      const result = await runAgent(input({ outputSchema: schema }), deps, controller.signal, () => {})
+
+      expect(result.status).toBe('completed')
+      expect(result.structured).toBeUndefined()
+      expect(result.structuredError).toContain('$.count')
+      expect(result.usage?.inputTokens).toBe(41)
+    })
+
+    it('extracts from the final report of a multi-step run, not just its tool output', async () => {
+      const model = new MockLanguageModelV4({
+        doStream: [
+          { stream: streamOf(toolStep('c1', 'read_file')) },
+          { stream: streamOf(textStep('t2', 'FINAL REPORT: 3 files')) },
+        ],
+        doGenerate: async () => ({
+          content: [{ type: 'text' as const, text: '{"count":3}' }],
+          finishReason: { unified: 'stop' as const, raw: undefined },
+          usage,
+          warnings: [],
+        }),
+      })
+      const { controller, deps } = buildDeps(model, [])
+
+      const result = await runAgent(input({ outputSchema: schema }), deps, controller.signal, () => {})
+
+      expect(result.structured).toEqual({ count: 3 })
+      const prompt = JSON.stringify(model.doGenerateCalls[0].prompt)
+      expect(prompt).toContain('FINAL REPORT: 3 files')
+      expect(prompt).toContain('read_file:ok')
+    })
+
+    it('makes no extraction call when no schema was requested', async () => {
+      const model = withExtraction('{"count":3}')
+      const { controller, deps } = buildDeps(model, [])
+
+      const result = await runAgent(input(), deps, controller.signal, () => {})
+
+      expect(model.doGenerateCalls).toHaveLength(0)
+      expect('structured' in result).toBe(false)
+    })
   })
 })

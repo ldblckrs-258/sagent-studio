@@ -135,6 +135,35 @@ export const LEGACY_AUTO_COMPACT_RATIO = 0.8;
 export const MIN_AUTO_COMPACT_RATIO = 0.1;
 export const MAX_AUTO_COMPACT_RATIO = 0.95;
 
+export interface AgentSettings {
+  autoContinue: boolean;
+  maxAutoContinues: number;
+}
+
+export const DEFAULT_MAX_AUTO_CONTINUES = 3;
+export const MAX_AUTO_CONTINUES_LIMIT = 10;
+
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  autoContinue: false,
+  maxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES,
+};
+
+export function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const max = value.maxAutoContinues;
+  return {
+    autoContinue: value.autoContinue === true,
+    maxAutoContinues:
+      typeof max === "number" && Number.isInteger(max) && max >= 1 && max <= MAX_AUTO_CONTINUES_LIMIT
+        ? max
+        : DEFAULT_MAX_AUTO_CONTINUES,
+  };
+}
+
+export function agentSettingsOf(settings: Settings | null | undefined): AgentSettings {
+  return settings?.agents ?? DEFAULT_AGENT_SETTINGS;
+}
+
 export type ApprovalDecision = "allow" | "ask" | "deny";
 
 export interface ApprovalSettings {
@@ -172,6 +201,7 @@ export interface Settings {
    * `defaultSettings()` would stamp an empty policy and disable every skill.
    */
   skills?: { enabled?: PersistedSkillRef[] };
+  agents?: AgentSettings;
 }
 
 export const MAX_PROVIDERS = 20;
@@ -444,6 +474,7 @@ export function migrate(version: number, data: unknown): Settings {
     subModel: rawSubModel,
     modelTiers: rawModelTiers,
     lastModel: rawLastModel,
+    agents: rawAgents,
     ...rest
   } = merged as typeof merged & {
     subModel?: unknown;
@@ -457,11 +488,13 @@ export function migrate(version: number, data: unknown): Settings {
     }
   }
   const lastModel = normalizeLastModel(rawLastModel);
+  const agents = normalizeAgentSettings(rawAgents);
   return {
     ...rest,
     providers: normalizeProviders(merged.providers),
     context,
     ...(tiers ? { modelTiers: tiers } : {}),
     ...(lastModel ? { lastModel } : {}),
+    ...(agents ? { agents } : {}),
   };
 }

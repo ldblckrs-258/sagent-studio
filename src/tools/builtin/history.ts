@@ -1,8 +1,9 @@
 import { jsonSchema, tool } from 'ai'
+import { RestoreApplyError } from '../../workspace/errors'
 import { workspaceJournal } from '../../workspace/journal'
 import type { WorkspaceJournal } from '../../workspace/journal'
-import { readForJournal } from '../../workspace/journal-io'
-import { withPathLock, withWorkspaceLock } from '../../workspace/lock'
+import { applyRestore, readForJournal } from '../../workspace/journal-io'
+import { withPathLock } from '../../workspace/lock'
 import { toolFail, toolOk, wrapToolExecute } from '../result'
 import { ToolNotFoundError, ToolRuntimeUnavailableError } from '../types'
 import type { ToolProvider } from '../types'
@@ -82,37 +83,16 @@ export function createHistoryToolProvider(
                   { hint: 'Create a fresh checkpoint before making further changes.' },
                 )
               }
-              const restored: string[] = []
-              const removed: string[] = []
-              const skipped: string[] = []
-              await withWorkspaceLock(async () => {
-                for (const change of plan.changes) {
-                  const current = await readForJournal(workspace, change.path)
-                  if (!current.known) {
-                    skipped.push(change.path)
-                    continue
-                  }
-                  if (current.content === change.content) continue
-                  if (change.content === null) {
-                    await workspace.remove(change.path)
-                    removed.push(change.path)
-                  } else {
-                    await workspace.writeFile(change.path, change.content)
-                    restored.push(change.path)
-                  }
-                  journal.record({
-                    kind: 'restore',
-                    path: change.path,
-                    before: current.content,
-                    after: change.content,
-                  })
-                }
-              })
+              const outcome = await applyRestore(journal, workspace, plan.changes).catch(
+                (error: unknown) => {
+                  throw error instanceof RestoreApplyError ? error.cause : error
+                },
+              )
               return toolOk({
                 checkpoint: plan.checkpoint,
-                restored,
-                removed,
-                skipped,
+                restored: outcome.restored,
+                removed: outcome.removed,
+                skipped: outcome.skipped,
                 unrestorable: plan.unrestorable,
               })
             }),

@@ -8,7 +8,7 @@ import { ChatConfigError, ChatError } from './errors'
 import { validatePlanItems } from './plan'
 import { rehydrateThread } from './sanitize'
 import { isAgentRunStatus, isChatMode, validateThreadConfig } from './types'
-import type { AgentThreadMeta, ChatThread } from './types'
+import type { AgentRunSpec, AgentThreadMeta, ChatThread } from './types'
 
 export const THREAD_ENVELOPE_VERSION = 1
 
@@ -97,8 +97,45 @@ function validateAgentMeta(value: unknown): AgentThreadMeta | undefined {
     status: candidate.status,
   }
   if (typeof candidate.label === 'string') meta.label = candidate.label
+  if (typeof candidate.profile === 'string' && candidate.profile.length > 0) meta.profile = candidate.profile
   if (candidate.stopReason === 'user_stop') meta.stopReason = candidate.stopReason
+  const spec = validateAgentSpec(candidate.spec)
+  if (spec) meta.spec = spec
   return meta
+}
+
+function readNameList(value: unknown): string[] | undefined | null {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return null
+  return [...value]
+}
+
+function validateAgentSpec(value: unknown): AgentRunSpec | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Record<string, unknown>
+  if (!isChatMode(candidate.mode)) return undefined
+  const toolNames = readNameList(candidate.toolNames)
+  if (!toolNames) return undefined
+  const skills = readNameList(candidate.skills)
+  const excludeTools = readNameList(candidate.excludeTools)
+  const allowTools = readNameList(candidate.allowTools)
+  if (skills === null || excludeTools === null || allowTools === null) return undefined
+  const schema = candidate.outputSchema
+  const outputSchema =
+    typeof schema === 'object' && schema !== null && !Array.isArray(schema)
+      ? (schema as Record<string, unknown>)
+      : undefined
+  return {
+    mode: candidate.mode,
+    toolNames,
+    ...(typeof candidate.profile === 'string' && candidate.profile.length > 0
+      ? { profile: candidate.profile }
+      : {}),
+    ...(skills ? { skills } : {}),
+    ...(excludeTools ? { excludeTools } : {}),
+    ...(allowTools ? { allowTools } : {}),
+    ...(outputSchema ? { outputSchema } : {}),
+  }
 }
 
 function parseEnvelope(raw: string): ChatThread {

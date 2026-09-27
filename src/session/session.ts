@@ -1,8 +1,10 @@
 import type { UIMessage } from 'ai'
 import type { ChatEngine, EngineDeps, ThreadStore } from '../chat/engine'
 import { createEngine, createSkillLoadPort } from '../chat/engine'
-import type { AgentParentContext } from '../agents/types'
+import type { AgentParentContext, AgentSpawnOutcome } from '../agents/types'
 import { summarizeAgentResult } from '../agents/types'
+import { createWorkspaceProfileSource } from '../agents/profile-workspace-source'
+import { AgentProfileRegistry } from '../agents/profiles'
 import { createAgentRuntime } from '../agents/runtime'
 import type { AgentRunPersistence, AgentRunSnapshot, AgentRuntime } from '../agents/runtime'
 import { agentRunStore } from '../agents/store'
@@ -58,6 +60,9 @@ import type { SandboxSettings, Settings } from '../vault/settings'
 import type { WorkspaceFs } from '../workspace/fs'
 import { workspaceJournal } from '../workspace/journal'
 import { workspaceJournalStore } from '../workspace/journal-store'
+import type { RunFileChange } from '../workspace/journal'
+import { applyRunRevert, tagJournal } from '../workspace/run-journal'
+import type { RunRevertOutcome } from '../workspace/run-journal'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -102,6 +107,7 @@ function describeBuiltinTool(
 export interface AppSession {
   skillRegistry: SkillRegistry
   toolRegistry: ToolRegistry
+  agentProfiles: AgentProfileRegistry
   threadStore: ThreadStore
   runnerSource: CodeRunnerSource
   engineFor(threadId: string): ChatEngine
@@ -113,6 +119,9 @@ export interface AppSession {
   steerAgentRun(runId: string, text: string): boolean
   /** Force-stops a live delegated run; false when the run is not live. */
   stopAgentRun(runId: string): boolean
+  continueAgentRun(runId: string, text: string): Promise<AgentSpawnOutcome>
+  agentRunChanges(runId: string): Promise<{ changes: RunFileChange[]; expired: boolean }>
+  revertAgentRun(runId: string): Promise<RunRevertOutcome | { error: string }>
   getWorkspace(): WorkspaceFs | null
   setWorkspace(fs: WorkspaceFs | null): void
   /** Builtin tools with availability and introspection details for the given thread config's ports. */
@@ -155,10 +164,12 @@ function agentThreadFrom(snapshot: AgentRunSnapshot): ChatThread {
       runId: snapshot.runId,
       parentThreadId: snapshot.parentThreadId,
       ...(snapshot.label !== undefined ? { label: snapshot.label } : {}),
+      ...(snapshot.profile !== undefined ? { profile: snapshot.profile } : {}),
       mode: snapshot.mode,
       tier: snapshot.tier,
       status: snapshot.status,
       ...(snapshot.stopReason !== undefined ? { stopReason: snapshot.stopReason } : {}),
+      ...(snapshot.spec !== undefined ? { spec: snapshot.spec } : {}),
     },
   }
 }
@@ -184,11 +195,13 @@ function agentSnapshotFrom(thread: ChatThread): AgentRunSnapshot | null {
     mode: meta.mode,
     tier: meta.tier,
     ...(meta.label !== undefined ? { label: meta.label } : {}),
+    ...(meta.profile !== undefined ? { profile: meta.profile } : {}),
     status: meta.status,
     ...(meta.stopReason !== undefined ? { stopReason: meta.stopReason } : {}),
     prompt: promptFromMessages(thread.messages),
     messages: thread.messages,
     startedAt: thread.createdAt,
+    ...(meta.spec !== undefined ? { spec: meta.spec } : {}),
   }
 }
 
@@ -212,12 +225,29 @@ export function agentNoticeFor(run: AgentRunRecord): { text: string; report: Age
     }
   }
   const response = run.result ? summarizeAgentResult(run.result) : `The agent ${run.status}.`
+  const result = run.result
+  const hasStructured = result !== undefined && 'structured' in result
+  const filesText =
+    result?.filesChanged !== undefined
+      ? `\n\nFiles changed${result.filesChangedIncomplete ? ' (older changes are no longer recorded, so this list may be incomplete)' : ''}: ${result.filesChanged.join(', ')}`
+      : result?.filesChangedIncomplete
+        ? '\n\nFiles changed: unknown, because this run\'s changes are no longer recorded.'
+        : ''
+  const structuredText = hasStructured
+    ? `\n\nStructured result:\n\`\`\`json\n${JSON.stringify(result.structured, null, 2)}\n\`\`\``
+    : result?.structuredError !== undefined
+      ? `\n\nThe structured result could not be extracted: ${result.structuredError}`
+      : ''
   return {
-    text: `Sub-agent${label} finished: ${response}`,
+    text: `Sub-agent${label} finished: ${response}${filesText}${structuredText}`,
     report: {
       status,
       response,
       ...(run.label !== undefined ? { label: run.label } : {}),
+      ...(hasStructured ? { structured: result.structured } : {}),
+      ...(result?.structuredError !== undefined ? { structuredError: result.structuredError } : {}),
+      ...(result?.filesChanged !== undefined ? { filesChanged: result.filesChanged } : {}),
+      ...(result?.filesChangedIncomplete ? { filesChangedIncomplete: true } : {}),
     },
   }
 }
@@ -229,10 +259,18 @@ export function createAgentPorts(
 ): AgentSpawnPort {
   return {
     spawn: (request, options) => runtime.spawn(context, request, options),
+    continue: (runId, text, options) => runtime.continue(context, runId, text, options),
+    wait: (options, signal) => runtime.wait(context.parentThreadId, options, signal),
     steer: (runId, text) => runtime.steer(context.parentThreadId, runId, text),
     stop: (runId, reason) => runtime.stop(context.parentThreadId, runId, reason),
     read: (runId, options) => runtime.read(context.parentThreadId, runId, options),
     resolveRun: (identifier) => runtime.resolveRun(context.parentThreadId, identifier),
+    profiles: () =>
+      runtime.profiles().map((profile) => ({
+        id: profile.id,
+        description: profile.description,
+        source: profile.source,
+      })),
   }
 }
 
@@ -274,10 +312,16 @@ export function createSession(options: SessionOptions = {}): AppSession {
 
   // The journal records mutations against one folder, so a folder change makes
   // it stale no matter which path changed it.
+  const agentProfiles = new AgentProfileRegistry()
+  const loadAgentProfiles = (fs: WorkspaceFs | null): Promise<void> =>
+    agentProfiles.load(fs ? createWorkspaceProfileSource(fs) : null)
+  void loadAgentProfiles(getWorkspace())
+
   unsubFolder = useWorkspaceStore.subscribe((state, previous) => {
     if (state.fs === previous.fs) return
     workspaceJournal.clear()
     syncWorkspaceLabel(state.folderName)
+    void loadAgentProfiles(state.fs)
   })
 
   // One owner for "the open conversation decides the folder"; every path that
@@ -422,19 +466,27 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry,
     store: agentRunStore,
     persistence: agentPersistence,
-    portsFor: async (context) => ({
-      rag: ragPort(),
-      workspace: getWorkspace() ?? undefined,
-      codeRunner: runnerSource.getRunners().js,
-      sandbox: sandboxControlPort(),
-      preview: previewPort(),
+    profiles: {
+      get: (id) => agentProfiles.get(id),
+      list: () => agentProfiles.list(),
+      refresh: () => loadAgentProfiles(getWorkspace()),
+    },
+    portsFor: async (context, runId) => {
       // The parent thread's journal, so a sub-agent's writes are recorded with
       // the parent's and stay undoable from the conversation.
-      journal: await workspaceJournalStore.forThread(context.parentThreadId),
-      skills: createSkillLoadPort(skillRegistry.resolve(skillRegistry.snapshotEnabled())),
-      plan: { get: () => [], set: async () => {} },
-      ...createAdminPorts({ skillRegistry, toolRegistry }),
-    }),
+      const journal = await workspaceJournalStore.forThread(context.parentThreadId)
+      return {
+        rag: ragPort(),
+        workspace: getWorkspace() ?? undefined,
+        codeRunner: runnerSource.getRunners().js,
+        sandbox: sandboxControlPort(),
+        preview: previewPort(),
+        journal: runId !== undefined ? tagJournal(journal, runId) : journal,
+        skills: createSkillLoadPort(skillRegistry.resolve(skillRegistry.snapshotEnabled())),
+        plan: { get: () => [], set: async () => {} },
+        ...createAdminPorts({ skillRegistry, toolRegistry }),
+      }
+    },
     onSettle: (run) => {
       const parentThreadId = run.parentThreadId;
       if (!useChatStore.getState().threads[parentThreadId]) return;
@@ -445,12 +497,16 @@ export function createSession(options: SessionOptions = {}): AppSession {
     },
   })
 
+  const parentThreadOf = async (runId: string): Promise<string | undefined> =>
+    agentRunStore.get(runId)?.parentThreadId ?? (await agentPersistence.load(runId))?.parentThreadId
+
   const deps: EngineDeps = {
     getSettings,
     skillRegistry,
     toolRegistry,
     threadStore,
     agentPortsFor: (context) => createAgentPorts(agentRuntime, context),
+    activeAgentsFor: (threadId) => agentRuntime.activeForThread(threadId),
     get workspace() {
       return getWorkspace() ?? undefined
     },
@@ -510,6 +566,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   return {
     skillRegistry,
     toolRegistry,
+    agentProfiles,
     threadStore,
     runnerSource,
     engineFor,
@@ -527,6 +584,44 @@ export function createSession(options: SessionOptions = {}): AppSession {
       const parentThreadId = agentRunStore.get(runId)?.parentThreadId
       if (parentThreadId === undefined) return false
       return agentRuntime.stop(parentThreadId, runId)
+    },
+    agentRunChanges: async (runId) => {
+      const parentThreadId = await parentThreadOf(runId)
+      if (parentThreadId === undefined) return { changes: [], expired: false }
+      const journal = await workspaceJournalStore.forThread(parentThreadId)
+      return {
+        changes: journal.changesForRun(runId),
+        expired: journal.planRunRevert(runId).expired === true,
+      }
+    },
+    revertAgentRun: async (runId) => {
+      const run = agentRunStore.get(runId) ?? (await agentPersistence.load(runId))
+      if (!run) return { error: `No run ${runId} is available.` }
+      if (run.status === 'running') return { error: 'Stop the run before reverting its changes.' }
+      const workspace = getWorkspace()
+      if (!workspace) return { error: 'Open the workspace folder before reverting a run.' }
+      const journal = await workspaceJournalStore.forThread(run.parentThreadId)
+      return applyRunRevert(workspace, journal, runId, run.label ?? runId)
+    },
+    continueAgentRun: async (runId, text) => {
+      const parentThreadId = await parentThreadOf(runId)
+      if (parentThreadId === undefined) {
+        return { status: 'invalid_input', message: `No run ${runId} is available to continue.` }
+      }
+      const parent =
+        useChatStore.getState().threads[parentThreadId] ?? (await threadStore.loadThread(parentThreadId))
+      if (!parent) {
+        return { status: 'invalid_input', message: 'The conversation that owns this run is gone.' }
+      }
+      const context: AgentParentContext = {
+        parentThreadId,
+        mode: parent.mode ?? 'editing',
+        providerId: parent.config.providerId,
+        ...(parent.config.modelId !== undefined ? { modelId: parent.config.modelId } : {}),
+        systemInstruction: parent.config.systemInstruction,
+        toolNames: [],
+      }
+      return agentRuntime.continue(context, runId, text, { background: true })
     },
     getWorkspace,
     setWorkspace(fs) {

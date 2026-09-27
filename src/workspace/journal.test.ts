@@ -70,3 +70,90 @@ describe('workspace journal restore', () => {
     ])
   })
 })
+
+describe('workspace journal seq restore', () => {
+  const withoutExpected = (changes: Array<{ path: string; content: string | null }>) =>
+    changes.map(({ path, content }) => ({ path, content }))
+
+  it('plans the same restore from a seq marker as from a checkpoint at that point', () => {
+    const journal = createWorkspaceJournal()
+    journal.record({ kind: 'write', path: 'a.txt', before: null, after: 'v1' })
+    const marker = journal.head()
+    const checkpoint = journal.checkpoint()
+    journal.record({ kind: 'edit', path: 'a.txt', before: 'v1', after: 'v2' })
+    journal.record({ kind: 'write', path: 'new.txt', before: null, after: 'fresh' })
+    journal.record({ kind: 'edit', path: 'big.txt', before: 'x'.repeat(300_000), after: 'y' })
+
+    const byCheckpoint = journal.planRestore(checkpoint.id)
+    const bySeq = journal.planRestoreAt(marker)
+
+    expect(bySeq.expired).toBeUndefined()
+    expect(withoutExpected(bySeq.changes)).toEqual(byCheckpoint?.changes)
+    expect(bySeq.changes).toEqual([
+      { path: 'a.txt', content: 'v1', expected: 'v2' },
+      { path: 'new.txt', content: null, expected: 'fresh' },
+    ])
+    expect(bySeq.unrestorable).toEqual(byCheckpoint?.unrestorable)
+    expect(bySeq.unrestorable).toEqual(['big.txt'])
+  })
+
+  it('restores the content on disk when the marker was set, keeping an unjournaled edit made before it', () => {
+    const journal = createWorkspaceJournal()
+    journal.record({ kind: 'write', path: 'a.txt', before: null, after: 'agent' })
+    const marker = journal.head()
+    const checkpoint = journal.checkpoint()
+    journal.record({ kind: 'write', path: 'a.txt', before: 'hand edit', after: 'later' })
+
+    expect(journal.planRestoreAt(marker).changes).toEqual([
+      { path: 'a.txt', content: 'hand edit', expected: 'later' },
+    ])
+    expect(journal.planRestore(checkpoint.id)?.changes).toEqual([{ path: 'a.txt', content: 'agent' }])
+  })
+
+  it('does not plan a path whose changes all predate the marker', () => {
+    const journal = createWorkspaceJournal()
+    journal.record({ kind: 'write', path: 'old.txt', before: null, after: 'kept' })
+    const marker = journal.head()
+    journal.record({ kind: 'write', path: 'new.txt', before: null, after: 'fresh' })
+
+    expect(journal.planRestoreAt(marker).changes.map((change) => change.path)).toEqual(['new.txt'])
+  })
+
+  it('expires a marker ahead of the journal head, as after a journal reset', () => {
+    const journal = createWorkspaceJournal()
+    journal.record({ kind: 'write', path: 'a.txt', before: null, after: 'x' })
+    const marker = journal.head()
+    journal.clear()
+
+    expect(journal.planRestoreAt(marker)).toMatchObject({ expired: true, changes: [] })
+  })
+
+  it('expires a marker only once entries after it were evicted', () => {
+    const journal = createWorkspaceJournal()
+    const first = journal.head()
+    for (let index = 0; index < 600; index += 1) {
+      journal.record({ kind: 'write', path: `f${index}.txt`, before: null, after: 'x' })
+    }
+    const oldest = journal.snapshotState().entries[0].seq
+
+    expect(journal.planRestoreAt(first)).toMatchObject({ expired: true, changes: [] })
+    expect(journal.planRestoreAt(oldest - 2).expired).toBe(true)
+    const edge = journal.planRestoreAt(oldest - 1)
+    expect(edge.expired).toBeUndefined()
+    expect(edge.changes).toHaveLength(500)
+  })
+
+  it('expects the latest journaled content, and nothing when it was too large to keep', () => {
+    const journal = createWorkspaceJournal()
+    const marker = journal.head()
+    journal.record({ kind: 'edit', path: 'a.txt', before: 'v0', after: 'v1' })
+    journal.record({ kind: 'edit', path: 'a.txt', before: 'v1', after: 'v2' })
+    journal.record({ kind: 'edit', path: 'b.txt', before: 'small', after: 'medium' })
+    journal.record({ kind: 'edit', path: 'b.txt', before: 'medium', after: 'x'.repeat(300_000) })
+
+    const [a, b] = journal.planRestoreAt(marker).changes
+    expect(a).toEqual({ path: 'a.txt', content: 'v0', expected: 'v2' })
+    expect(b).toEqual({ path: 'b.txt', content: 'small' })
+    expect(b).not.toHaveProperty('expected')
+  })
+})

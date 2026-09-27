@@ -27,6 +27,7 @@ import { useFileViewStore } from "@/session/file-view-state";
 import {
   ToolChip,
   ToolCode,
+  ToolDiff,
   ToolKeyValues,
   ToolSection,
   type ToolDetailProps,
@@ -460,30 +461,6 @@ function restoreDetail({ envelope }: ToolDetailProps) {
   );
 }
 
-function DiffBlock({ text }: { text: string }) {
-  const lines = text.split("\n").slice(0, 400);
-  return (
-    <pre className="max-h-64 overflow-auto rounded-sm border border-rule bg-paper-sunk/50 p-2 font-mono text-xs leading-relaxed whitespace-pre">
-      {lines.map((line, index) => {
-        const tone = line.startsWith("+++") || line.startsWith("---")
-          ? "text-faint"
-          : line.startsWith("+")
-            ? "text-positive"
-            : line.startsWith("-")
-              ? "text-danger"
-              : line.startsWith("@@")
-                ? "text-accent"
-                : "text-foreground/90";
-        return (
-          <span key={index} className={cn("block", tone)}>
-            {line.length > 0 ? line : "\u00a0"}
-          </span>
-        );
-      })}
-    </pre>
-  );
-}
-
 function diffDetail({ envelope }: ToolDetailProps) {
   if (!envelope?.ok) return null;
   const value = asRecord(envelope.value);
@@ -500,7 +477,7 @@ function diffDetail({ envelope }: ToolDetailProps) {
         </span>
         {value.truncated === true && <ToolChip tone="caution">diff truncated</ToolChip>}
       </div>
-      {text.length > 0 && <DiffBlock text={text} />}
+      {text.length > 0 && <ToolDiff text={text} />}
     </div>
   );
 }

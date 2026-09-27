@@ -1,12 +1,12 @@
 import { convertToModelMessages, generateId, generateText } from 'ai'
-import type { UIMessage } from 'ai'
+import type { LanguageModel, ModelMessage, UIMessage } from 'ai'
 import { createLLM } from '../ai/llm'
 import { messagesSinceBoundary } from './boundary'
 import type { CompactionMeta } from './boundary'
 import type { PipelineDeps } from './engine'
 import { ChatError } from './errors'
 import type { ChatMessageMetadata } from './sanitize'
-import type { ChatThread, ThreadConfig } from './types'
+import type { ChatThread, ModelParams, ThreadConfig } from './types'
 import { convertAgentNoticePart } from './types'
 import { contextTokensOf } from './usage'
 
@@ -29,6 +29,35 @@ Preserve identifiers, paths, commands, and error strings exactly. Record only wh
 const SUMMARY_REQUEST =
   'Compact the conversation above into the briefing described in your instructions.'
 
+export async function summarizeModelMessages(
+  model: LanguageModel,
+  messages: readonly ModelMessage[],
+  params: ModelParams = {},
+  signal?: AbortSignal,
+  instructions?: string,
+): Promise<string> {
+  const request =
+    instructions !== undefined && instructions.trim().length > 0
+      ? `${SUMMARY_REQUEST}\n\nThe user asked you to focus on: ${instructions.trim()}`
+      : SUMMARY_REQUEST
+
+  const result = await generateText({
+    model,
+    system: SUMMARY_SYSTEM,
+    messages: [...messages, { role: 'user', content: request }],
+    ...params,
+    ...(signal ? { abortSignal: signal } : {}),
+  })
+
+  const summary = result.text.trim()
+  // An empty summary would produce a boundary that hides the history behind
+  // nothing at all, which is worse than not compacting.
+  if (summary.length === 0) {
+    throw new ChatError('The model returned an empty summary; the thread was left unchanged.')
+  }
+  return summary
+}
+
 export async function summarizeMessages(
   deps: PipelineDeps,
   config: ThreadConfig,
@@ -45,26 +74,7 @@ export async function summarizeMessages(
     ignoreIncompleteToolCalls: true,
     convertDataPart: convertAgentNoticePart,
   })
-  const request =
-    instructions !== undefined && instructions.trim().length > 0
-      ? `${SUMMARY_REQUEST}\n\nThe user asked you to focus on: ${instructions.trim()}`
-      : SUMMARY_REQUEST
-
-  const result = await generateText({
-    model,
-    system: SUMMARY_SYSTEM,
-    messages: [...history, { role: 'user', content: request }],
-    ...config.params,
-    ...(signal ? { abortSignal: signal } : {}),
-  })
-
-  const summary = result.text.trim()
-  // An empty summary would produce a boundary that hides the history behind
-  // nothing at all, which is worse than not compacting.
-  if (summary.length === 0) {
-    throw new ChatError('The model returned an empty summary; the thread was left unchanged.')
-  }
-  return summary
+  return summarizeModelMessages(model, history, config.params, signal, instructions)
 }
 
 /**

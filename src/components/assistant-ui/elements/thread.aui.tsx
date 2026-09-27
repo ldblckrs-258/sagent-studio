@@ -46,6 +46,7 @@ import type { AgentNoticeMeta, AgentNoticePart } from "@/chat/types";
 import { ComposerHighlight } from "@/ui/composer-highlight";
 import { UserBubble } from "@/ui/conversation";
 import { MentionSuggestions } from "@/ui/mention-suggestions";
+import { RewindButton, RewindDialog } from "@/ui/message-rewind";
 import { SlashSuggestions } from "@/ui/slash-suggestions";
 import {
   ActionBarMorePrimitive,
@@ -70,6 +71,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   AudioLinesIcon,
+  BotIcon,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
@@ -88,6 +90,7 @@ import {
 import {
   createContext,
   useContext,
+  useState,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -288,13 +291,15 @@ export const ThreadMessage: FC = () => {
       s.message.metadata.custom as
         | {
             skillDirective?: { name: string };
-            compaction?: { replacedCount: number };
+            compaction?: { replacedCount: number; error?: string };
             agentReport?: AgentNoticeMeta;
             agentNotice?: boolean;
+            autoContinue?: { runId?: string; label?: string };
           }
         | undefined,
   );
   const skillDirective = custom?.skillDirective;
+  const autoContinue = custom?.autoContinue;
   const compaction = custom?.compaction;
   // A standalone notice message is marked; an inline notice part instead rides
   // inside the assistant message and renders through `AssistantMessage`, so it
@@ -322,7 +327,9 @@ export const ThreadMessage: FC = () => {
   if (isEditing) return <EditComposer />;
   if (isSpoken) return <SpokenMessage />;
   if (skillDirective) return <SkillDirectiveMarker name={skillDirective.name} />;
-  if (compaction) return <CompactionMarker replacedCount={compaction.replacedCount} />;
+  if (autoContinue) return <AutoContinueMarker label={autoContinue.label ?? autoContinue.runId} />;
+  if (compaction)
+    return <CompactionMarker replacedCount={compaction.replacedCount} error={compaction.error} />;
   if (noticeReport) return <SubAgentReport report={noticeReport} />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
@@ -334,7 +341,21 @@ export const ThreadMessage: FC = () => {
  * un-compacts the thread. The summary is still readable on demand, since it is
  * what the model now sees in place of the history above it.
  */
-const CompactionMarker: FC<{ replacedCount: number }> = ({ replacedCount }) => {
+const CompactionMarker: FC<{ replacedCount: number; error?: string | undefined }> = ({
+  replacedCount,
+  error,
+}) => {
+  if (error !== undefined) {
+    return (
+      <p
+        data-slot="aui_compaction-failed"
+        className="border-caution-rule text-caution flex items-center gap-2 rounded-sm border border-dashed px-2.5 py-1.5 text-xs"
+      >
+        <ScissorsIcon size={12} strokeWidth={1.75} aria-hidden="true" />
+        <span className="min-w-0 break-words">Compaction failed; the run continued uncompacted. {error}</span>
+      </p>
+    );
+  }
   return (
     <details
       data-slot="aui_compaction-marker"
@@ -371,6 +392,18 @@ const SkillDirectiveMarker: FC<{ name: string }> = ({ name }) => {
       <SparklesIcon size={12} strokeWidth={1.75} aria-hidden="true" />
       <span>
         Loaded skill <span className="font-mono text-ink">{name}</span>
+      </span>
+    </div>
+  );
+};
+
+const AutoContinueMarker: FC<{ label?: string | undefined }> = ({ label }) => {
+  return (
+    <div data-slot="aui_auto-continue" className="text-muted flex items-center gap-2 text-xs">
+      <BotIcon size={12} strokeWidth={1.75} aria-hidden="true" />
+      <span>
+        Continued automatically after sub-agent{" "}
+        {label !== undefined ? <span className="font-mono text-ink">{label}</span> : null} finished
       </span>
     </div>
   );
@@ -959,6 +992,7 @@ const UserMessageImages: FC = () => {
 };
 
 const UserMessage: FC = () => {
+  const [rewinding, setRewinding] = useState(false);
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -975,10 +1009,14 @@ const UserMessage: FC = () => {
             components={{ File: UserFilePart, Image: UserImagePart }}
           />
         </UserBubble>
-        <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
-          <UserActionBar />
+        <div
+          data-slot="aui_user-message-footer"
+          className="flex min-h-7.5 justify-end pt-1.5 peer-empty:hidden"
+        >
+          <UserActionBar onRewind={() => setRewinding(true)} />
         </div>
       </div>
+      {rewinding ? <RewindDialog onClose={() => setRewinding(false)} /> : null}
     </MessagePrimitive.Root>
   );
 };
@@ -1004,12 +1042,12 @@ const UserAttachmentBadges: FC = () => {
   );
 };
 
-const UserActionBar: FC = () => {
+const UserActionBar: FC<{ onRewind: () => void }> = ({ onRewind }) => {
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
-      className="aui-user-action-bar-root flex flex-col items-end"
+      className="aui-user-action-bar-root text-muted-foreground animate-in fade-in -me-1 flex gap-1 duration-200"
     >
       <AuiIf condition={(s) => s.thread.capabilities.edit}>
         <ActionBarPrimitive.Edit asChild>
@@ -1018,6 +1056,7 @@ const UserActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       </AuiIf>
+      <RewindButton onSelect={onRewind} />
     </ActionBarPrimitive.Root>
   );
 };

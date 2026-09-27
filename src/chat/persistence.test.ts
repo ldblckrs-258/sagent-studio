@@ -309,6 +309,55 @@ describe('agent run persistence', () => {
     expect(loaded?.agent?.stopReason).toBe('user_stop')
   })
 
+  it('keeps the continuation spec and profile through a reload', async () => {
+    const spec = {
+      mode: 'read_only' as const,
+      toolNames: ['read_file', 'search'],
+      profile: 'reviewer',
+      skills: ['owasp'],
+      allowTools: ['read_file'],
+      outputSchema: { type: 'object' },
+    }
+    await saveThread(
+      thread('run-spec', {
+        agent: {
+          runId: 'run-spec',
+          parentThreadId: 'parent-1',
+          profile: 'reviewer',
+          mode: 'editing',
+          tier: 'high',
+          status: 'completed',
+          spec,
+        },
+      }),
+    )
+    const loaded = await loadThread('run-spec')
+    expect(loaded?.agent?.spec).toEqual(spec)
+    expect(loaded?.agent?.profile).toBe('reviewer')
+  })
+
+  it('reads an older run without a spec, and drops a malformed spec instead of the run', async () => {
+    await saveThread(agentThread('run-old', 'parent-1', 'completed'))
+    await saveThread(
+      thread('run-bad', {
+        agent: {
+          runId: 'run-bad',
+          parentThreadId: 'parent-1',
+          mode: 'editing',
+          tier: 'medium',
+          status: 'completed',
+          spec: { mode: 'editing', toolNames: 'read_file' } as unknown as AgentThreadMeta['spec'],
+        },
+      }),
+    )
+    const old = await loadThread('run-old')
+    const bad = await loadThread('run-bad')
+    expect(old?.agent?.status).toBe('completed')
+    expect(old?.agent?.spec).toBeUndefined()
+    expect(bad?.agent?.status).toBe('completed')
+    expect(bad?.agent?.spec).toBeUndefined()
+  })
+
   it('excludes child runs from the conversations list', async () => {
     await saveThread(thread('parent-1', { updatedAt: 1000 }))
     await saveThread(agentThread('run-1', 'parent-1', 'completed'))

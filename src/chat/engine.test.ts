@@ -9,11 +9,19 @@ import { createSkillToolProvider } from "../tools/builtin/skills";
 import { ToolRegistry } from "../tools/registry";
 import type { ToolProvider, WorkspaceApi } from "../tools/types";
 import type { Settings } from "../vault/settings";
+import { createFakeWorkspace } from "../workspace/fake-handle";
+import { createWorkspaceFs } from "../workspace/fs";
+import type { WorkspaceFs } from "../workspace/fs";
+import { WorkspacePermissionError } from "../workspace/errors";
+import { createWorkspaceJournal } from "../workspace/journal";
+import type { WorkspaceJournal } from "../workspace/journal";
+import { journaledWrite } from "../workspace/journal-io";
 import { defaultSettings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import type { ResolvedAttachments } from "./attachments";
 import type { EngineDeps } from "./engine";
 import { createEngine } from "./engine";
+import { ChatRewindBusyError } from "./errors";
 import { rehydrateThread } from "./sanitize";
 import { abortersCount, useChatStore } from "./store";
 import type { ChatMode, ChatThread } from "./types";
@@ -277,6 +285,8 @@ function setup(options: {
   modelFactory?: EngineDeps["modelFactory"];
   persistApproval?: EngineDeps["persistApproval"];
   workspace?: EngineDeps["workspace"];
+  journalFor?: EngineDeps["journalFor"];
+  activeAgentsFor?: EngineDeps["activeAgentsFor"];
 }) {
   const store = options.store ?? memoryStore();
   const toolRegistry = options.toolRegistry ?? new ToolRegistry();
@@ -290,6 +300,8 @@ function setup(options: {
     modelFactory: options.modelFactory ?? (() => options.model),
     ...(options.persistApproval ? { persistApproval: options.persistApproval } : {}),
     ...(options.workspace ? { workspace: options.workspace } : {}),
+    ...(options.journalFor ? { journalFor: options.journalFor } : {}),
+    ...(options.activeAgentsFor ? { activeAgentsFor: options.activeAgentsFor } : {}),
   };
   return { engine: createEngine(deps), store, toolRegistry, skillRegistry };
 }
@@ -1765,5 +1777,426 @@ describe("chat engine agent notices", () => {
       label: "audit",
       response: "Four call sites.",
     });
+  });
+});
+
+describe("chat engine auto-continue", () => {
+  beforeEach(() => {
+    useChatStore.getState().clear();
+  });
+
+  function autoSettings(enabled: boolean, max = 3): Settings {
+    return { ...defaultSettings(), agents: { autoContinue: enabled, maxAutoContinues: max } };
+  }
+
+  function marker(id: string): UIMessage {
+    return {
+      id,
+      role: "user",
+      parts: [{ type: "text", text: "Sub-agent finished; continue using its result." }],
+      metadata: { autoContinue: { runId: id } },
+    };
+  }
+
+  function lastUserText(model: MockLanguageModelV4, call: number): string {
+    const prompt = model.doStreamCalls[call].prompt;
+    const lastUser = [...prompt].reverse().find((message) => message.role === "user");
+    return JSON.stringify(lastUser?.content ?? "");
+  }
+
+  it("starts no run for an idle notice while the setting is off", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "acting on it")) }]);
+    const { engine } = setup({ model, settings: autoSettings(false) });
+    seed("th1", [user("u1", "hi")]);
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-1", {
+      label: "audit",
+      status: "completed",
+      response: "done",
+    });
+
+    await vi.waitFor(() => expect(useChatStore.getState().threads.th1.messages).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it("wakes the model once behind a marker when an idle notice lands", async () => {
+    const model = makeModel([{ stream: streamOf(textStep("t1", "acting on it")) }]);
+    const { engine } = setup({ model, settings: autoSettings(true) });
+    seed("th1", [user("u1", "hi")]);
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-1", {
+      label: "audit",
+      status: "completed",
+      response: "done",
+    });
+
+    await vi.waitFor(() => {
+      const last = useChatStore.getState().threads.th1.messages.at(-1);
+      expect(last && textOf(last)).toBe("acting on it");
+    });
+    const messages = useChatStore.getState().threads.th1.messages;
+    expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(messages[2].metadata).toMatchObject({ autoContinue: { runId: "run-1", label: "audit" } });
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(lastUserText(model, 0)).toContain('Sub-agent \\"audit\\" finished; continue using its result.');
+  });
+
+  it("stops after the cap until the user speaks again", async () => {
+    const model = makeModel([
+      { stream: streamOf(textStep("t1", "fourth")) },
+      { stream: streamOf(textStep("t2", "after user")) },
+      { stream: streamOf(textStep("t3", "resumed")) },
+    ]);
+    const { engine } = setup({ model, settings: autoSettings(true, 3) });
+    seed("th1", [
+      user("u1", "hi"),
+      marker("m1"),
+      assistant("a1", "one"),
+      marker("m2"),
+      assistant("a2", "two"),
+      marker("m3"),
+      assistant("a3", "three"),
+    ]);
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-4");
+    await vi.waitFor(() => expect(useChatStore.getState().threads.th1.messages).toHaveLength(8));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(model.doStreamCalls).toHaveLength(0);
+
+    await engine.sendTurn("th1", "carry on");
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-5");
+    await vi.waitFor(() => expect(model.doStreamCalls).toHaveLength(2));
+    await vi.waitFor(() => {
+      const last = useChatStore.getState().threads.th1.messages.at(-1);
+      expect(last && textOf(last)).toBe("after user");
+    });
+  });
+
+  it("keeps a turn paused on the user's approval answerable when a notice lands meanwhile", async () => {
+    const counter = { count: 0 };
+    const registry = new ToolRegistry();
+    registry.registerProvider(gatedProvider(counter));
+    const model = makeModel([
+      { stream: streamOf(toolStep("c1", "write_file", '{"path":"a.txt"}')) },
+      { stream: streamOf(textStep("t2", "done")) },
+    ]);
+    const { engine } = setup({ model, toolRegistry: registry, settings: autoSettings(true) });
+    seedReadOnly("th1", []);
+    await engine.sendTurn("th1", "go");
+    const assistantId = useChatStore.getState().threads.th1.messages[1].id;
+    const approvalId = (pausedPart(useChatStore.getState().threads.th1.messages, assistantId).approval as {
+      id: string;
+    }).id;
+
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-1", {
+      label: "audit",
+      status: "completed",
+      response: "done",
+    });
+    await vi.waitFor(() =>
+      expect(
+        noticePartOf(useChatStore.getState().threads.th1.messages.find((message) => message.id === assistantId)!),
+      ).toBeDefined(),
+    );
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
+    expect(model.doStreamCalls).toHaveLength(1);
+
+    await engine.respondToApproval("th1", { approvalId, approved: true });
+
+    const messages = useChatStore.getState().threads.th1.messages;
+    const resumed = messages.find((message) => message.id === assistantId)!;
+    expect(counter.count).toBe(1);
+    expect(textOf(resumed)).toContain("done");
+    expect(noticePartOf(resumed)?.data).toMatchObject({ runId: "run-1" });
+    expect(messages).toHaveLength(2);
+  });
+
+  it("never auto-continues a notice that arrives while a run is in flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: new ReadableStream<Chunk>({
+          async start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({ type: "text-start", id: "t1" });
+            controller.enqueue({ type: "text-delta", id: "t1", delta: "working" });
+            await gate;
+            controller.enqueue({ type: "text-end", id: "t1" });
+            controller.enqueue({ type: "finish", usage: usage(), finishReason: { unified: "stop", raw: undefined } });
+            controller.close();
+          },
+        }),
+      }),
+    });
+    const { engine } = setup({ model, settings: autoSettings(true) });
+    seed("th1", [user("u1", "hi")]);
+
+    const running = engine.sendTurn("th1", "go");
+    await vi.waitFor(() => {
+      const last = useChatStore.getState().threads.th1.messages.at(-1);
+      expect(last && textOf(last)).toBe("working");
+    });
+    engine.appendAgentNotice("th1", "Sub-agent finished: done", "run-1");
+    release();
+    await running;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(
+      useChatStore.getState().threads.th1.messages.some(
+        (message) => (message.metadata as { autoContinue?: unknown } | undefined)?.autoContinue !== undefined,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("message rewind", () => {
+  beforeEach(() => {
+    useChatStore.getState().clear();
+  });
+
+  function turns(count: number): MockLanguageModelV4 {
+    return makeModel(
+      Array.from({ length: count }, (_, index) => ({
+        stream: streamOf(textStep(`t${index}`, `reply ${index}`)),
+      })),
+    );
+  }
+
+  function rewindSetup(
+    options: {
+      files?: Record<string, string>;
+      turns?: number;
+      activeAgentsFor?: EngineDeps["activeAgentsFor"];
+      messages?: UIMessage[];
+    } = {},
+  ) {
+    const workspace: WorkspaceFs = createWorkspaceFs(
+      createFakeWorkspace(options.files ?? {}).handle,
+    );
+    const journal: WorkspaceJournal = createWorkspaceJournal();
+    const context = setup({
+      model: turns(options.turns ?? 2),
+      workspace,
+      journalFor: async () => journal,
+      ...(options.activeAgentsFor ? { activeAgentsFor: options.activeAgentsFor } : {}),
+    });
+    const thread = seed("th1", options.messages ?? []);
+    useChatStore.getState().setThread({ ...thread, workspaceName: "proj" });
+    useChatStore.getState().setActiveThread("th1");
+    const userIds = () =>
+      useChatStore
+        .getState()
+        .threads.th1.messages.filter((message) => message.role === "user")
+        .map((message) => message.id);
+    return { ...context, workspace, journal, userIds };
+  }
+
+  it("stamps each sent message with the journal head and keeps it through an edit", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup();
+    await journaledWrite(journal, workspace, "a.txt", "one");
+    await journaledWrite(journal, workspace, "a.txt", "two");
+
+    await engine.sendTurn("th1", "first");
+    const [id] = userIds();
+    const stamped = () =>
+      (useChatStore.getState().threads.th1.messages.find((message) => message.id === id)
+        ?.metadata as { rewind?: unknown } | undefined)?.rewind;
+    expect(stamped()).toEqual({ seq: 2, workspace: "proj" });
+
+    await journaledWrite(journal, workspace, "a.txt", "three");
+    await engine.editMessage("th1", id, [{ type: "text", text: "edited" }]);
+    expect(stamped()).toEqual({ seq: 2, workspace: "proj" });
+  });
+
+  it("restores files to the moment the message was sent and cuts the thread before it", async () => {
+    const { engine, store, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "after first");
+    await engine.sendTurn("th1", "second");
+    await journaledWrite(journal, workspace, "a.txt", "after second");
+    await journaledWrite(journal, workspace, "new.txt", "fresh");
+    const [first, second] = userIds();
+
+    const result = await engine.rewind("th1", second);
+
+    expect(result).toMatchObject({
+      text: "second",
+      files: "ok",
+      restored: ["a.txt"],
+      removed: ["new.txt"],
+      conflicts: [],
+    });
+    expect(result.failed).toBeUndefined();
+    const ids = useChatStore.getState().threads.th1.messages.map((message) => message.id);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(first);
+    expect(store.get("th1")?.messages.map((message) => message.id)).toEqual(ids);
+    await expect(workspace.readFile("a.txt")).resolves.toBe("after first");
+    await expect(workspace.readFile("new.txt")).rejects.toThrow();
+  });
+
+  it("previews the effect without touching files or messages", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original", "b.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    await journaledWrite(journal, workspace, "b.txt", "agent");
+    await journaledWrite(journal, workspace, "new.txt", "fresh");
+    await workspace.writeFile("b.txt", "manual");
+    const [id] = userIds();
+
+    const preview = await engine.previewRewind("th1", id);
+
+    expect(preview).toEqual({
+      removedMessages: 2,
+      text: "first",
+      files: "ok",
+      restore: ["a.txt"],
+      remove: ["new.txt"],
+      unrestorable: [],
+      conflicts: ["b.txt"],
+      busy: false,
+    });
+    await expect(workspace.readFile("a.txt")).resolves.toBe("agent");
+    await expect(workspace.readFile("new.txt")).resolves.toBe("fresh");
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
+  });
+
+  const busyCases: Array<[string, () => void, (() => number) | undefined]> = [
+    ["a parent run", () => useChatStore.getState().beginRun("th1"), undefined],
+    ["a compaction", () => useChatStore.getState().beginCompaction("th1"), undefined],
+    ["a live sub-agent", () => undefined, () => 1],
+  ];
+
+  it.each(busyCases)("refuses while %s is active and changes nothing", async (_label, begin, agents) => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+      ...(agents ? { activeAgentsFor: agents } : {}),
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    const [id] = userIds();
+    begin();
+
+    await expect(engine.rewind("th1", id)).rejects.toBeInstanceOf(ChatRewindBusyError);
+    expect((await engine.previewRewind("th1", id)).busy).toBe(true);
+    await expect(workspace.readFile("a.txt")).resolves.toBe("agent");
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
+  });
+
+  it("leaves a file changed outside the journal in place, reports it, and still cuts the thread", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    await workspace.writeFile("a.txt", "manual");
+    const [id] = userIds();
+
+    const result = await engine.rewind("th1", id);
+
+    expect(result).toMatchObject({ files: "ok", conflicts: ["a.txt"], restored: [] });
+    await expect(workspace.readFile("a.txt")).resolves.toBe("manual");
+    expect(useChatStore.getState().threads.th1.messages).toEqual([]);
+  });
+
+  it("keeps a hand edit made before the message instead of reverting to the agent's earlier write", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup();
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    await workspace.writeFile("a.txt", "hand edit");
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "later");
+    const [id] = userIds();
+
+    const preview = await engine.previewRewind("th1", id);
+    const result = await engine.rewind("th1", id);
+
+    expect(preview.restore).toEqual(["a.txt"]);
+    expect(result).toMatchObject({ restored: ["a.txt"], conflicts: [] });
+    await expect(workspace.readFile("a.txt")).resolves.toBe("hand edit");
+  });
+
+  it("rewinds only the conversation when the thread moved to another folder", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    const [id] = userIds();
+    const thread = useChatStore.getState().threads.th1;
+    useChatStore.getState().setThread({ ...thread, workspaceName: "other" });
+
+    const result = await engine.rewind("th1", id);
+
+    expect(result).toMatchObject({ files: "folder-mismatch", restored: [], removed: [] });
+    await expect(workspace.readFile("a.txt")).resolves.toBe("agent");
+    expect(useChatStore.getState().threads.th1.messages).toEqual([]);
+  });
+
+  it("does not write into the live folder for a conversation that is not open", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    const [id] = userIds();
+    useChatStore.getState().setActiveThread("th2");
+
+    const result = await engine.rewind("th1", id);
+
+    expect(result.files).toBe("no-workspace");
+    await expect(workspace.readFile("a.txt")).resolves.toBe("agent");
+    expect(useChatStore.getState().threads.th1.messages).toEqual([]);
+  });
+
+  it("rewinds a message sent before markers existed as a conversation-only rewind", async () => {
+    const { engine, workspace } = rewindSetup({
+      files: { "a.txt": "original" },
+      messages: [user("u1", "legacy"), assistant("a1", "reply"), user("u2", "later")],
+    });
+
+    const result = await engine.rewind("th1", "u2");
+
+    expect(result).toMatchObject({ files: "no-marker", text: "later", restored: [] });
+    expect(useChatStore.getState().threads.th1.messages.map((message) => message.id)).toEqual([
+      "u1",
+      "a1",
+    ]);
+    await expect(workspace.readFile("a.txt")).resolves.toBe("original");
+  });
+
+  it("keeps the thread intact and names what was restored when applying fails midway", async () => {
+    const { engine, journal, workspace, userIds } = rewindSetup({
+      files: { "a.txt": "original" },
+    });
+    await engine.sendTurn("th1", "first");
+    await journaledWrite(journal, workspace, "a.txt", "agent");
+    await journaledWrite(journal, workspace, "new.txt", "fresh");
+    const [id] = userIds();
+    vi.spyOn(workspace, "remove").mockRejectedValueOnce(new WorkspacePermissionError());
+
+    const result = await engine.rewind("th1", id);
+
+    expect(result).toMatchObject({
+      restored: ["a.txt"],
+      failed: { path: "new.txt" },
+    });
+    expect(useChatStore.getState().threads.th1.messages).toHaveLength(2);
+  });
+
+  it("rejects a message that is not a user message", async () => {
+    const { engine } = rewindSetup({
+      messages: [user("u1", "hi"), assistant("a1", "reply")],
+    });
+
+    await expect(engine.rewind("th1", "a1")).rejects.toThrow("user message");
   });
 });

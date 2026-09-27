@@ -66,6 +66,48 @@ describe('spawn_agent tool', () => {
     )
   })
 
+  it('returns the structured value and its error field from an awaited run', async () => {
+    const { ports, spawn } = portReturning({
+      status: 'completed',
+      runId: 'run-1',
+      result: {
+        status: 'completed',
+        mode: 'read_only',
+        tier: 'cheap',
+        text: 'counted',
+        toolCalls: 0,
+        structured: { count: 3 },
+      },
+    })
+    const schema = { type: 'object', properties: { count: { type: 'integer' } } }
+    const result = (await execute(ports, 'spawn_agent', { prompt: 'count', outputSchema: schema })) as {
+      ok: boolean
+      value: { structured?: unknown; structuredError?: string }
+    }
+
+    expect(result.ok).toBe(true)
+    expect(result.value.structured).toEqual({ count: 3 })
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ outputSchema: schema }), expect.anything())
+  })
+
+  it('rejects a bad outputSchema before any run starts', async () => {
+    const { ports, spawn } = portReturning({ status: 'running', runId: 'run-1' })
+    const notObject = (await execute(ports, 'spawn_agent', {
+      prompt: 'count',
+      outputSchema: { type: 'array' },
+    })) as { ok: boolean; code: string }
+    const tooLarge = (await execute(ports, 'spawn_agent', {
+      prompt: 'count',
+      outputSchema: { type: 'object', description: 'x'.repeat(9000) },
+    })) as { ok: boolean; code: string }
+
+    expect(notObject.ok).toBe(false)
+    expect(notObject.code).toBe('invalid_input')
+    expect(tooLarge.ok).toBe(false)
+    expect(tooLarge.code).toBe('invalid_input')
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
   it('returns a run handle for a background agent', async () => {
     const { ports } = portReturning({ status: 'running', runId: 'run-9', label: 'bg' })
     const result = (await execute(ports, 'spawn_agent', {
@@ -323,5 +365,127 @@ describe('read_agent tool', () => {
     await expect(execute({}, 'read_agent', { runId: 'run-1' })).rejects.toBeInstanceOf(
       ToolRuntimeUnavailableError,
     )
+  })
+})
+
+describe('message_agent tool', () => {
+  it('steers a running run and reports the delivery', async () => {
+    const steer = vi.fn(() => true)
+    const cont = vi.fn()
+    const ports = agentsPorts({
+      steer,
+      continue: cont,
+      resolveRun: vi.fn(async () => ({ runId: 'run-1', label: 'scout', status: 'running' as const })),
+    })
+
+    const result = (await execute(ports, 'message_agent', { runId: 'run-1', message: 'focus on auth' })) as {
+      ok: boolean
+      value: unknown
+    }
+
+    expect(result.ok).toBe(true)
+    expect(result.value).toEqual({ delivered: 'steer', runId: 'run-1', label: 'scout' })
+    expect(steer).toHaveBeenCalledWith('run-1', 'focus on auth')
+    expect(cont).not.toHaveBeenCalled()
+  })
+
+  it('continues a settled run and returns its new result like spawn_agent', async () => {
+    const cont = vi.fn(async () => ({
+      status: 'completed' as const,
+      runId: 'run-1',
+      label: 'scout',
+      result: { status: 'completed' as const, mode: 'read_only' as const, tier: 'cheap' as const, text: 'checked', toolCalls: 1 },
+    }))
+    const ports = agentsPorts({
+      continue: cont,
+      resolveRun: vi.fn(async () => ({ runId: 'run-1', label: 'scout', status: 'completed' as const })),
+    })
+
+    const result = (await execute(ports, 'message_agent', { label: 'scout', message: 'check tests too' })) as {
+      ok: boolean
+      value: { delivered: string; status: string; result: string; untrusted: boolean }
+    }
+
+    expect(result.ok).toBe(true)
+    expect(result.value).toMatchObject({ delivered: 'continue', status: 'completed', result: 'checked', untrusted: true })
+    expect(cont).toHaveBeenCalledWith('run-1', 'check tests too', { background: false })
+  })
+
+  it('returns a run handle when a settled run is continued in the background', async () => {
+    const cont = vi.fn(async () => ({ status: 'running' as const, runId: 'run-1' }))
+    const ports = agentsPorts({
+      continue: cont,
+      resolveRun: vi.fn(async () => ({ runId: 'run-1', status: 'stopped' as const })),
+    })
+
+    const result = (await execute(ports, 'message_agent', {
+      runId: 'run-1',
+      message: 'resume',
+      background: true,
+    })) as { ok: boolean; value: unknown }
+
+    expect(result.value).toEqual({ delivered: 'continue', status: 'running', runId: 'run-1' })
+  })
+
+  it('surfaces a refused continuation, such as a legacy run', async () => {
+    const ports = agentsPorts({
+      continue: vi.fn(async () => ({ status: 'invalid_input' as const, message: 'recorded before runs could be continued' })),
+      resolveRun: vi.fn(async () => ({ runId: 'old', status: 'completed' as const })),
+    })
+
+    const result = (await execute(ports, 'message_agent', { runId: 'old', message: 'hi' })) as {
+      ok: boolean
+      code: string
+    }
+
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('invalid_input')
+  })
+
+  it('rejects a run this conversation cannot see and an empty message', async () => {
+    const ports = agentsPorts({ resolveRun: vi.fn(async () => null) })
+
+    const unknown = (await execute(ports, 'message_agent', { runId: 'nope', message: 'hi' })) as { ok: boolean }
+    const empty = (await execute(ports, 'message_agent', { runId: 'run-1', message: '  ' })) as { ok: boolean }
+
+    expect(unknown.ok).toBe(false)
+    expect(empty.ok).toBe(false)
+  })
+})
+
+describe('wait_agents tool', () => {
+  it('passes targets, mode, timeout, and the turn signal to the runtime and returns the gathered runs', async () => {
+    const wait = vi.fn(async () => ({
+      ok: true as const,
+      timedOut: false,
+      aborted: false,
+      runs: [{ runId: 'run-1', label: 'a', status: 'completed' as const, result: 'done' }],
+    }))
+    const ports = agentsPorts({ wait })
+    const run = toolFor(ports, 'wait_agents').execute
+    if (!run) throw new Error('missing execute')
+    const controller = new AbortController()
+
+    const result = (await run(
+      { labels: ['a'], mode: 'any', timeoutMs: 1000 },
+      { ...CALL, abortSignal: controller.signal },
+    )) as { ok: boolean; value: { runs: unknown[]; mode: string; untrusted: boolean } }
+
+    expect(wait).toHaveBeenCalledWith({ labels: ['a'], mode: 'any', timeoutMs: 1000 }, controller.signal)
+    expect(result.ok).toBe(true)
+    expect(result.value).toMatchObject({ mode: 'any', untrusted: true })
+    expect(result.value.runs).toHaveLength(1)
+  })
+
+  it('rejects malformed input and a refused target', async () => {
+    const wait = vi.fn(async () => ({ ok: false as const, message: 'No run x is visible to this conversation.' }))
+    const ports = agentsPorts({ wait })
+
+    const malformed = (await execute(ports, 'wait_agents', { mode: 'some' })) as { ok: boolean; code: string }
+    const refused = (await execute(ports, 'wait_agents', { runIds: ['x'] })) as { ok: boolean; code: string }
+
+    expect(malformed).toMatchObject({ ok: false, code: 'invalid_input' })
+    expect(refused).toMatchObject({ ok: false, code: 'invalid_input' })
+    expect(wait).toHaveBeenCalledTimes(1)
   })
 })

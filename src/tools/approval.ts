@@ -39,6 +39,8 @@ const READ_ONLY_TOOLS = new Set([
   'search_skills',
   'read_tool_guide',
   'spawn_agent',
+  'message_agent',
+  'wait_agents',
   'update_plan',
   'change_mode',
   'list_skills',

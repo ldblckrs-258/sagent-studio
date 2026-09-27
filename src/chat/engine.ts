@@ -16,11 +16,18 @@ import {
   applyUnchanged,
   attachmentParts,
   attachmentRecords,
+  isAttachmentPartText,
   seenPaths,
 } from "./attachments";
 import type { RagPort } from "../rag/port";
 import type { CodeRunner } from "../sandbox/types";
-import type { WorkspaceJournal } from "../workspace/journal";
+import type {
+  RestoreOutcome,
+  SeqRestorePlan,
+  WorkspaceJournal,
+} from "../workspace/journal";
+import { applyRestore, readForJournal } from "../workspace/journal-io";
+import { RestoreApplyError } from "../workspace/errors";
 import type { SkillRegistry } from "../skills/registry";
 import type { AgentParentContext } from "../agents/types";
 import { createAdminPorts } from "../tools/admin-ports";
@@ -39,6 +46,7 @@ import type {
   WorkspaceApi,
 } from "../tools/types";
 import { VaultLockedError } from "../vault/errors";
+import { agentSettingsOf } from "../vault/settings";
 import type { ApprovalDecision, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import { createToolApproval } from "./approval";
@@ -50,8 +58,9 @@ import {
 } from "./compact";
 import { clampIndexText, composeSystemPrompt } from "./context";
 import { resolveContextCap, shouldAutoCompact } from "./context-cap";
-import type { ProjectInstruction, ResolvedSkill } from "./context";
-import { ChatError, ChatThreadNotFoundError } from "./errors";
+import type { ResolvedSkill } from "./context";
+import { loadProjectInstruction } from "./project-instruction";
+import { ChatError, ChatRewindBusyError, ChatThreadNotFoundError } from "./errors";
 import type { ThreadSummary } from "./persistence";
 import {
   appendMessage,
@@ -59,9 +68,11 @@ import {
   canRerun,
   canUndo,
   editMessage as editMessages,
+  truncateBefore,
   undoLastTurn,
 } from "./reducer";
 import { expireApprovals, rehydrateThread, sanitizePartial, setChatStatus } from "./sanitize";
+import type { ChatMessageMetadata } from "./sanitize";
 import { registerAbortAll, useChatStore } from "./store";
 import { contextTokensOf, outputCharsOf, turnUsageFrom } from "./usage";
 import { normalizeTitle, patchThreadMode } from "./threads";
@@ -102,6 +113,7 @@ export interface PipelineDeps {
    * `toolNames` is filled in afterward with the final parent tool names.
    */
   agentPortsFor?(context: AgentParentContext): AgentSpawnPort | undefined;
+  activeAgentsFor?(threadId: string): number;
 }
 
 export interface ApprovalResponse {
@@ -127,6 +139,46 @@ export interface SendTurnExtra {
   attachments?: ResolvedAttachments;
 }
 
+export type RewindFiles =
+  | "ok"
+  | "no-marker"
+  | "no-workspace"
+  | "folder-mismatch"
+  | "expired";
+
+export interface RewindPreview {
+  removedMessages: number;
+  text: string;
+  files: RewindFiles;
+  restore: string[];
+  remove: string[];
+  unrestorable: string[];
+  conflicts: string[];
+  busy: boolean;
+}
+
+export interface RewindResult {
+  text: string;
+  files: RewindFiles;
+  restored: string[];
+  removed: string[];
+  skipped: string[];
+  conflicts: string[];
+  unrestorable: string[];
+  failed?: { path: string; message: string };
+}
+
+interface PreparedRewind {
+  removedMessages: number;
+  text: string;
+  files: RewindFiles;
+  restore?: {
+    journal: WorkspaceJournal;
+    workspace: WorkspaceApi;
+    plan: SeqRestorePlan;
+  };
+}
+
 export interface ChatEngine {
   sendTurn(threadId: string, text: string, extra?: SendTurnExtra): Promise<void>;
   editMessage(
@@ -136,6 +188,8 @@ export interface ChatEngine {
   ): Promise<void>;
   rerun(threadId: string, messageId: string): Promise<void>;
   undo(threadId: string): Promise<void>;
+  previewRewind(threadId: string, messageId: string): Promise<RewindPreview>;
+  rewind(threadId: string, messageId: string): Promise<RewindResult>;
   respondToApproval(threadId: string, response: ApprovalResponse): Promise<void>;
   /**
    * Compacts on demand. It lives on the engine rather than beside its caller
@@ -285,6 +339,24 @@ function mergeNoticeParts(
   return { ...streamed, parts };
 }
 
+export function isAutoContinueMessage(message: UIMessage): boolean {
+  return (
+    message.role === "user" &&
+    (message.metadata as { autoContinue?: unknown } | undefined)?.autoContinue !== undefined
+  );
+}
+
+export function autoContinuesSinceUser(messages: readonly UIMessage[]): number {
+  let count = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "user") continue;
+    if (!isAutoContinueMessage(message)) break;
+    count += 1;
+  }
+  return count;
+}
+
 function collectPendingApprovals(messages: UIMessage[]): PendingApproval[] {
   const pending: PendingApproval[] = [];
   messages.forEach((message, messageIndex) => {
@@ -327,36 +399,6 @@ export function createSkillLoadPort(skills: readonly ResolvedSkill[]): SkillLoad
       return skill ? { ...describe(skill), instructions: skill.instructions } : null
     },
   }
-}
-
-const PROJECT_INSTRUCTION_CANDIDATES = ["AGENTS.md", "README.md"];
-const MAX_PROJECT_INSTRUCTION_CHARS = 8000;
-
-/**
- * Loads the workspace's own instruction file so a fresh session is primed with
- * project conventions instead of inventing them. Returns null when the
- * workspace has none, which the prompt renders as an explicit "none found".
- */
-async function loadProjectInstruction(
-  workspace: WorkspaceApi | undefined,
-): Promise<ProjectInstruction | null> {
-  if (!workspace) return null;
-  for (const path of PROJECT_INSTRUCTION_CANDIDATES) {
-    try {
-      const text = await workspace.readFile(path);
-      if (text.trim().length === 0) continue;
-      return {
-        path,
-        text:
-          text.length > MAX_PROJECT_INSTRUCTION_CHARS
-            ? text.slice(0, MAX_PROJECT_INSTRUCTION_CHARS)
-            : text,
-      };
-    } catch {
-      continue;
-    }
-  }
-  return null;
 }
 
 function isFailedAssistantMessage(message: UIMessage): boolean {
@@ -530,6 +572,7 @@ class DefaultEngine implements ChatEngine {
   private readonly deps: EngineDeps;
   private readonly controllers = new Map<string, AbortController>();
   private readonly runs = new Map<string, Promise<void>>();
+  private readonly autoContinuing = new Set<string>();
   private readonly unregisterAbort: () => void;
 
   constructor(deps: EngineDeps) {
@@ -561,6 +604,11 @@ class DefaultEngine implements ChatEngine {
         ? undefined
         : applyUnchanged(extra.attachments, seenPaths(thread.messages));
     const records = resolved === undefined ? [] : attachmentRecords(resolved);
+    const rewind = await this.rewindMarker(thread);
+    const metadata: ChatMessageMetadata = {
+      ...(records.length > 0 ? { attachments: records } : {}),
+      ...(rewind === undefined ? {} : { rewind }),
+    };
     const userMessage: UIMessage = {
       id: createMessageId(),
       role: "user",
@@ -568,7 +616,7 @@ class DefaultEngine implements ChatEngine {
         ...(resolved === undefined ? [] : attachmentParts(resolved)),
         { type: "text", text },
       ],
-      ...(records.length > 0 ? { metadata: { attachments: records } } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
     await this.startRun(threadId, appendMessage(thread.messages, userMessage));
   }
@@ -619,6 +667,71 @@ class DefaultEngine implements ChatEngine {
     if (!canUndo(thread.messages)) return;
     this.setThreadMessages(threadId, undoLastTurn(thread.messages));
     await this.persist(threadId);
+  }
+
+  async previewRewind(
+    threadId: string,
+    messageId: string,
+  ): Promise<RewindPreview> {
+    const prepared = await this.prepareRewind(threadId, messageId);
+    const restore: string[] = [];
+    const remove: string[] = [];
+    const unrestorable = [...(prepared.restore?.plan.unrestorable ?? [])];
+    const conflicts: string[] = [];
+    if (prepared.restore) {
+      const { workspace, plan } = prepared.restore;
+      for (const change of plan.changes) {
+        const current = await readForJournal(workspace, change.path);
+        if (!current.known) {
+          unrestorable.push(change.path);
+          continue;
+        }
+        if (current.content === change.content) continue;
+        if (current.content !== change.expected) conflicts.push(change.path);
+        else if (change.content === null) remove.push(change.path);
+        else restore.push(change.path);
+      }
+    }
+    return {
+      removedMessages: prepared.removedMessages,
+      text: prepared.text,
+      files: prepared.files,
+      restore,
+      remove,
+      unrestorable,
+      conflicts,
+      busy: this.isBusy(threadId),
+    };
+  }
+
+  async rewind(threadId: string, messageId: string): Promise<RewindResult> {
+    const prepared = await this.prepareRewind(threadId, messageId);
+    if (this.isBusy(threadId)) throw new ChatRewindBusyError();
+    const base = {
+      text: prepared.text,
+      files: prepared.files,
+      unrestorable: prepared.restore?.plan.unrestorable ?? [],
+    };
+    let outcome: RestoreOutcome = { restored: [], removed: [], skipped: [], conflicts: [] };
+    if (prepared.restore) {
+      const { journal, workspace, plan } = prepared.restore;
+      try {
+        outcome = await applyRestore(journal, workspace, plan.changes, {
+          checkConflicts: true,
+        });
+      } catch (error) {
+        if (!(error instanceof RestoreApplyError)) throw error;
+        return {
+          ...base,
+          ...error.outcome,
+          failed: { path: error.path, message: messageOf(error.cause) },
+        };
+      }
+    }
+    const live = useChatStore.getState().threads[threadId];
+    if (live) this.setThreadMessages(threadId, truncateBefore(live.messages, messageId));
+    await this.persist(threadId);
+    return { ...base, ...outcome };
   }
 
   async respondToApproval(
@@ -756,24 +869,26 @@ class DefaultEngine implements ChatEngine {
     };
     const part: AgentNoticePart = { type: "data-agent-notice", data };
 
-    const streaming = thread.messages.find(
-      (message) =>
-        message.role === "assistant" &&
-        (message.metadata as { chatStatus?: unknown } | undefined)?.chatStatus ===
-          "streaming",
-    );
-    if (streaming) {
+    const last = thread.messages[thread.messages.length - 1];
+    const anchor =
+      thread.messages.find(
+        (message) =>
+          message.role === "assistant" &&
+          (message.metadata as { chatStatus?: unknown } | undefined)?.chatStatus ===
+            "streaming",
+      ) ?? (last !== undefined && collectPendingApprovals([last]).length > 0 ? last : undefined);
+    if (anchor) {
       const key = noticeKeyOf(part);
       if (
         key !== undefined &&
-        streaming.parts.some((existing) => noticeKeyOf(existing) === key)
+        anchor.parts.some((existing) => noticeKeyOf(existing) === key)
       ) {
         return;
       }
       await this.saveNotice(threadId, {
         ...thread,
         messages: thread.messages.map((message) =>
-          message.id === streaming.id
+          message.id === anchor.id
             ? { ...message, parts: [...message.parts, part] }
             : message,
         ),
@@ -801,6 +916,47 @@ class DefaultEngine implements ChatEngine {
       messages: [...thread.messages, message],
       updatedAt: Date.now(),
     });
+    await this.maybeAutoContinue(threadId, runId, report?.label);
+  }
+
+  private async maybeAutoContinue(
+    threadId: string,
+    runId: string | undefined,
+    label: string | undefined,
+  ): Promise<void> {
+    const agents = agentSettingsOf(this.deps.getSettings());
+    if (!agents.autoContinue) return;
+    if (this.controllers.has(threadId) || this.autoContinuing.has(threadId)) return;
+    const thread = useChatStore.getState().threads[threadId];
+    if (!thread) return;
+    if (collectPendingApprovals(thread.messages).length > 0) return;
+    if (autoContinuesSinceUser(thread.messages) >= agents.maxAutoContinues) return;
+    const name = label !== undefined && label.length > 0 ? `"${label}"` : runId;
+    const message: UIMessage = {
+      id: createMessageId(),
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text:
+            name !== undefined
+              ? `Sub-agent ${name} finished; continue using its result.`
+              : "A sub-agent finished; continue using its result.",
+        },
+      ],
+      metadata: {
+        autoContinue: {
+          ...(runId !== undefined ? { runId } : {}),
+          ...(label !== undefined ? { label } : {}),
+        },
+      },
+    };
+    this.autoContinuing.add(threadId);
+    try {
+      await this.startRun(threadId, appendMessage(thread.messages, message));
+    } finally {
+      this.autoContinuing.delete(threadId);
+    }
   }
 
   private async saveNotice(threadId: string, next: ChatThread): Promise<void> {
@@ -814,6 +970,64 @@ class DefaultEngine implements ChatEngine {
       if (error instanceof VaultLockedError)
         useChatStore.getState().removeThread(threadId);
     }
+  }
+
+  private async rewindMarker(
+    thread: ChatThread,
+  ): Promise<ChatMessageMetadata["rewind"]> {
+    if (!this.deps.journalFor) return undefined;
+    const journal = await this.deps.journalFor(thread.id).catch(() => undefined);
+    if (!journal) return undefined;
+    return {
+      seq: journal.head(),
+      ...(thread.workspaceName === undefined
+        ? {}
+        : { workspace: thread.workspaceName }),
+    };
+  }
+
+  private isBusy(threadId: string): boolean {
+    const state = useChatStore.getState();
+    return (
+      (state.runningThreads[threadId] ?? 0) > 0 ||
+      state.compactingThreads[threadId] === true ||
+      (this.deps.activeAgentsFor?.(threadId) ?? 0) > 0
+    );
+  }
+
+  private async prepareRewind(
+    threadId: string,
+    messageId: string,
+  ): Promise<PreparedRewind> {
+    const thread = await this.requireThread(threadId);
+    const index = thread.messages.findIndex((message) => message.id === messageId);
+    const target = index === -1 ? undefined : thread.messages[index];
+    if (target?.role !== "user") {
+      throw new ChatError("Only a user message in this conversation can be rewound.");
+    }
+    const text = target.parts
+      .flatMap((part) =>
+        part.type === "text" && !isAttachmentPartText(part.text) ? [part.text] : [],
+      )
+      .join("\n\n");
+    const prepared = { removedMessages: thread.messages.length - index, text };
+    const marker = (target.metadata as ChatMessageMetadata | undefined)?.rewind;
+    if (!marker) return { ...prepared, files: "no-marker" };
+    const workspace = this.deps.workspace;
+    if (
+      !workspace ||
+      !this.deps.journalFor ||
+      useChatStore.getState().activeThreadId !== threadId
+    ) {
+      return { ...prepared, files: "no-workspace" };
+    }
+    if (marker.workspace === undefined || marker.workspace !== thread.workspaceName) {
+      return { ...prepared, files: "folder-mismatch" };
+    }
+    const journal = await this.deps.journalFor(threadId);
+    const plan = journal.planRestoreAt(marker.seq);
+    if (plan.expired) return { ...prepared, files: "expired" };
+    return { ...prepared, files: "ok", restore: { journal, workspace, plan } };
   }
 
   private async requireThread(id: string): Promise<ChatThread> {

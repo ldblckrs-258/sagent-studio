@@ -1,7 +1,7 @@
 import type { WorkspaceApi } from '../tools/types'
-import { WorkspaceLimitError, WorkspaceNotFoundError } from './errors'
-import { withPathLock } from './lock'
-import type { JournalKind, WorkspaceJournal } from './journal'
+import { RestoreApplyError, WorkspaceLimitError, WorkspaceNotFoundError } from './errors'
+import { withPathLock, withWorkspaceLock } from './lock'
+import type { JournalKind, RestoreChange, RestoreOutcome, WorkspaceJournal } from './journal'
 
 /**
  * Reads a path for journaling. Returns unknown when the content cannot be
@@ -64,4 +64,45 @@ export async function journaledWrite(
     await workspace.writeFile(path, content)
     if (before.known) recordMutation(journal, 'write', path, before.content, content)
   })
+}
+
+export async function applyRestore(
+  journal: WorkspaceJournal,
+  workspace: WorkspaceApi,
+  changes: RestoreChange[],
+  options: { checkConflicts?: boolean } = {},
+): Promise<RestoreOutcome> {
+  const outcome: RestoreOutcome = { restored: [], removed: [], skipped: [], conflicts: [] }
+  await withWorkspaceLock(async () => {
+    for (const change of changes) {
+      try {
+        const current = await readForJournal(workspace, change.path)
+        if (!current.known) {
+          outcome.skipped.push(change.path)
+          continue
+        }
+        if (current.content === change.content) continue
+        if (options.checkConflicts === true && current.content !== change.expected) {
+          outcome.conflicts.push(change.path)
+          continue
+        }
+        if (change.content === null) {
+          await workspace.remove(change.path)
+          outcome.removed.push(change.path)
+        } else {
+          await workspace.writeFile(change.path, change.content)
+          outcome.restored.push(change.path)
+        }
+        journal.record({
+          kind: 'restore',
+          path: change.path,
+          before: current.content,
+          after: change.content,
+        })
+      } catch (error) {
+        throw new RestoreApplyError(change.path, outcome, { cause: error })
+      }
+    }
+  })
+  return outcome
 }

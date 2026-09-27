@@ -1,9 +1,11 @@
 import type { ToolSet } from 'ai'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { RestoreApplyError, WorkspacePermissionError } from '../../workspace/errors'
 import { createFakeWorkspace } from '../../workspace/fake-handle'
 import type { WorkspaceFs } from '../../workspace/fs'
 import { createWorkspaceFs } from '../../workspace/fs'
 import { workspaceJournal } from '../../workspace/journal'
+import { applyRestore } from '../../workspace/journal-io'
 import { resetPathLocks } from '../../workspace/lock'
 import { executeFsCall } from '../../sandbox/fs-bridge'
 import { ToolRegistry } from '../registry'
@@ -203,5 +205,65 @@ describe('history tools', () => {
     const read = executor(toolSet, 'read_file')({ path: 'a.txt' }, CALL)
     await restore
     await expect(read).resolves.toMatchObject({ value: { content: 'original' } })
+  })
+
+  it('keeps the tool error for a write that fails mid-restore', async () => {
+    const { workspace, toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const checkpoint = await executor(toolSet, 'checkpoint')({}, CALL)
+    const id = (checkpoint as { value: { id: string } }).value.id
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'changed' }, CALL)
+    vi.spyOn(workspace, 'writeFile').mockRejectedValueOnce(new WorkspacePermissionError())
+
+    await expect(executor(toolSet, 'restore')({ id }, CALL)).resolves.toMatchObject({
+      ok: false,
+      code: 'permission_denied',
+    })
+  })
+})
+
+describe('applyRestore', () => {
+  beforeEach(() => {
+    workspaceJournal.clear()
+    resetPathLocks()
+  })
+
+  it('leaves a file changed outside the journal in place and reports it as a conflict', async () => {
+    const { workspace, toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    await executor(toolSet, 'write_file')({ path: 'b.txt', content: 'original' }, CALL)
+    const marker = workspaceJournal.head()
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'agent' }, CALL)
+    await executor(toolSet, 'write_file')({ path: 'b.txt', content: 'agent' }, CALL)
+    await workspace.writeFile('a.txt', 'manual')
+
+    const plan = workspaceJournal.planRestoreAt(marker)
+    const outcome = await applyRestore(workspaceJournal, workspace, plan.changes, {
+      checkConflicts: true,
+    })
+
+    expect(outcome).toEqual({ restored: ['b.txt'], removed: [], skipped: [], conflicts: ['a.txt'] })
+    await expect(workspace.readFile('a.txt')).resolves.toBe('manual')
+    await expect(workspace.readFile('b.txt')).resolves.toBe('original')
+  })
+
+  it('names the files already restored when a later change fails', async () => {
+    const { workspace, toolSet } = build({})
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'original' }, CALL)
+    const marker = workspaceJournal.head()
+    await executor(toolSet, 'write_file')({ path: 'a.txt', content: 'changed' }, CALL)
+    await executor(toolSet, 'write_file')({ path: 'new.txt', content: 'fresh' }, CALL)
+    const plan = workspaceJournal.planRestoreAt(marker)
+    vi.spyOn(workspace, 'remove').mockRejectedValueOnce(new WorkspacePermissionError())
+
+    const error = await applyRestore(workspaceJournal, workspace, plan.changes, {
+      checkConflicts: true,
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(RestoreApplyError)
+    expect(error).toMatchObject({ path: 'new.txt', outcome: { restored: ['a.txt'], removed: [] } })
+    expect((error as RestoreApplyError).cause).toBeInstanceOf(WorkspacePermissionError)
+    await expect(workspace.readFile('a.txt')).resolves.toBe('original')
+    await expect(workspace.readFile('new.txt')).resolves.toBe('fresh')
   })
 })

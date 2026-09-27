@@ -41,6 +41,16 @@ export type AgentRunStatus =
 /** Why a run was stopped. Only a user stop exists today, distinct from a system abort. */
 export type AgentStopReason = "user_stop";
 
+export interface AgentRunSpec {
+  mode: ChatMode;
+  profile?: string;
+  skills?: string[];
+  excludeTools?: string[];
+  allowTools?: string[];
+  outputSchema?: Record<string, unknown>;
+  toolNames: string[];
+}
+
 /**
  * A thread that records a delegated agent run. Present only on child agent
  * threads, which are excluded from the conversations list and shown in the
@@ -50,10 +60,12 @@ export interface AgentThreadMeta {
   runId: string;
   parentThreadId: string;
   label?: string;
+  profile?: string;
   mode: ChatMode;
   tier: ModelTier;
   status: AgentRunStatus;
   stopReason?: AgentStopReason;
+  spec?: AgentRunSpec;
 }
 
 /**
@@ -67,6 +79,10 @@ export interface AgentNoticeReport {
   /** The run's result summary, rendered as the report body. */
   response: string;
   stopReason?: AgentStopReason;
+  structured?: unknown;
+  structuredError?: string;
+  filesChanged?: string[];
+  filesChangedIncomplete?: boolean;
 }
 
 export type AgentNoticeMeta = AgentNoticeReport & { runId?: string };

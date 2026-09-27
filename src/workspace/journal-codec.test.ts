@@ -31,4 +31,19 @@ describe('journal codec', () => {
     ).resolves.toBeNull()
     await expect(decodeJournal(JSON.stringify({ version: 1 }))).resolves.toBeNull()
   })
+
+  it('keeps a child run\'s attribution through a save and reads an older journal without it', async () => {
+    const attributed: JournalSnapshot = {
+      seq: 2,
+      entries: [
+        { seq: 1, time: 1, kind: 'write', path: 'a.txt', before: null, after: 'x', runId: 'run-1' },
+        { seq: 2, time: 2, kind: 'write', path: 'b.txt', before: null, after: 'y' },
+      ],
+      checkpoints: [],
+    }
+    const decoded = await decodeJournal(await encodeJournal(attributed))
+    expect(decoded?.entries[0].runId).toBe('run-1')
+    expect(decoded?.entries[1].runId).toBeUndefined()
+    await expect(decodeJournal(await encodeJournal(state))).resolves.toEqual(state)
+  })
 })

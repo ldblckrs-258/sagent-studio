@@ -8,6 +8,7 @@ import {
   deleteMessage,
   editMessage,
   truncateAfter,
+  truncateBefore,
   undoLastTurn,
 } from './reducer'
 
@@ -88,6 +89,18 @@ describe('chat reducer', () => {
   it('truncates the history after a message inclusive', () => {
     const messages = conversation()
     expect(truncateAfter(messages, 'a1').map((m) => m.id)).toEqual(['u1', 'a1'])
+  })
+
+  it('cuts the rewound message and everything after it', () => {
+    const messages = conversation()
+    expect(truncateBefore(messages, 'u2').map((m) => m.id)).toEqual(['u1', 'a1'])
+    expect(truncateBefore(messages, 'u1')).toEqual([])
+    expect(messages).toHaveLength(4)
+  })
+
+  it('leaves the thread unchanged when the rewound message is gone', () => {
+    const messages = conversation()
+    expect(truncateBefore(messages, 'missing')).toBe(messages)
   })
 
   it('undoes a completed turn by cutting from the last user message', () => {

@@ -1,6 +1,6 @@
 import { MODEL_TIER_META } from "../ai/model-tier";
-import { Row, Select } from "../ui/primitives";
-import { MODEL_TIERS } from "../vault/settings";
+import { Input, Row, Select, Toggle } from "../ui/primitives";
+import { agentSettingsOf, MAX_AUTO_CONTINUES_LIMIT, MODEL_TIERS } from "../vault/settings";
 import type { ModelTier, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
 import { SectionHeader } from "./SectionHeader";
@@ -76,6 +76,44 @@ function ModelTierRow({ settings, tier }: { settings: Settings; tier: ModelTier 
   );
 }
 
+function DelegationSection({ settings }: { settings: Settings }) {
+  const update = useVaultStore((s) => s.update);
+  const agents = agentSettingsOf(settings);
+
+  return (
+    <div data-slot="delegation-settings" className="mt-3">
+      <SectionHeader
+        title="Delegation"
+        description="When a background sub-agent finishes while the conversation is idle, the model can pick up its result without waiting for you. Each run is bounded by the limit below and resets when you send a message."
+      />
+      <Row label="Auto-continue" hint="Off by default.">
+        <Toggle
+          checked={agents.autoContinue}
+          label="Continue automatically when a background sub-agent finishes"
+          onCheckedChange={(checked) => void update({ agents: { ...agents, autoContinue: checked } })}
+        />
+      </Row>
+      <Row label="Limit" hint={`Automatic turns since your last message (1–${MAX_AUTO_CONTINUES_LIMIT}).`}>
+        <Input
+          size="sm"
+          type="number"
+          min={1}
+          max={MAX_AUTO_CONTINUES_LIMIT}
+          step={1}
+          value={agents.maxAutoContinues}
+          disabled={!agents.autoContinue}
+          aria-label="Maximum automatic continues"
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (!Number.isInteger(next) || next < 1 || next > MAX_AUTO_CONTINUES_LIMIT) return;
+            void update({ agents: { ...agents, maxAutoContinues: next } });
+          }}
+        />
+      </Row>
+    </div>
+  );
+}
+
 /**
  * The four model tiers, one provider+model selection each. Spark names
  * conversations and rewrites document queries; Forge and Prime back delegated
@@ -96,6 +134,7 @@ export function ModelTiersPanel() {
           <ModelTierRow key={tier} settings={settings} tier={tier} />
         ))}
       </div>
+      <DelegationSection settings={settings} />
     </section>
   );
 }
