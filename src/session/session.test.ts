@@ -11,6 +11,16 @@ import type { CodeRunner } from '../sandbox/types'
 import { isGatedTool } from '../tools/approval'
 import type { CodeToolRunners } from '../tools/builtin/code'
 import { agentNoticeFor, createAgentPorts, createSession } from './session'
+import * as engineModule from '../chat/engine'
+import type { EngineDeps } from '../chat/engine'
+import { useMemoryStore } from '../memory/state'
+import { fakeFolder, seededMemory } from '../memory/test-fixtures'
+import type { WorkspaceFs } from '../workspace/fs'
+
+vi.mock('../chat/engine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat/engine')>()
+  return { ...actual, createEngine: vi.fn(actual.createEngine) }
+})
 
 function noopRunner(): CodeRunner {
   return { run: async () => ({ stdout: '', stderr: '', result: null }) }
@@ -376,5 +386,57 @@ describe('createSession', () => {
       expect(listed).toContain(name)
     }
     session.dispose()
+  })
+})
+
+describe('session memory wiring', () => {
+  function engineDeps(session: ReturnType<typeof createSession>): EngineDeps {
+    const createEngine = vi.mocked(engineModule.createEngine)
+    createEngine.mockClear()
+    session.engineFor('t-memory')
+    const deps = createEngine.mock.calls[0]?.[0]
+    if (!deps) throw new Error('engine was not created')
+    return deps
+  }
+
+  function memoryToolAvailability(session: ReturnType<typeof createSession>): boolean[] {
+    return session
+      .builtinProviders()
+      .filter((entry) => ['remember', 'update_memory', 'forget', 'recall_memory'].includes(entry.name))
+      .map((entry) => entry.available)
+  }
+
+  it('offers no memory port or tools until the memory store is ready', async () => {
+    useMemoryStore.getState().clear()
+    const session = createSession()
+
+    await expect(engineDeps(session).memory?.('t-memory')).resolves.toBeUndefined()
+    expect(memoryToolAvailability(session)).toEqual([false, false, false, false])
+    session.dispose()
+  })
+
+  it('scopes each turn to the folder open in the conversation', async () => {
+    useMemoryStore.setState({
+      status: 'ready',
+      memories: [
+        seededMemory({ id: 'mem_global' }),
+        seededMemory({ id: 'mem_a', scope: { kind: 'workspace', scopeId: 's-a', label: 'project' } }),
+        seededMemory({ id: 'mem_b', scope: { kind: 'workspace', scopeId: 's-b', label: 'project' } }),
+      ],
+      scopes: {
+        's-a': { handle: fakeFolder('project', 'disk/a'), label: 'project' },
+        's-b': { handle: fakeFolder('project', 'disk/b'), label: 'project' },
+      },
+    })
+    useWorkspaceStore.getState().setFs({ handle: fakeFolder('project', 'disk/a') } as unknown as WorkspaceFs)
+    const session = createSession()
+
+    const port = await engineDeps(session).memory?.('t-memory')
+
+    expect(port?.visible().map((memory) => memory.id).sort()).toEqual(['mem_a', 'mem_global'])
+    expect(memoryToolAvailability(session)).toEqual([true, true, true, true])
+    session.dispose()
+    useMemoryStore.getState().clear()
+    await useWorkspaceStore.getState().clear()
   })
 })

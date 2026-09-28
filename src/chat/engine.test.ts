@@ -4,6 +4,9 @@ import { MockLanguageModelV4 } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillStore } from "../skills/registry";
 import { SkillRegistry } from "../skills/registry";
+import { createMemoryPort } from "../memory/port";
+import { readyMemoryStore, seededMemory } from "../memory/test-fixtures";
+import { createMemoryToolProvider } from "../tools/builtin/memory";
 import { createPlanToolProvider } from "../tools/builtin/plan";
 import { createSkillToolProvider } from "../tools/builtin/skills";
 import { ToolRegistry } from "../tools/registry";
@@ -18,6 +21,7 @@ import type { WorkspaceJournal } from "../workspace/journal";
 import { journaledWrite } from "../workspace/journal-io";
 import { defaultSettings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
+import { VaultLockedError } from "../vault/errors";
 import type { ResolvedAttachments } from "./attachments";
 import type { EngineDeps } from "./engine";
 import { createEngine } from "./engine";
@@ -287,6 +291,7 @@ function setup(options: {
   workspace?: EngineDeps["workspace"];
   journalFor?: EngineDeps["journalFor"];
   activeAgentsFor?: EngineDeps["activeAgentsFor"];
+  memory?: EngineDeps["memory"];
 }) {
   const store = options.store ?? memoryStore();
   const toolRegistry = options.toolRegistry ?? new ToolRegistry();
@@ -302,6 +307,7 @@ function setup(options: {
     ...(options.workspace ? { workspace: options.workspace } : {}),
     ...(options.journalFor ? { journalFor: options.journalFor } : {}),
     ...(options.activeAgentsFor ? { activeAgentsFor: options.activeAgentsFor } : {}),
+    ...(options.memory ? { memory: options.memory } : {}),
   };
   return { engine: createEngine(deps), store, toolRegistry, skillRegistry };
 }
@@ -2198,5 +2204,89 @@ describe("message rewind", () => {
     });
 
     await expect(engine.rewind("th1", "a1")).rejects.toThrow("user message");
+  });
+});
+
+describe("personal memories in a turn", () => {
+  beforeEach(() => {
+    useChatStore.getState().clear();
+  });
+
+  function systemOf(model: MockLanguageModelV4, call: number): string {
+    const system = model.doStreamCalls[call]?.prompt.find((message) => message.role === "system");
+    return typeof system?.content === "string" ? system.content : "";
+  }
+
+  async function memorySetup(streams: number) {
+    const fake = await readyMemoryStore({
+      memories: [
+        seededMemory({ id: "mem_imp", title: "Name", body: "IMPORTANT_BODY_MARKER", important: true }),
+        seededMemory({ id: "mem_plain", title: "PLAIN_TITLE_MARKER", body: "PLAIN_BODY_MARKER" }),
+      ],
+    });
+    const memory = vi.fn(async (threadId: string | undefined) =>
+      createMemoryPort({
+        store: fake.store.getState(),
+        handle: null,
+        ...(threadId !== undefined ? { threadId } : {}),
+      }),
+    );
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.registerProvider(createMemoryToolProvider());
+    const model = makeModel(
+      Array.from({ length: streams }, (_, index) => ({ stream: streamOf(textStep(`t${index}`, "done")) })),
+    );
+    const { engine } = setup({ model, toolRegistry, memory });
+    return { fake, memory, model, engine };
+  }
+
+  it("inlines important bodies and lists other memories by title only", async () => {
+    const { memory, model, engine } = await memorySetup(1);
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+
+    const system = systemOf(model, 0);
+    expect(system).toContain("## Memories");
+    expect(system).toContain("IMPORTANT_BODY_MARKER");
+    expect(system).toContain("PLAIN_TITLE_MARKER");
+    expect(system).not.toContain("PLAIN_BODY_MARKER");
+    expect(toolNamesOf(model, 0)).toEqual(
+      expect.arrayContaining(["remember", "update_memory", "forget", "recall_memory"]),
+    );
+    expect(memory).toHaveBeenCalledWith("th1");
+  });
+
+  it("drops a memory deleted from the panel before the next turn", async () => {
+    const { fake, model, engine } = await memorySetup(2);
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "first");
+    await fake.store.getState().remove("mem_plain");
+    await engine.sendTurn("th1", "second");
+
+    expect(systemOf(model, 0)).toContain("PLAIN_TITLE_MARKER");
+    expect(systemOf(model, 1)).not.toContain("PLAIN_TITLE_MARKER");
+    expect(systemOf(model, 1)).toContain("IMPORTANT_BODY_MARKER");
+  });
+
+  it("still runs the turn without memory when the port cannot be built", async () => {
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.registerProvider(createMemoryToolProvider());
+    const model = makeModel([{ stream: streamOf(textStep("t1", "done")) }]);
+    const { engine } = setup({
+      model,
+      toolRegistry,
+      memory: async () => {
+        throw new VaultLockedError();
+      },
+    });
+    seed("th1", []);
+
+    await engine.sendTurn("th1", "go");
+
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(systemOf(model, 0)).not.toContain("## Memories");
+    expect(toolNamesOf(model, 0)).not.toContain("remember");
   });
 });

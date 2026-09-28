@@ -1,6 +1,6 @@
 # Plans
 
-Seven plans for sagent-studio. Core infrastructure ships first; the RAG pipeline
+Eight plans for sagent-studio. Core infrastructure ships first; the RAG pipeline
 and the core chat engine both build on the shared vault, settings store, and SDK
 factories, and the chat interface builds on the chat engine.
 
@@ -15,6 +15,7 @@ factories, and the chat interface builds on the chat engine.
 | 5 | [Harness tools — autonomous core](./260919-1821-harness-tools/plan.md) | pending | Plan 3 (additive) | Result envelopes, surgical edit, bounded search, offset reads, stat/move/copy, persistent sandbox sessions, approval gates, progressive skill disclosure, thread plan tool, permission modes |
 | 6 | [File panel viewers — local files and links](./260920-0900-file-panel-viewers/plan.md) | implemented | Plan 4 (`File` panel) | File panel opens text/code, image, audio, video, HTML, CSV, XLSX, DOCX from the workspace, plus http(s) links from a URL bar and clickable chat links |
 | 7 | [Harness artifact preview](./260920-1246-harness-artifact-preview/plan.md) | implemented (browser gates pending) | Plan 5, Plan 6 | Model can open a workspace artifact via an `open_preview` tool; authored HTML renders in an opaque-origin runtime; Markdown, JSON, and Mermaid viewers |
+| 8 | [Personal memories](./260927-2359-personal-memories/plan.md) | implemented (browser check pending) | Plan 1, Plan 3 | Model-written, encrypted, global and per-folder memories: `remember`/`update_memory`/`forget`/`recall_memory`, a `## Memories` prompt section, and a Memory panel |
 
 ## Sequencing
 

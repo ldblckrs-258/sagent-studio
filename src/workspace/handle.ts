@@ -14,6 +14,20 @@ export function threadHandleId(threadId: string): string {
   return `thread:${threadId}`
 }
 
+export async function sameDirectory(
+  a: FileSystemDirectoryHandle,
+  b: FileSystemDirectoryHandle,
+): Promise<boolean> {
+  if (a === b) return true
+  const isSameEntry = a.isSameEntry
+  if (typeof isSameEntry !== 'function') return false
+  try {
+    return await isSameEntry.call(a, b)
+  } catch {
+    return false
+  }
+}
+
 export function isPickerAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function'
 }

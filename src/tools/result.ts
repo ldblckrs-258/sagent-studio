@@ -7,6 +7,7 @@ export type ToolResultCode =
   | 'permission_denied'
   | 'not_found'
   | 'limit_exceeded'
+  | 'memory_full'
   | 'no_match'
   | 'multiple_matches'
   | 'stale_write'

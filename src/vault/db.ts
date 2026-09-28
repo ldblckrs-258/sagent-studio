@@ -55,6 +55,12 @@ export interface DocumentRecord {
   updatedAt: number
 }
 
+export interface MemoryRecord {
+  id: string
+  blob: EncryptedBlob
+  updatedAt: number
+}
+
 /**
  * One encrypted chunk. `dims` is the only plaintext per-chunk number: it is the
  * vector width, which lets hydration validate a vector without decrypting the
@@ -108,6 +114,7 @@ export class VaultDatabase extends Dexie {
   journals!: Table<JournalRecord, string>
   documents!: Table<DocumentRecord, string>
   chunks!: Table<ChunkRecord, string>
+  memories!: Table<MemoryRecord, string>
 
   constructor(name = 'sagent-vault') {
     super(name)
@@ -154,6 +161,18 @@ export class VaultDatabase extends Dexie {
       journals: 'id, updatedAt',
       documents: 'id, updatedAt',
       chunks: 'id, docId, [docId+ordinal]',
+    })
+    this.version(7).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+      fs: 'id',
+      journals: 'id, updatedAt',
+      documents: 'id, updatedAt',
+      chunks: 'id, docId, [docId+ordinal]',
+      memories: 'id, updatedAt',
     })
 
     // Another tab opening a higher schema version fires `versionchange` here.

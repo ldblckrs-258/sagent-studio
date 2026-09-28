@@ -16,6 +16,8 @@ import type { RagPort } from '../rag/port'
 import type { CodeRunner } from '../sandbox/types'
 import type { WorkspaceJournal } from '../workspace/journal'
 import type { ChatMode, PlanItem } from '../chat/types'
+import type { MemoryPromptView } from '../chat/context'
+import type { Memory, MemoryDraft } from '../memory/types'
 import type { ApprovalDecision } from '../vault/settings'
 
 export type JsonSchemaObject = Record<string, unknown>
@@ -257,6 +259,18 @@ export interface AgentSpawnPort {
   wait?(options: AgentWaitOptions, signal?: AbortSignal): Promise<AgentWaitOutcome>
 }
 
+export interface MemoryPort {
+  visible(): ReadonlyArray<Memory>
+  create(draft: MemoryDraft): Promise<Memory>
+  update(id: string, patch: Partial<MemoryDraft>): Promise<Memory>
+  remove(id: string): Promise<void>
+  recall(request: { ids?: readonly string[]; query?: string }): {
+    memories: Memory[]
+    missing: string[]
+  }
+  promptView(): MemoryPromptView
+}
+
 export interface ToolRuntimePorts {
   rag?: RagPort
   codeRunner?: CodeRunner
@@ -273,6 +287,7 @@ export interface ToolRuntimePorts {
   toolAdmin?: ToolAdminPort
   approvals?: ApprovalPolicyPort
   agents?: AgentSpawnPort
+  memory?: MemoryPort
 }
 
 export interface ToolProvider {

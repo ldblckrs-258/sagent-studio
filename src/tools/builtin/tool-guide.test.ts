@@ -12,6 +12,7 @@ import type { CodeRunner } from '../../sandbox/types'
 import { createAgentsToolProvider } from './agents'
 import { createCodeToolProvider } from './code'
 import { createHistoryToolProvider } from './history'
+import { createMemoryToolProvider } from './memory'
 import { createRagToolProvider } from './rag'
 import { createSandboxControlProvider } from './sandbox-control'
 import { createSkillManagementProvider } from './skill-management'
@@ -54,6 +55,7 @@ const COVERED_BY_PROVIDERS = new Set(
     createToolGuideProvider(),
     createRagToolProvider(() => undefined),
     createAgentsToolProvider(),
+    createMemoryToolProvider(),
   ].flatMap((provider) => [...provider.names]),
 )
 

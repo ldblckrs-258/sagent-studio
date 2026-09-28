@@ -122,6 +122,22 @@ describe('resolveAgentToolNames', () => {
     }
   })
 
+  it('lets a sub-agent recall memories but never write them', () => {
+    const memoryTools = ['remember', 'update_memory', 'forget', 'recall_memory']
+    const toolRegistry = new ToolRegistry()
+    toolRegistry.registerProvider(stubProvider(['read_file', ...memoryTools]))
+    const result = resolveAgentToolNames({
+      toolRegistry,
+      skillRegistry: new SkillRegistry(skillStore),
+      ports: {} as ToolRuntimePorts,
+      parent: { ...parent('god'), toolNames: ['read_file', ...memoryTools] },
+      request: request({ mode: 'god' }),
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.names.filter((name) => memoryTools.includes(name))).toEqual(['recall_memory'])
+  })
+
   it('subtracts excludeTools', () => {
     const { toolRegistry, skillRegistry } = build()
     const result = resolveAgentToolNames({

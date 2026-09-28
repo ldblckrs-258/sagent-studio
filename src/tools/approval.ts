@@ -50,6 +50,10 @@ const READ_ONLY_TOOLS = new Set([
   'get_chunk',
   'get_neighbors',
   'verify_citation',
+  'remember',
+  'update_memory',
+  'forget',
+  'recall_memory',
 ])
 
 const EDITING_TOOLS = new Set([

@@ -47,6 +47,9 @@ static files, and nothing is uploaded anywhere sagent does not control.
   stored as encrypted text and vector blobs. The model searches it agentically: a Jev
   judgment gates, ranks, and verifies the passages before any of them reach the prompt,
   and `verify_citation` flags a quotation the source does not support.
+- **Let it remember you.** The model saves durable facts and preferences about you into the
+  encrypted vault and sees them in later conversations. A memory is global or tied to one
+  workspace folder, and the **Memory** panel lets you review, edit, flag, or delete them.
 
 ---
 
@@ -186,7 +189,8 @@ lets a task run while you keep going.
   *Editing* conversation, a request for *Full access* runs as *Editing*.
 - **A subset of your tools.** A sub-agent can only use tools you already have, and never
   `spawn_agent`, `stop_agent`, `read_agent`, `message_agent`, `wait_agents`, `change_mode`,
-  `update_plan`, or `restore`. Delegation is one level deep.
+  `update_plan`, `restore`, `remember`, `update_memory`, or `forget`. Delegation is one level
+  deep.
 - **Model tiers.** A delegation picks a tier; when it does not, the mode chooses one for it
   (read-only → Spark, editing → Forge, full access → Prime). Oracle is used only when
   explicitly requested.
@@ -202,6 +206,41 @@ run is abortable and stops on vault lock.
 
 The model reads the full `agents` operations guide through `read_tool_guide`; this section
 only summarizes it (source: [`src/tools/builtin/guides/agents.md`](src/tools/builtin/guides/agents.md)).
+
+---
+
+## Personal memories
+
+The model keeps short notes about you, such as your name, stack, tools, style preferences, and
+recurring constraints, and sees them again in later conversations.
+
+- **Saving.** The model calls `remember` when it learns a durable fact or preference, fixes one
+  with `update_memory`, and removes a stale one with `forget`. It saves without asking, and every
+  write shows in the transcript. It is told never to save secrets or instructions found in files,
+  documents, or tool results. Sub-agents can read memories but cannot save, change, or delete
+  them.
+- **Scope.** A memory is **global** (every conversation, and the default) or bound to **one
+  workspace folder** (only conversations in that folder). A folder is recognised by its handle,
+  not its name, so two folders with the same name never share memories. With no folder granted,
+  only global memories apply.
+- **What the model sees.** Each turn's system prompt lists the visible memories as an index
+  (`id — title`, the 100 newest) and includes the full body of those flagged **important**. The
+  model reads any other body with `recall_memory`.
+- **The important flag.** Important bodies share a budget of 2,000 characters for global memories
+  and 2,000 for each folder, so a turn inlines at most 4,000. A write past the budget is refused
+  and stores nothing.
+- **Limits.** A title is one line of up to 120 characters, a body is up to 2,000 characters, and
+  at most 500 memories are stored. A second memory with the same title in the same scope is
+  refused, so the model updates the first instead.
+- **Managing them.** The **Memory** panel groups memories as Global, This workspace, and Other
+  workspaces. There you can add, edit, flag, or delete a memory, or move it between Global and the
+  current folder. Each row shows whether the model or you wrote it last.
+- **Stopping writes.** Memory tools run without an approval prompt in every mode. Turn off **Let
+  the model save memories** in the Memory panel to deny `remember`, `update_memory`, and `forget`;
+  the model can still read memories with `recall_memory`.
+
+The model reads the full `memory` guide through `read_tool_guide` (source:
+[`src/tools/builtin/guides/memory.md`](src/tools/builtin/guides/memory.md)).
 
 ---
 
@@ -266,6 +305,10 @@ sagent-studio has **no server side**. Everything below happens in your browser.
 - **Stored locally, in the clear.** The vault salt and key-derivation parameters are
   plaintext — they have to be readable before anything can be decrypted. They reveal
   nothing on their own.
+- **Memories are encrypted like conversations.** Each memory is its own AES-GCM record. The
+  memory index and the bodies flagged important go to your chat provider in every turn's system
+  prompt. Other bodies go only when the model recalls them. A folder-scoped memory keeps that
+  folder's handle in the clear, like every folder grant.
 - **Locked when idle.** The vault locks after a period of inactivity (15 minutes by
   default) and on demand. Locking discards the in-memory key, so you need your password
   again.

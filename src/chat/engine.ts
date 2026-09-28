@@ -38,6 +38,7 @@ import { decisionFor } from "../tools/approval";
 import type { ToolGateDescriptor } from "../tools/approval";
 import type {
   AgentSpawnPort,
+  MemoryPort,
   SandboxControlPort,
   SkillLoadPort,
   ThreadModePort,
@@ -114,6 +115,7 @@ export interface PipelineDeps {
    */
   agentPortsFor?(context: AgentParentContext): AgentSpawnPort | undefined;
   activeAgentsFor?(threadId: string): number;
+  memory?(threadId: string | undefined): Promise<MemoryPort | undefined>;
 }
 
 export interface ApprovalResponse {
@@ -446,6 +448,9 @@ export async function buildRunStream(
 
   const skills = deps.skillRegistry.resolve(config.enabledSkills);
   const agents = agentContext ? deps.agentPortsFor?.(agentContext) : undefined;
+  const memory = await deps
+    .memory?.(agentContext?.parentThreadId)
+    .catch(() => undefined);
   const ports = {
     rag: deps.rag,
     workspace: deps.workspace,
@@ -457,6 +462,7 @@ export async function buildRunStream(
     plan: planPort,
     journal,
     ...(agents ? { agents } : {}),
+    ...(memory ? { memory } : {}),
     approvals: {
       decision: (toolName: string) => decisionFor(settings.approvals, toolName),
     },
@@ -487,6 +493,7 @@ export async function buildRunStream(
     {
       mode,
       ...(deps.workspace ? { projectInstruction } : {}),
+      ...(memory ? { memory: memory.promptView() } : {}),
     },
   );
 

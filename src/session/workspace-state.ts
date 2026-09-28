@@ -6,6 +6,7 @@ import {
   pickWorkspace,
   restoreWorkspace,
   restoreWorkspaceHandle,
+  sameDirectory,
   saveWorkspaceHandle,
   threadHandleId,
 } from '../workspace/handle'
@@ -69,14 +70,7 @@ async function hasReadPermission(fs: WorkspaceFs): Promise<boolean> {
  */
 async function sameFolder(a: WorkspaceFs | null, b: WorkspaceFs | null): Promise<boolean> {
   if (!a || !b) return a === b
-  if (a.handle === b.handle) return true
-  const isSameEntry = a.handle.isSameEntry
-  if (typeof isSameEntry !== 'function') return false
-  try {
-    return await isSameEntry.call(a.handle, b.handle)
-  } catch {
-    return false
-  }
+  return sameDirectory(a.handle, b.handle)
 }
 
 export function createWorkspaceStore(deps: WorkspaceDeps) {

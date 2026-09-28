@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useDocumentLibraryStore } from '../rag/library-state'
+import { useMemoryStore } from '../memory/state'
 import { isDatabaseBlocked, subscribeDatabaseBlocked } from '../vault/db'
 import { startRagIndex } from '../rag/lifecycle'
 import { createSession } from './session'
@@ -59,6 +60,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         failures.push(describe(error))
       }
+      await useMemoryStore.getState().hydrate()
+      const memoryError = useMemoryStore.getState().error
+      if (memoryError) failures.push(memoryError)
       try {
         await useWorkspaceStore.getState().restore()
       } catch (error) {
@@ -82,6 +86,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ragAbort.abort()
       stopRagIndex?.()
       useDocumentLibraryStore.getState().clear()
+      useMemoryStore.getState().clear()
       session.dispose()
       void useWorkspaceStore.getState().clear()
     }

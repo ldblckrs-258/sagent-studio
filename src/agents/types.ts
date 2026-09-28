@@ -20,6 +20,9 @@ export const BLOCKED_AGENT_TOOLS: readonly string[] = [
   'change_mode',
   'update_plan',
   'restore',
+  'remember',
+  'update_memory',
+  'forget',
 ]
 
 export interface AgentRequest {

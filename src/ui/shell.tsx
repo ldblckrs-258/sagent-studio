@@ -2,6 +2,7 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import {
   BookOpen,
   Bot,
+  Brain,
   Boxes,
   FileText,
   FolderTree,
@@ -42,6 +43,7 @@ import { ChatConfig } from "./panels/chat-config";
 import { Conversations } from "./panels/conversations";
 import { FilePanel } from "./panels/file-editor";
 import { LibraryPanel } from "./panels/library";
+import { MemoryPanel } from "./panels/memory";
 import { SandboxPanel } from "./panels/sandbox";
 import { SkillsPanel } from "./panels/skills";
 import { ToolsPanel } from "./panels/tools";
@@ -57,6 +59,7 @@ export type RailPanelId =
   | "workspace"
   | "files"
   | "documents"
+  | "memory"
   | "skills"
   | "tools"
   | "sandbox"
@@ -68,6 +71,7 @@ const RAIL_IDS: readonly RailPanelId[] = [
   "workspace",
   "files",
   "documents",
+  "memory",
   "skills",
   "tools",
   "sandbox",
@@ -368,6 +372,12 @@ export function Shell({ left }: { left?: ReactNode }) {
       label: "Documents",
       icon: BookOpen,
       render: () => <LibraryPanel />,
+    },
+    {
+      id: "memory",
+      label: "Memory",
+      icon: Brain,
+      render: () => <MemoryPanel />,
     },
     {
       id: "skills",

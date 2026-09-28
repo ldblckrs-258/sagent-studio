@@ -121,6 +121,10 @@ describe('modeCeiling and resolveApprovalStatus', () => {
         'stat',
         'update_plan',
         'verify_citation',
+        'remember',
+        'update_memory',
+        'forget',
+        'recall_memory',
       ].sort(),
     )
     expect((ceiling as ReadonlySet<string>).has('create_skill')).toBe(false)
@@ -210,6 +214,19 @@ describe('modeCeiling and resolveApprovalStatus', () => {
     expect(
       resolveApprovalStatus('read_only', { tools: { write_file: 'deny' } }, 'write_file'),
     ).toBe('denied')
+  })
+
+  it('runs the memory tools without a prompt in every mode but honors a persisted deny', () => {
+    for (const name of ['remember', 'update_memory', 'forget', 'recall_memory']) {
+      expect(isGatedTool(name), name).toBe(false)
+      for (const mode of ['read_only', 'editing', 'god'] as const) {
+        expect(resolveApprovalStatus(mode, { tools: {} }, name), `${mode} ${name}`).toBe('approved')
+        expect(
+          resolveApprovalStatus(mode, { tools: { [name]: 'deny' } }, name),
+          `${mode} ${name} deny`,
+        ).toBe('denied')
+      }
+    }
   })
 
   it('approves an allowed tool within the ceiling', () => {

@@ -2,7 +2,10 @@ import type { LanguageModel, UIMessage } from 'ai'
 import { jsonSchema, tool } from 'ai'
 import { MockLanguageModelV4 } from 'ai/test'
 import { describe, expect, it, vi } from 'vitest'
+import { createMemoryPort } from '../memory/port'
+import { readyMemoryStore, seededMemory } from '../memory/test-fixtures'
 import { SkillRegistry } from '../skills/registry'
+import { createMemoryToolProvider } from '../tools/builtin/memory'
 import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
 import type { ToolProvider, ToolRuntimePorts } from '../tools/types'
@@ -232,6 +235,34 @@ describe('runAgent', () => {
     expect(system?.content).toContain('Always use pnpm.')
     expect(system?.content).not.toContain('Summarize src/a.ts')
     expect(JSON.stringify(firstUser?.content)).toContain('Summarize src/a.ts')
+  })
+
+  it('gives a sub-agent memory recall but no memory writes and no memory section', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: [{ stream: streamOf(textStep('t1', 'done')) }],
+    })
+    const { controller, deps } = buildDeps(model, [])
+    deps.toolRegistry.registerProvider(createMemoryToolProvider())
+    const fake = await readyMemoryStore({
+      memories: [seededMemory({ id: 'mem_1', title: 'SECRET_TITLE', important: true, body: 'IMPORTANT_BODY' })],
+    })
+    const memory = await createMemoryPort({ store: fake.store.getState(), handle: null })
+    const memoryTools = ['remember', 'update_memory', 'forget', 'recall_memory']
+
+    await runAgent(
+      { ...input(), parent: { ...parent('god'), toolNames: [...TOOL_NAMES, ...memoryTools] } },
+      { ...deps, ports: { memory } },
+      controller.signal,
+      () => {},
+    )
+
+    const call = model.doStreamCalls[0]
+    const system = call.prompt.find((message) => message.role === 'system')
+    const toolNames = (call.tools ?? []).map((entry) => (entry as { name?: string }).name)
+    expect(system?.content).not.toContain('## Memories')
+    expect(system?.content).not.toContain('IMPORTANT_BODY')
+    expect(toolNames).toContain('recall_memory')
+    for (const name of ['remember', 'update_memory', 'forget']) expect(toolNames).not.toContain(name)
   })
 
   it('carries each tool call\u2019s real output into the transcript, never an empty result', async () => {

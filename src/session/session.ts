@@ -42,12 +42,13 @@ import { createModeToolProvider } from '../tools/builtin/mode'
 import { createPlanToolProvider } from '../tools/builtin/plan'
 import { createPreviewToolProvider } from '../tools/builtin/preview'
 import { createRagToolProvider } from '../tools/builtin/rag'
+import { createMemoryToolProvider } from '../tools/builtin/memory'
 import { createSandboxControlProvider } from '../tools/builtin/sandbox-control'
 import { createSkillManagementProvider } from '../tools/builtin/skill-management'
 import { createSkillToolProvider } from '../tools/builtin/skills'
 import { createToolGuideProvider } from '../tools/builtin/tool-guide'
 import { createToolManagementProvider } from '../tools/builtin/tool-management'
-import type { AgentSpawnPort, JsonSchemaObject, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
+import type { AgentSpawnPort, JsonSchemaObject, MemoryPort, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
 import { ToolRegistry } from '../tools/registry'
 import { useVaultStore } from '../vault/store'
@@ -63,6 +64,8 @@ import { workspaceJournalStore } from '../workspace/journal-store'
 import type { RunFileChange } from '../workspace/journal'
 import { applyRunRevert, tagJournal } from '../workspace/run-journal'
 import type { RunRevertOutcome } from '../workspace/run-journal'
+import { bindMemoryPort, createMemoryPort } from '../memory/port'
+import { useMemoryStore } from '../memory/state'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -421,6 +424,17 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const checkProvider = createCheckToolProvider()
   const historyProvider = createHistoryToolProvider()
   const agentsProvider = createAgentsToolProvider()
+  const memoryProvider = createMemoryToolProvider()
+
+  async function memoryPortFor(threadId: string | undefined): Promise<MemoryPort | undefined> {
+    const store = useMemoryStore.getState()
+    if (store.status !== 'ready') return undefined
+    return createMemoryPort({
+      store,
+      handle: getWorkspace()?.handle ?? null,
+      ...(threadId !== undefined ? { threadId } : {}),
+    })
+  }
 
   if (!options.toolRegistry) {
     toolRegistry.registerProvider(workspaceToolProvider)
@@ -437,6 +451,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(toolGuideProvider)
     toolRegistry.registerProvider(ragProvider)
     toolRegistry.registerProvider(agentsProvider)
+    toolRegistry.registerProvider(memoryProvider)
   }
 
   // The session-scoped agent runtime owns every detached run: caps, per-run
@@ -475,6 +490,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
       // The parent thread's journal, so a sub-agent's writes are recorded with
       // the parent's and stay undoable from the conversation.
       const journal = await workspaceJournalStore.forThread(context.parentThreadId)
+      const memory = await memoryPortFor(context.parentThreadId).catch(() => undefined)
       return {
         rag: ragPort(),
         workspace: getWorkspace() ?? undefined,
@@ -484,6 +500,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         journal: runId !== undefined ? tagJournal(journal, runId) : journal,
         skills: createSkillLoadPort(skillRegistry.resolve(skillRegistry.snapshotEnabled())),
         plan: { get: () => [], set: async () => {} },
+        ...(memory ? { memory } : {}),
         ...createAdminPorts({ skillRegistry, toolRegistry }),
       }
     },
@@ -523,6 +540,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
       return ragPort()
     },
     journalFor: (threadId) => workspaceJournalStore.forThread(threadId),
+    memory: memoryPortFor,
   }
 
   const engines = new Map<string, ChatEngine>()
@@ -630,6 +648,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     sandbox: () => manager,
     builtinProviders(config) {
       const skills = config ? skillRegistry.resolve(config.enabledSkills) : []
+      const memoryStore = useMemoryStore.getState()
       const ports = {
         rag: ragPort(),
         workspace: getWorkspace() ?? undefined,
@@ -639,6 +658,9 @@ export function createSession(options: SessionOptions = {}): AppSession {
         skills: createSkillLoadPort(skills),
         ...(config
           ? { plan: { get: () => [], set: async () => {} } }
+          : {}),
+        ...(memoryStore.status === 'ready'
+          ? { memory: bindMemoryPort({ store: memoryStore, scopeId: null, handle: null }) }
           : {}),
         ...createAdminPorts({ skillRegistry, toolRegistry }),
       }
@@ -657,6 +679,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         toolGuideProvider,
         ragProvider,
         agentsProvider,
+        memoryProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

@@ -5,6 +5,7 @@ import type { ToolProvider } from '../types'
 import agentsGuide from './guides/agents.md?raw'
 import checkpointsGuide from './guides/checkpoints.md?raw'
 import customToolsGuide from './guides/custom-tools.md?raw'
+import memoryGuide from './guides/memory.md?raw'
 import ragGuide from './guides/rag.md?raw'
 import sandboxGuide from './guides/sandbox.md?raw'
 import skillsGuide from './guides/skills.md?raw'
@@ -61,6 +62,12 @@ const ENTRIES: readonly ToolGuideEntry[] = [
     summary: 'Delegating a bounded task to a nested sub-agent, inline or in the background.',
     covers: ['spawn_agent', 'message_agent', 'wait_agents'],
     guide: agentsGuide,
+  },
+  {
+    topic: 'memory',
+    summary: 'Saving, scoping, flagging, and recalling personal memories about the user.',
+    covers: ['remember', 'update_memory', 'forget', 'recall_memory'],
+    guide: memoryGuide,
   },
 ]
 
