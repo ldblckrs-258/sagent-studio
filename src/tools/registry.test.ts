@@ -9,7 +9,13 @@ import {
   ToolRuntimeUnavailableError,
   ToolSchemaError,
 } from './types'
-import type { SandboxJsToolDefinition, ToolDefinition, ToolProvider, ToolRuntimePorts } from './types'
+import type {
+  ExternalToolEntry,
+  SandboxJsToolDefinition,
+  ToolDefinition,
+  ToolProvider,
+  ToolRuntimePorts,
+} from './types'
 
 function provider(names: string[], available = true): ToolProvider {
   return {
@@ -329,5 +335,83 @@ describe('ToolRegistry', () => {
 
     registry.setEnabled('toggle_me', false)
     expect(registry.availableNames({})).toEqual([])
+  })
+})
+
+function externalEntry(name: string): ExternalToolEntry {
+  return {
+    name,
+    kind: 'mcp',
+    create: () =>
+      tool({
+        description: `external ${name}`,
+        inputSchema: jsonSchema({ type: 'object' }),
+        execute: async () => `${name}:external`,
+      }),
+  }
+}
+
+describe('ToolRegistry external sources', () => {
+  it('publishes external tools into the pool and tool set, and replaces them per source', async () => {
+    const registry = new ToolRegistry()
+    const before = registry.getVersion()
+    expect(registry.setExternalTools('mcp:a', [externalEntry('mcp_a_one'), externalEntry('mcp_a_two')])).toEqual([])
+    expect(registry.getVersion()).toBeGreaterThan(before)
+    expect(registry.availableNames({})).toEqual(['mcp_a_one', 'mcp_a_two'])
+    expect(registry.toolKind('mcp_a_one')).toBe('mcp')
+    expect(registry.hasTool('mcp_a_two')).toBe(true)
+
+    const set = registry.buildToolSet(['mcp_a_one'], {})
+    expect(Object.keys(set)).toEqual(['mcp_a_one'])
+    expect(await set.mcp_a_one!.execute!({} as never, CALL_OPTIONS)).toBe('mcp_a_one:external')
+
+    registry.setExternalTools('mcp:a', [externalEntry('mcp_a_three')])
+    expect(registry.availableNames({})).toEqual(['mcp_a_three'])
+    registry.clearExternalTools('mcp:a')
+    expect(registry.availableNames({})).toEqual([])
+    expect(registry.toolKind('mcp_a_three')).toBeUndefined()
+  })
+
+  it('never lets an external tool shadow a built-in, a user tool, or another source', () => {
+    const registry = new ToolRegistry()
+    registry.registerProvider(provider(['read_file']))
+    registry.registerUserTool(httpTool('mine'))
+    registry.setExternalTools('mcp:a', [externalEntry('mcp_shared')])
+    const skipped = registry.setExternalTools('mcp:b', [
+      externalEntry('read_file'),
+      externalEntry('mine'),
+      externalEntry('mcp_shared'),
+      externalEntry('bad name'),
+      externalEntry('mcp_b_ok'),
+      externalEntry('mcp_b_ok'),
+    ])
+    expect(skipped.map((entry) => entry.name)).toEqual([
+      'read_file',
+      'mine',
+      'mcp_shared',
+      'bad name',
+      'mcp_b_ok',
+    ])
+    expect(registry.availableNames({})).toEqual(['mcp_b_ok', 'mcp_shared', 'mine', 'read_file'])
+    expect(registry.toolKind('read_file')).toBeUndefined()
+    expect(registry.toolKind('mine')).toBe('http')
+  })
+
+  it('refuses a user tool or provider that would take an external tool name', () => {
+    const registry = new ToolRegistry()
+    registry.setExternalTools('mcp:a', [externalEntry('mcp_a_one')])
+    expect(() => registry.registerUserTool(httpTool('mcp_a_one'))).toThrow(ToolNameConflictError)
+    expect(() => registry.registerProvider(provider(['mcp_a_one']))).toThrow(ToolNameConflictError)
+  })
+
+  it('lists external tools with their kind for the approvals panel', () => {
+    const registry = new ToolRegistry()
+    registry.setExternalTools('mcp:b', [externalEntry('mcp_b_z')])
+    registry.setExternalTools('mcp:a', [externalEntry('mcp_a_y')])
+    expect(registry.listExternal()).toEqual([
+      { name: 'mcp_a_y', kind: 'mcp' },
+      { name: 'mcp_b_z', kind: 'mcp' },
+    ])
+    expect(registry.list()).toEqual([])
   })
 })

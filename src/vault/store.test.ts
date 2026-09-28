@@ -31,6 +31,19 @@ function seededSecret(): string {
 describe('vault store', () => {
   beforeEach(resetAll)
 
+  it('deletes saved approvals outright, so a forgotten tool falls back to its default', async () => {
+    await useVaultStore.getState().setup('approvals-password')
+    await useVaultStore.getState().update({
+      approvals: { tools: { mcp_github_delete_repo: 'allow', mcp_github_list: 'deny', write_file: 'ask' } },
+    })
+    await useVaultStore.getState().forgetApprovals(['mcp_github_delete_repo', 'mcp_github_list'])
+    expect(useVaultStore.getState().settings?.approvals.tools).toEqual({ write_file: 'ask' })
+
+    await useVaultStore.getState().lock()
+    await useVaultStore.getState().unlock('approvals-password')
+    expect(useVaultStore.getState().settings?.approvals.tools).toEqual({ write_file: 'ask' })
+  })
+
   it('reports no vault before setup', async () => {
     expect(await hasVault()).toBe('none')
   })

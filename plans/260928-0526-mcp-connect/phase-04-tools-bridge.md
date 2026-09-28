@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Tools bridge and approval gate"
-status: pending
+status: completed
 priority: P1
 effort: "5h"
 dependencies: [2]

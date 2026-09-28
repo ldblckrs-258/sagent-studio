@@ -48,7 +48,7 @@ import { createSkillManagementProvider } from '../tools/builtin/skill-management
 import { createSkillToolProvider } from '../tools/builtin/skills'
 import { createToolGuideProvider } from '../tools/builtin/tool-guide'
 import { createToolManagementProvider } from '../tools/builtin/tool-management'
-import type { AgentSpawnPort, JsonSchemaObject, MemoryPort, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
+import type { AgentSpawnPort, JsonSchemaObject, McpResourcePort, MemoryPort, PreviewPort, SandboxControlPort, ToolProvider, ToolRuntimePorts } from '../tools/types'
 import { workspaceToolProvider } from '../tools/builtin/workspace'
 import { ToolRegistry } from '../tools/registry'
 import { useVaultStore } from '../vault/store'
@@ -66,6 +66,10 @@ import { applyRunRevert, tagJournal } from '../workspace/run-journal'
 import type { RunRevertOutcome } from '../workspace/run-journal'
 import { bindMemoryPort, createMemoryPort } from '../memory/port'
 import { useMemoryStore } from '../memory/state'
+import { McpConnectionManager } from '../mcp/manager'
+import { bindMcpTools, mcpToolPrefix } from '../mcp/tool-bridge'
+import { createMcpResourcePort } from '../mcp/resource-port'
+import { createMcpResourceToolProvider } from '../tools/builtin/mcp-resources'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -130,6 +134,9 @@ export interface AppSession {
   /** Builtin tools with availability and introspection details for the given thread config's ports. */
   builtinProviders(config?: ThreadConfig): BuiltinProviderInfo[]
   sandbox(): SandboxManager | null
+  mcp: McpConnectionManager
+  mcpResources: McpResourcePort
+  startMcp(): Promise<void>
 }
 
 export interface SessionOptions {
@@ -140,6 +147,7 @@ export interface SessionOptions {
   runnerSource?: CodeRunnerSource
   sandboxManager?: SandboxManager
   getSettings?: () => Settings | null
+  mcpManager?: McpConnectionManager
 }
 
 function currentSandbox(): SandboxSettings {
@@ -370,6 +378,26 @@ export function createSession(options: SessionOptions = {}): AppSession {
     options.skillRegistry ??
     new SkillRegistry(undefined, options.skillEnablement ?? createVaultSkillEnablement())
   const toolRegistry = options.toolRegistry ?? new ToolRegistry()
+  const mcp =
+    options.mcpManager ??
+    new McpConnectionManager({
+      forgetToolDecisions: (serverName) => {
+        const vault = useVaultStore.getState()
+        const prefix = mcpToolPrefix(serverName)
+        const names = Object.keys(vault.settings?.approvals?.tools ?? {}).filter((name) =>
+          name.startsWith(prefix),
+        )
+        if (names.length === 0) return
+        void vault.forgetApprovals(names).catch(() => undefined)
+      },
+    })
+  let unbindMcpTools: (() => void) | null = null
+  function startMcp(): Promise<void> {
+    mcp.revive()
+    unbindMcpTools?.()
+    unbindMcpTools = bindMcpTools(mcp, toolRegistry)
+    return mcp.hydrate()
+  }
   const codeProvider = createCodeToolProvider(runnerSource)
 
   const sandboxControlPort = (): SandboxControlPort | undefined => {
@@ -425,6 +453,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const historyProvider = createHistoryToolProvider()
   const agentsProvider = createAgentsToolProvider()
   const memoryProvider = createMemoryToolProvider()
+  const mcpResourceProvider = createMcpResourceToolProvider()
+  const mcpResourcePort = createMcpResourcePort(mcp)
 
   async function memoryPortFor(threadId: string | undefined): Promise<MemoryPort | undefined> {
     const store = useMemoryStore.getState()
@@ -452,6 +482,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(ragProvider)
     toolRegistry.registerProvider(agentsProvider)
     toolRegistry.registerProvider(memoryProvider)
+    toolRegistry.registerProvider(mcpResourceProvider)
   }
 
   // The session-scoped agent runtime owns every detached run: caps, per-run
@@ -493,6 +524,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
       const memory = await memoryPortFor(context.parentThreadId).catch(() => undefined)
       return {
         rag: ragPort(),
+        mcp: mcpResourcePort,
         workspace: getWorkspace() ?? undefined,
         codeRunner: runnerSource.getRunners().js,
         sandbox: sandboxControlPort(),
@@ -539,6 +571,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     get rag() {
       return ragPort()
     },
+    mcp: mcpResourcePort,
     journalFor: (threadId) => workspaceJournalStore.forThread(threadId),
     memory: memoryPortFor,
   }
@@ -579,11 +612,17 @@ export function createSession(options: SessionOptions = {}): AppSession {
     manager?.dispose()
     ragPortInstance?.dispose()
     ragPortInstance = undefined
+    unbindMcpTools?.()
+    unbindMcpTools = null
+    void mcp.dispose()
   }
 
   return {
     skillRegistry,
     toolRegistry,
+    mcp,
+    mcpResources: mcpResourcePort,
+    startMcp,
     agentProfiles,
     threadStore,
     runnerSource,
@@ -651,6 +690,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
       const memoryStore = useMemoryStore.getState()
       const ports = {
         rag: ragPort(),
+        mcp: mcpResourcePort,
         workspace: getWorkspace() ?? undefined,
         codeRunner: runnerSource.getRunners().js,
         sandbox: sandboxControlPort(),
@@ -680,6 +720,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         ragProvider,
         agentsProvider,
         memoryProvider,
+        mcpResourceProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

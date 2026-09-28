@@ -5,6 +5,7 @@ import type { ToolProvider } from '../types'
 import agentsGuide from './guides/agents.md?raw'
 import checkpointsGuide from './guides/checkpoints.md?raw'
 import customToolsGuide from './guides/custom-tools.md?raw'
+import mcpGuide from './guides/mcp.md?raw'
 import memoryGuide from './guides/memory.md?raw'
 import ragGuide from './guides/rag.md?raw'
 import sandboxGuide from './guides/sandbox.md?raw'
@@ -68,6 +69,12 @@ const ENTRIES: readonly ToolGuideEntry[] = [
     summary: 'Saving, scoping, flagging, and recalling personal memories about the user.',
     covers: ['remember', 'update_memory', 'forget', 'recall_memory'],
     guide: memoryGuide,
+  },
+  {
+    topic: 'mcp',
+    summary: 'Tools, resources, and prompts from connected MCP servers, and why their content is untrusted.',
+    covers: ['list_mcp_resources', 'read_mcp_resource'],
+    guide: mcpGuide,
   },
 ]
 

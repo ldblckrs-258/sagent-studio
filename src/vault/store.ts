@@ -41,6 +41,7 @@ export interface VaultState {
   unlock(password: string): Promise<void>
   lock(): Promise<void>
   update(patch: DeepPartial<Settings>): Promise<void>
+  forgetApprovals(names: readonly string[]): Promise<void>
   recover(): Promise<void>
   clearError(): void
   /** Requests persistent storage from the browser and records the outcome. */
@@ -319,6 +320,21 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     })
   },
 
+  async forgetApprovals(names) {
+    const currentKey = keyring.getKey()
+    if (!currentKey) throw new VaultLockedError()
+    await vaultWriteQueue.enqueue(async () => {
+      if (keyring.getKey() !== currentKey) throw new VaultLockedError()
+      const latest = get().settings
+      if (!latest) throw new VaultLockedError()
+      const tools = { ...(latest.approvals?.tools ?? {}) }
+      for (const name of names) delete tools[name]
+      const next = { ...latest, approvals: { ...latest.approvals, tools } }
+      await persistSettings(currentKey, next)
+      if (keyring.getKey() === currentKey) set({ settings: next })
+    })
+  },
+
   async recover() {
     keyring.clear()
     await vaultWriteQueue.drain()
@@ -334,6 +350,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         db.documents,
         db.chunks,
         db.memories,
+        db.mcpServers,
       ],
       async () => {
         await db.vault.clear()
@@ -345,6 +362,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         await db.documents.clear()
         await db.chunks.clear()
         await db.memories.clear()
+        await db.mcpServers.clear()
       },
     )
     invalidateClients()
@@ -383,6 +401,7 @@ export const vaultInternals = {
     await db.documents.clear()
     await db.chunks.clear()
     await db.memories.clear()
+    await db.mcpServers.clear()
     keyring.reset()
     createInFlight = null
     vaultWriteQueue.reset()

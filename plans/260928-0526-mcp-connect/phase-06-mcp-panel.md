@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "MCP rail panel"
-status: pending
+status: completed
 priority: P2
 effort: "6h"
 dependencies: [2, 3, 4]

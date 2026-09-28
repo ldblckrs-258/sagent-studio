@@ -1,6 +1,7 @@
 import { useAuiState } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
+import { useStore } from "zustand";
 import { useAttachmentStore } from "../chat/attachment-store";
 import { defaultSlashEntries } from "../chat/slash";
 import { useChatStore } from "../chat/store";
@@ -37,9 +38,10 @@ export function ComposerHighlight({ children }: { children: ReactNode }) {
   const threadId = useChatStore((s) => s.activeThreadId ?? "");
   const chips = useAttachmentStore((s) => s.items[threadId]);
 
+  const mcpState = useStore(session.mcp.store);
   const commands = useMemo(
-    () => new Set(defaultSlashEntries(session.skillRegistry).map((e) => e.id)),
-    [session.skillRegistry],
+    () => new Set(defaultSlashEntries(session.skillRegistry, session.mcp, mcpState).map((e) => e.id)),
+    [session.skillRegistry, session.mcp, mcpState],
   );
   const paths = useMemo(
     () =>

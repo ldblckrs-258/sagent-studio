@@ -295,6 +295,43 @@ When the model writes an artifact it can ask the panel to open it for you automa
 
 ---
 
+## Connecting MCP servers
+
+The **MCP** rail panel connects the app to remote [Model Context Protocol](https://modelcontextprotocol.io)
+servers. The browser talks to each server directly; there is no backend in between.
+
+- **Transports.** Streamable HTTP and the legacy SSE transport. **Auto** tries Streamable HTTP
+  first and falls back to SSE when the server does not offer it. Stdio servers cannot run in a
+  browser: expose them over HTTP with a bridge you run yourself.
+- **URLs.** `https://` anywhere, `http://` only for `localhost` and `127.0.0.1`. The production
+  Content-Security-Policy blocks other plain-HTTP connections, so the form rejects them.
+- **CORS.** The server must answer the browser's preflight. It needs to allow the headers
+  `Authorization`, `Content-Type`, `Mcp-Session-Id`, `MCP-Protocol-Version`, and
+  `Last-Event-ID`, and expose `Mcp-Session-Id` and `WWW-Authenticate`. When it does not,
+  the panel says the server could not be reached and suggests a proxy.
+- **Proxy URL.** Optional, per server. Every request — the MCP endpoint, OAuth discovery,
+  registration, and token calls — is sent to the proxy URL followed by the full target URL
+  (`https://proxy.example.com/https://mcp.example.com/mcp`). The proxy sees every request,
+  including headers and tokens, so use one you run or trust.
+- **Authentication.** None, static headers (for example `Authorization: Bearer …`), or
+  OAuth 2.1 with PKCE. **Sign in** opens a pop-up; the server redirects back to
+  `<app URL>?mcp-oauth=callback`, which hands the code to the app tab and closes. Without a
+  client ID the app registers itself with the server (dynamic client registration); with a
+  pre-registered client, allow that redirect URL. A server without a saved sign-in never
+  opens a pop-up on its own: it waits in **sign in** until you click.
+- **Tools.** Each enabled tool reaches the model as `mcp_<server>_<tool>`, shortened with a
+  hash when it would exceed 64 characters. MCP tools run without a prompt in Editing and Full
+  access, and ask for approval in Read-only. Save Ask or Deny per tool in **Approvals** to
+  change that; a Deny blocks the tool in every mode. Removing, repointing, or renaming a
+  server clears the decisions saved for its tools. Sub-agents can use them within their own mode. Toggle individual tools off in
+  the MCP panel to keep a large server from crowding the tool list.
+- **Prompts** become `/` commands named `<server>.<prompt>`. One argument takes the rest of
+  the line; several take `name=value` pairs.
+- **Resources** can be attached with `@` (type `@mcp` to list them) and read by the model with
+  `list_mcp_resources` and `read_mcp_resource`, which do not ask for approval.
+- **Lifecycle.** Enabled servers connect in the background after unlock. Locking the vault
+  closes every connection.
+
 ## Your data and what leaves your machine
 
 sagent-studio has **no server side**. Everything below happens in your browser.
@@ -314,8 +351,12 @@ sagent-studio has **no server side**. Everything below happens in your browser.
   again.
 - **Sent to your provider, and only your provider.** Prompt text, attachments, and tool
   results for a turn go to the model endpoint you configured. Conversation content is
-  **not** sent anywhere else. A data-egress notice in Settings keeps this from being a
-  surprise.
+  **not** sent anywhere else, except what the MCP servers you add receive (below). A
+  data-egress notice in Settings keeps this from being a surprise.
+- **MCP servers receive what you and the model send them.** A tool call sends its arguments,
+  a `/` prompt sends its arguments, and reading or attaching a resource sends its URI to that
+  server — and through its proxy, when you set one. Header secrets and OAuth tokens are
+  stored encrypted in the vault and sent only to that server (or its proxy).
 - **TypeSafe is called through a same-origin proxy.** TypeSafe sends no CORS headers, so a
   direct browser call is rejected at the preflight. The app calls `/typesafe`, which Vite
   proxies to `https://api.typesafe.ai` for dev and preview; a static deployment must proxy

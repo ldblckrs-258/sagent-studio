@@ -147,6 +147,19 @@ export interface HttpToolDefinition {
 
 export type ToolDefinition = SandboxJsToolDefinition | HttpToolDefinition
 
+export type ExternalToolKind = 'mcp'
+
+export interface ExternalToolEntry {
+  name: string
+  kind: ExternalToolKind
+  create(ports: ToolRuntimePorts): Tool
+}
+
+export interface ExternalToolSkip {
+  name: string
+  reason: string
+}
+
 export interface SandboxControlPort {
   reset(language?: 'js' | 'python'): void
   status(): { js: boolean; python: boolean }
@@ -271,6 +284,41 @@ export interface MemoryPort {
   promptView(): MemoryPromptView
 }
 
+export interface McpResourceSummary {
+  uri: string
+  name: string
+  mimeType?: string
+  description?: string
+  size?: number
+}
+
+export interface McpResourceTemplateSummary {
+  uriTemplate: string
+  name: string
+  mimeType?: string
+  description?: string
+}
+
+export interface McpResourceServerSummary {
+  id: string
+  name: string
+  resources: McpResourceSummary[]
+  templates: McpResourceTemplateSummary[]
+  truncated: boolean
+}
+
+export interface McpResourceContent {
+  uri: string
+  mimeType?: string
+  text?: string
+  bytes?: number
+}
+
+export interface McpResourcePort {
+  servers(): McpResourceServerSummary[]
+  read(serverId: string, uri: string, signal?: AbortSignal): Promise<McpResourceContent[]>
+}
+
 export interface ToolRuntimePorts {
   rag?: RagPort
   codeRunner?: CodeRunner
@@ -288,6 +336,7 @@ export interface ToolRuntimePorts {
   approvals?: ApprovalPolicyPort
   agents?: AgentSpawnPort
   memory?: MemoryPort
+  mcp?: McpResourcePort
 }
 
 export interface ToolProvider {

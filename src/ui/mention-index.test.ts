@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   directoryEntries,
+  mcpMentionEntries,
   mentionIndex,
   rankEntries,
   scopeOfQuery,
@@ -164,5 +165,50 @@ describe('browsing a named directory', () => {
   it('leaves a plain search to the index', () => {
     expect(scopeOfQuery('eng')).toBeNull()
     expect(scopeOfQuery('src/chat/eng')).toBe('src/chat')
+  })
+})
+
+describe('mcpMentionEntries', () => {
+  it('lists resources of ready servers only, keyed by an mcp path the chip and highlight share', () => {
+    const base = {
+      config: {
+        id: 'mcp_one',
+        name: 'Docs',
+        url: 'https://a.example.com',
+        transport: 'auto' as const,
+        auth: { kind: 'none' as const },
+        enabled: true,
+        disabledTools: [],
+        timeoutMs: 1000,
+      },
+      catalog: {
+        tools: [],
+        prompts: [],
+        resources: [{ uri: 'file:///readme.md', name: 'readme' }],
+        resourceTemplates: [],
+        truncated: [],
+      },
+      skippedTools: [],
+    }
+    const entries = mcpMentionEntries({
+      servers: {
+        mcp_one: { ...base, state: 'ready' },
+        mcp_two: { ...base, config: { ...base.config, id: 'mcp_two', name: 'Off' }, state: 'error' },
+      },
+      order: ['mcp_one', 'mcp_two'],
+      loaded: true,
+      error: null,
+    })
+    expect(entries).toEqual([
+      {
+        path: 'mcp:Docs:file:///readme.md',
+        name: 'readme',
+        kind: 'mcp-resource',
+        serverId: 'mcp_one',
+        serverName: 'Docs',
+        uri: 'file:///readme.md',
+      },
+    ])
+    expect(rankEntries(entries, 'mcp')[0]?.name).toBe('readme')
   })
 })

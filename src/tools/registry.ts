@@ -8,9 +8,17 @@ import {
   ToolSchemaError,
   assertPlainSchema,
   isToolDefinition,
+  TOOL_NAME_PATTERN,
   validateToolName,
 } from './types'
-import type { ToolDefinition, ToolProvider, ToolRuntimePorts } from './types'
+import type {
+  ExternalToolEntry,
+  ExternalToolKind,
+  ExternalToolSkip,
+  ToolDefinition,
+  ToolProvider,
+  ToolRuntimePorts,
+} from './types'
 import { executeUserTool } from './user-tool'
 
 export interface ToolStore {
@@ -26,6 +34,7 @@ function asJsonSchema(schema: Record<string, unknown>): Parameters<typeof jsonSc
 export class ToolRegistry {
   private readonly providers = new Map<string, ToolProvider>()
   private readonly userTools = new Map<string, ToolDefinition>()
+  private readonly externalSources = new Map<string, Map<string, ExternalToolEntry>>()
   private readonly storeRef: ToolStore
   private readonly listeners = new Set<() => void>()
   private version = 0
@@ -67,7 +76,7 @@ export class ToolRegistry {
   registerProvider(provider: ToolProvider): void {
     for (const name of provider.names) {
       validateToolName(name)
-      if (this.providers.has(name) || this.userTools.has(name)) {
+      if (this.hasTool(name)) {
         throw new ToolNameConflictError(name)
       }
       this.providers.set(name, provider)
@@ -81,7 +90,7 @@ export class ToolRegistry {
     }
     validateToolName(definition.name)
     assertPlainSchema(definition.inputSchema)
-    if (this.providers.has(definition.name) || this.userTools.has(definition.name)) {
+    if (this.hasTool(definition.name)) {
       throw new ToolNameConflictError(definition.name)
     }
     this.userTools.set(definition.name, definition)
@@ -113,17 +122,73 @@ export class ToolRegistry {
     this.notify()
   }
 
-  /** True when a provider or a user tool owns the name. */
+  /** True when a provider, a user tool, or an external source owns the name. */
   hasTool(name: string): boolean {
-    return this.providers.has(name) || this.userTools.has(name)
+    return this.providers.has(name) || this.userTools.has(name) || this.externalOwner(name) !== undefined
+  }
+
+  setExternalTools(sourceId: string, entries: readonly ExternalToolEntry[]): ExternalToolSkip[] {
+    const accepted = new Map<string, ExternalToolEntry>()
+    const skipped: ExternalToolSkip[] = []
+    for (const entry of entries) {
+      if (!TOOL_NAME_PATTERN.test(entry.name)) {
+        skipped.push({ name: entry.name, reason: 'The derived tool name is not a valid tool name.' })
+        continue
+      }
+      const owner = this.externalOwner(entry.name)
+      if (
+        this.providers.has(entry.name) ||
+        this.userTools.has(entry.name) ||
+        (owner !== undefined && owner !== sourceId)
+      ) {
+        skipped.push({ name: entry.name, reason: `A tool named "${entry.name}" already exists.` })
+        continue
+      }
+      if (accepted.has(entry.name)) {
+        skipped.push({ name: entry.name, reason: `Another tool from this source is also named "${entry.name}".` })
+        continue
+      }
+      accepted.set(entry.name, entry)
+    }
+    this.externalSources.set(sourceId, accepted)
+    this.notify()
+    return skipped
+  }
+
+  clearExternalTools(sourceId: string): void {
+    if (!this.externalSources.delete(sourceId)) return
+    this.notify()
+  }
+
+  listExternal(): Array<{ name: string; kind: ExternalToolKind }> {
+    const entries: Array<{ name: string; kind: ExternalToolKind }> = []
+    for (const source of this.externalSources.values()) {
+      for (const entry of source.values()) entries.push({ name: entry.name, kind: entry.kind })
+    }
+    return entries.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  private externalOwner(name: string): string | undefined {
+    for (const [sourceId, source] of this.externalSources) {
+      if (source.has(name)) return sourceId
+    }
+    return undefined
+  }
+
+  private externalEntry(name: string): ExternalToolEntry | undefined {
+    for (const source of this.externalSources.values()) {
+      const entry = source.get(name)
+      if (entry) return entry
+    }
+    return undefined
   }
 
   list(): ToolDefinition[] {
     return [...this.userTools.values()].sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  userToolKind(name: string): ToolDefinition['kind'] | undefined {
-    return this.userTools.get(name)?.kind
+  toolKind(name: string): ToolDefinition['kind'] | ExternalToolKind | undefined {
+    return this.userTools.get(name)?.kind ?? this.externalEntry(name)?.kind
   }
 
   availableNames(ports: ToolRuntimePorts): string[] {
@@ -133,6 +198,9 @@ export class ToolRegistry {
     }
     for (const definition of this.userTools.values()) {
       if (definition.enabled) names.add(definition.name)
+    }
+    for (const source of this.externalSources.values()) {
+      for (const name of source.keys()) names.add(name)
     }
     return [...names].sort()
   }
@@ -151,7 +219,12 @@ export class ToolRegistry {
         continue
       }
       const definition = this.userTools.get(name)
-      if (definition) toolSet[name] = this.createUserTool(definition, ports)
+      if (definition) {
+        toolSet[name] = this.createUserTool(definition, ports)
+        continue
+      }
+      const external = this.externalEntry(name)
+      if (external) toolSet[name] = external.create(ports)
     }
     return toolSet
   }

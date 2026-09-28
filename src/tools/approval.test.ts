@@ -47,6 +47,10 @@ describe('isGatedTool', () => {
     expect(isGatedTool({ name: 'my_tool', kind: 'builtin' })).toBe(false)
   })
 
+  it('marks every MCP tool as gated, so a saved Ask or Deny applies to it', () => {
+    expect(isGatedTool({ name: 'mcp_linear_list_issues', kind: 'mcp' })).toBe(true)
+  })
+
   it('does not gate benign mutators or read tools', () => {
     for (const name of [
       'make_dir',
@@ -125,6 +129,8 @@ describe('modeCeiling and resolveApprovalStatus', () => {
         'update_memory',
         'forget',
         'recall_memory',
+        'list_mcp_resources',
+        'read_mcp_resource',
       ].sort(),
     )
     expect((ceiling as ReadonlySet<string>).has('create_skill')).toBe(false)
@@ -234,5 +240,27 @@ describe('modeCeiling and resolveApprovalStatus', () => {
       'approved',
     )
     expect(resolveApprovalStatus('editing', { tools: {} }, 'make_dir')).toBe('approved')
+  })
+})
+
+describe('MCP tools and the approval gate', () => {
+  const mcp = { name: 'mcp_linear_create_issue', kind: 'mcp' as const }
+
+  it('runs without a prompt in editing and god, and escalates in read_only', () => {
+    expect(resolveApprovalStatus('editing', undefined, mcp)).toBe('approved')
+    expect(resolveApprovalStatus('editing', { tools: {} }, mcp)).toBe('approved')
+    expect(resolveApprovalStatus('read_only', undefined, mcp)).toBe('user-approval')
+    expect(isWithinCeiling('read_only', mcp)).toBe(false)
+    expect(isWithinCeiling('editing', mcp)).toBe(true)
+    expect(resolveApprovalStatus('god', undefined, mcp)).toBe('approved')
+  })
+
+  it('honors a saved Ask or Deny over the editing default, and never lifts read_only', () => {
+    expect(resolveApprovalStatus('editing', { tools: { [mcp.name]: 'ask' } }, mcp)).toBe('user-approval')
+    expect(resolveApprovalStatus('editing', { tools: { [mcp.name]: 'deny' } }, mcp)).toBe('denied')
+    expect(resolveApprovalStatus('god', { tools: { [mcp.name]: 'deny' } }, mcp)).toBe('denied')
+    expect(resolveApprovalStatus('read_only', { tools: { [mcp.name]: 'allow' } }, mcp)).toBe(
+      'user-approval',
+    )
   })
 })

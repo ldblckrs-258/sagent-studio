@@ -3,12 +3,16 @@
 import { cn } from "../lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { Popover as PopoverPrimitive } from "radix-ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Plug } from "lucide-react";
+import { useStore } from "zustand";
 import type { KeyboardEvent, ReactNode, SyntheticEvent } from "react";
 import { composerThreadKey, useAttachmentStore } from "../chat/attachment-store";
+import { useSession } from "../session/session-context";
 import { useWorkspaceStore } from "../session/workspace-state";
 import {
   directoryEntries,
+  mcpMentionEntries,
   mentionIndex,
   rankEntries,
   scopeOfQuery,
@@ -43,8 +47,11 @@ function isSlashCommand(text: string): boolean {
  */
 export function MentionSuggestions({ children }: { children: ReactNode }) {
   const aui = useAui();
+  const session = useSession();
   const text = useAuiState((s) => s.composer.text);
   const fs = useWorkspaceStore((s) => s.fs);
+  const mcpState = useStore(session.mcp.store);
+  const mcpEntries = useMemo(() => mcpMentionEntries(mcpState), [mcpState]);
   const add = useAttachmentStore((s) => s.add);
 
   const [caret, setCaret] = useState(0);
@@ -111,7 +118,7 @@ export function MentionSuggestions({ children }: { children: ReactNode }) {
 
   const pool =
     scope !== null && scoped?.scope === scope ? scoped.entries : entries;
-  const ranked = rankEntries(pool, query);
+  const ranked = rankEntries(scope === null ? [...pool, ...mcpEntries] : pool, query);
 
   // Only when the index is capped and nothing local matches, and never per
   // keystroke: the glob walks the whole folder again.
@@ -158,9 +165,11 @@ export function MentionSuggestions({ children }: { children: ReactNode }) {
     aui.composer.setText(completion.text);
     if (!descend) {
       add(composerThreadKey(), {
-        kind: entry.kind === "directory" ? "folder" : "file",
+        kind: entry.kind === "directory" ? "folder" : entry.kind,
         path: entry.path,
         source: "mention",
+        ...(entry.serverId !== undefined ? { serverId: entry.serverId } : {}),
+        ...(entry.uri !== undefined ? { uri: entry.uri } : {}),
       });
       setDismissedAt(completion.text);
     }
@@ -273,14 +282,19 @@ export function MentionList({
       <ul role="listbox" aria-label="Workspace paths">
         {matches.map((entry, index) => {
           const look =
-            entry.kind === "directory"
-              ? folderLookFor(false)
-              : fileLookFor(entry.path);
+            entry.kind === "mcp-resource"
+              ? { Icon: Plug, className: "text-muted" }
+              : entry.kind === "directory"
+                ? folderLookFor(false)
+                : fileLookFor(entry.path);
           const { Icon } = look;
-          const parent = entry.path.slice(
-            0,
-            Math.max(entry.path.length - entry.name.length, 0),
-          );
+          const parent =
+            entry.kind === "mcp-resource"
+              ? `${entry.serverName ?? ""} · `
+              : entry.path.slice(
+                  0,
+                  Math.max(entry.path.length - entry.name.length, 0),
+                );
           return (
             <li key={entry.path}>
               <button
@@ -301,6 +315,11 @@ export function MentionList({
                   <span className="text-faint">{parent}</span>
                   <span className="text-ink">{entry.name}</span>
                 </span>
+                {entry.kind === "mcp-resource" ? (
+                  <span className="text-faint shrink-0 font-mono text-[10px]">
+                    MCP
+                  </span>
+                ) : null}
                 {entry.kind === "directory" ? (
                   <span className="text-faint shrink-0 font-mono text-[10px]">
                     {index === highlight ? "tab opens · enter attaches" : "folder"}

@@ -22,6 +22,7 @@ import { redactSecrets } from './engine'
 import { ChatThreadNotFoundError } from './errors'
 import { createChatQueue } from './queue'
 import type { AttachmentSnapshot } from './queue'
+import type { McpResourcePort } from '../tools/types'
 import { deleteMessage } from './reducer'
 import {
   defaultSlashEntries,
@@ -60,7 +61,7 @@ export async function dispatchComposerText(
   }
   const thread = useChatStore.getState().threads[threadId]
   if (!thread) throw new ChatThreadNotFoundError(threadId)
-  await runSlashCommand(defaultSlashEntries(session.skillRegistry), {
+  await runSlashCommand(defaultSlashEntries(session.skillRegistry, session.mcp), {
     session,
     threadId,
     thread,
@@ -105,6 +106,7 @@ export class AttachmentsDroppedError extends Error {
 export async function resolveSnapshot(
   snapshot: AttachmentSnapshot,
   threadId: string,
+  mcp?: McpResourcePort,
 ): Promise<ResolvedAttachments | undefined> {
   const workspace = useWorkspaceStore.getState()
   const fs = workspace.fs
@@ -113,12 +115,13 @@ export async function resolveSnapshot(
       'The conversation changed before this message was sent, so it was sent without its attachments.',
     )
   }
-  if (fs === null) {
+  const onlyMcp = snapshot.attachments.every((attachment) => attachment.kind === 'mcp-resource')
+  if (fs === null && !onlyMcp) {
     throw new AttachmentsDroppedError(
       'No workspace folder is open, so this message was sent without its attachments.',
     )
   }
-  if (snapshot.fs !== null && snapshot.fs !== fs) {
+  if (!onlyMcp && snapshot.fs !== null && snapshot.fs !== fs) {
     throw new AttachmentsDroppedError(
       'The workspace folder changed before this message was sent, so it was sent without its attachments.',
     )
@@ -127,6 +130,7 @@ export async function resolveSnapshot(
   const config = useChatStore.getState().threads[threadId]?.config
   const resolved = await resolveAttachments(fs, snapshot.attachments, {
     imageSupport: modelSupportsVision(settings, config?.providerId, config?.modelId),
+    ...(mcp ? { mcp } : {}),
   })
   if (resolved.errors.length > 0) {
     useChatStore.getState().setError(resolved.errors.join(' '))
@@ -172,7 +176,7 @@ export function useChatRuntime() {
           let attachments: ResolvedAttachments | undefined
           if (snapshot !== undefined) {
             try {
-              attachments = await resolveSnapshot(snapshot, id)
+              attachments = await resolveSnapshot(snapshot, id, session.mcpResources)
             } catch (error) {
               useChatStore.getState().setError(describe(error))
             }

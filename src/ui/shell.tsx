@@ -10,6 +10,7 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
+  Plug,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -43,6 +44,7 @@ import { ChatConfig } from "./panels/chat-config";
 import { Conversations } from "./panels/conversations";
 import { FilePanel } from "./panels/file-editor";
 import { LibraryPanel } from "./panels/library";
+import { McpPanel } from "./panels/mcp";
 import { MemoryPanel } from "./panels/memory";
 import { SandboxPanel } from "./panels/sandbox";
 import { SkillsPanel } from "./panels/skills";
@@ -62,6 +64,7 @@ export type RailPanelId =
   | "memory"
   | "skills"
   | "tools"
+  | "mcp"
   | "sandbox"
   | "agents"
   | "approvals";
@@ -74,6 +77,7 @@ const RAIL_IDS: readonly RailPanelId[] = [
   "memory",
   "skills",
   "tools",
+  "mcp",
   "sandbox",
   "agents",
   "approvals",
@@ -386,6 +390,7 @@ export function Shell({ left }: { left?: ReactNode }) {
       render: () => <SkillsPanel />,
     },
     { id: "tools", label: "Tools", icon: Wrench, render: () => <ToolsPanel /> },
+    { id: "mcp", label: "MCP", icon: Plug, render: () => <McpPanel /> },
     {
       id: "sandbox",
       label: "Sandbox",

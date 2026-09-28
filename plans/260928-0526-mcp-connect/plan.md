@@ -1,7 +1,7 @@
 ---
 title: MCP connect — remote MCP servers as a browser-only client
 description: The user adds remote MCP servers; their tools, prompts, and resources become usable by the model and the user from the browser, with secrets in the vault.
-status: pending
+status: in-progress
 priority: P2
 effort: 35h
 branch: main
@@ -118,3 +118,20 @@ flowchart LR
 | Prompt injection through tool descriptions and results | All MCP tools gated. Descriptions are length-capped. The tool guide tells the model MCP output is untrusted. |
 | Name collision after sanitizing | Colliding names are skipped and reported in the server status, not silently renamed. |
 | SDK bundle size | Import only subpaths. Phase 7 compares chunk size once the user approves a build. |
+
+## Implementation notes (2026-09-28)
+
+Deviations from the phase files, each verified by tests:
+
+- **State store.** The manager owns a per-session zustand vanilla store (`McpConnectionManager.store`) instead of a separate `src/mcp/state.ts`. A lock disposes it with the session, so no global state leaks.
+- **Timeouts.** Requests use the SDK's `RequestOptions.timeout` rather than aborting at the fetch layer. A Streamable HTTP POST can answer with an SSE stream, and a fetch-level abort would cut long tool calls.
+- **Tokenless OAuth.** An OAuth server without stored tokens moves to `needs-auth` without any network call. Before this, auto-connect ran discovery and dynamic client registration on every unlock.
+- **Sign-in completion.** The code exchange uses the SDK `auth(provider, { authorizationCode })` and then reconnects, instead of `transport.finishAuth`. The popup is opened before the first `await` so browsers keep the user gesture.
+- **Vault recovery.** `vaultInternals.reset` and the wipe path also clear `mcpServers`, so no undecryptable record survives a reset.
+- **Approvals panel** lists MCP tools, so a per-tool Allow or Deny can be saved.
+- **Resource chips without a folder.** A message whose chips are all MCP resources sends even when no workspace folder is open.
+- **Guide.** `read_tool_guide` has an `mcp` topic covering the two resource tools.
+
+Review: a fresh-context code review found 2 high and 6 medium issues. They were fixed except M6, which keeps the user's decision. See [the review report](../reports/code-reviewer-260928-2124-mcp-connect.md).
+
+Verification after the fixes: `pnpm test` (1902 passed, 1 skipped), `pnpm lint`, `pnpm exec tsc -b --noEmit`. A real-network check ran the manager against a local Streamable HTTP server over `fetch` for header-auth rejection, tool call, prompt, and resource read, plus dispose.

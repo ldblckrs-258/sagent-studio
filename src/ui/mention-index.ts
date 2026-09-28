@@ -1,4 +1,5 @@
-import { isDenied } from "../chat/attachments";
+import { isDenied, mcpResourcePath } from "../chat/attachments";
+import type { McpStoreState } from "../mcp/manager";
 import type { WorkspaceFs } from "../workspace/fs";
 import { DEFAULT_RECURSIVE_MAX_ENTRIES } from "../workspace/fs";
 import { DEFAULT_EXCLUDED_DIRS } from "../workspace/search";
@@ -6,7 +7,10 @@ import { DEFAULT_EXCLUDED_DIRS } from "../workspace/search";
 export type MentionEntry = {
   path: string;
   name: string;
-  kind: "file" | "directory";
+  kind: "file" | "directory" | "mcp-resource";
+  serverId?: string;
+  serverName?: string;
+  uri?: string;
 };
 
 export type MentionIndex = {
@@ -196,4 +200,23 @@ export async function searchByName(
   return listed
     .filter((entry) => keepEntry(entry.path, entry.kind))
     .map((entry) => ({ path: entry.path, name: entry.name, kind: entry.kind }));
+}
+
+export function mcpMentionEntries(state: McpStoreState): MentionEntry[] {
+  const entries: MentionEntry[] = [];
+  for (const id of state.order) {
+    const view = state.servers[id];
+    if (!view || view.state !== "ready") continue;
+    for (const resource of view.catalog.resources) {
+      entries.push({
+        path: mcpResourcePath(view.config.name, resource.uri),
+        name: resource.name,
+        kind: "mcp-resource",
+        serverId: view.config.id,
+        serverName: view.config.name,
+        uri: resource.uri,
+      });
+    }
+  }
+  return entries;
 }

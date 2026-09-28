@@ -11,15 +11,18 @@ import type { WorkspaceFs } from '../workspace/fs'
 import { readWorkspaceBlob } from '../workspace/fs'
 import { contentHash } from '../workspace/revision'
 import { probeBinary } from '../workspace/search'
+import type { McpResourcePort } from '../tools/types'
 
 export type AttachmentSource = 'upload' | 'mention' | 'drag' | 'auto'
 
 export type Attachment = {
   id: string
-  kind: 'file' | 'folder'
+  kind: 'file' | 'folder' | 'mcp-resource'
   path: string
   source: AttachmentSource
   bytes?: number
+  serverId?: string
+  uri?: string
 }
 
 export type AttachmentMode =
@@ -429,10 +432,54 @@ function referenceItem(
  * instead of failing the turn, because the user's text is the part that must
  * always survive.
  */
+export const MCP_ATTACHMENT_TIMEOUT_MS = 15_000
+
+export function mcpResourcePath(serverName: string, uri: string): string {
+  return `mcp:${serverName}:${uri}`
+}
+
+async function resolveMcpResource(
+  mcp: McpResourcePort | undefined,
+  nonce: string,
+  attachment: Attachment,
+  budgetLeft: number,
+): Promise<{ item: ResolvedAttachment; inlined: number; error?: string }> {
+  const { path, serverId, uri } = attachment
+  if (!mcp || serverId === undefined || uri === undefined) {
+    return {
+      item: referenceItem(nonce, path, undefined, 'missing', 'the MCP server is not connected'),
+      inlined: 0,
+      error: `Could not read ${path}: the MCP server is not connected.`,
+    }
+  }
+  const contents = await mcp.read(serverId, uri, AbortSignal.timeout(MCP_ATTACHMENT_TIMEOUT_MS))
+  const texts = contents.filter((content) => content.text !== undefined).map((content) => content.text!)
+  if (texts.length === 0) {
+    const bytes = contents.reduce((total, content) => total + (content.bytes ?? 0), 0)
+    return { item: referenceItem(nonce, path, bytes, 'reference', 'binary content'), inlined: 0 }
+  }
+  const body = texts.join('\n\n')
+  const bytes = new TextEncoder().encode(body).length
+  if (bytes > INLINE_MAX_BYTES || bytes > budgetLeft) {
+    return {
+      item: referenceItem(nonce, path, bytes, 'reference', 'too large to inline; call read_mcp_resource'),
+      inlined: 0,
+    }
+  }
+  return {
+    item: {
+      record: { path, hash: hashContent(body), mode: 'inline' },
+      parts: [textPart(renderInline(nonce, path, bytes, body))],
+      fenced: true,
+    },
+    inlined: bytes,
+  }
+}
+
 export async function resolveAttachments(
-  fs: WorkspaceFs,
+  fs: WorkspaceFs | null,
   attachments: readonly Attachment[],
-  options: { nonce?: string; imageSupport?: boolean } = {},
+  options: { nonce?: string; imageSupport?: boolean; mcp?: McpResourcePort } = {},
 ): Promise<ResolvedAttachments> {
   const nonce = options.nonce ?? createFence()
   const items: ResolvedAttachment[] = []
@@ -442,6 +489,23 @@ export async function resolveAttachments(
   for (const attachment of attachments) {
     const { path } = attachment
     try {
+      if (attachment.kind === 'mcp-resource') {
+        const resolved = await resolveMcpResource(
+          options.mcp,
+          nonce,
+          attachment,
+          INLINE_BUDGET_BYTES - inlinedBytes,
+        )
+        items.push(resolved.item)
+        inlinedBytes += resolved.inlined
+        if (resolved.error !== undefined) errors.push(resolved.error)
+        continue
+      }
+      if (fs === null) {
+        items.push(referenceItem(nonce, path, undefined, 'missing'))
+        errors.push(`Could not read ${path}: no workspace folder is open.`)
+        continue
+      }
       if (attachment.kind === 'folder') {
         items.push(await resolveFolder(fs, nonce, path))
         continue

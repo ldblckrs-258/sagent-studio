@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "OAuth 2.1 with PKCE"
-status: pending
+status: completed
 priority: P2
 effort: "6h"
 dependencies: [2]

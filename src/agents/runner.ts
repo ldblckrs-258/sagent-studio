@@ -190,7 +190,7 @@ export async function runAgent(
       mode,
     })
     const descriptorFor = (name: string): ToolGateDescriptor => {
-      const kind = deps.toolRegistry.userToolKind(name)
+      const kind = deps.toolRegistry.toolKind(name)
       return kind ? { name, kind } : { name }
     }
 

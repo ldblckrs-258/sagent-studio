@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Plug, X } from "lucide-react";
 import { useAttachmentStore, autoAttachmentForThread } from "../chat/attachment-store";
 import type { Attachment, AttachmentRecord } from "../chat/attachments";
 import { basenameOf } from "../chat/attachments";
@@ -25,11 +25,13 @@ function Chip({
   onRemove: () => void;
 }) {
   const look =
-    attachment.kind === "folder"
-      ? folderLookFor(false)
-      : fileLookFor(attachment.path);
+    attachment.kind === "mcp-resource"
+      ? { Icon: Plug, className: "text-muted" }
+      : attachment.kind === "folder"
+        ? folderLookFor(false)
+        : fileLookFor(attachment.path);
   const { Icon } = look;
-  const parent = parentOf(attachment.path);
+  const parent = attachment.kind === "mcp-resource" ? "" : parentOf(attachment.path);
   return (
     <span
       title={attachment.path}

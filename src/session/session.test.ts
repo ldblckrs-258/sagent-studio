@@ -14,6 +14,8 @@ import { agentNoticeFor, createAgentPorts, createSession } from './session'
 import * as engineModule from '../chat/engine'
 import type { EngineDeps } from '../chat/engine'
 import { useMemoryStore } from '../memory/state'
+import { McpConnectionManager } from '../mcp/manager'
+import { memoryPersistence } from '../mcp/test-fixtures'
 import { fakeFolder, seededMemory } from '../memory/test-fixtures'
 import type { WorkspaceFs } from '../workspace/fs'
 
@@ -63,6 +65,25 @@ describe('createSession', () => {
     await useWorkspaceStore.getState().clear()
     await db.fs.delete(threadHandleId('t-a'))
     await db.fs.delete(threadHandleId('t-b'))
+  })
+
+  it('closes every MCP connection on dispose, which is what a vault lock triggers', async () => {
+    const mcpManager = new McpConnectionManager({ persistence: memoryPersistence() })
+    const session = createSession({ mcpManager })
+    expect(session.mcp).toBe(mcpManager)
+    session.dispose()
+    await vi.waitFor(() => expect(mcpManager.isDisposed()).toBe(true))
+  })
+
+  it('restarts MCP after the dev-mode effect cleanup, so StrictMode does not kill it for the session', async () => {
+    const mcpManager = new McpConnectionManager({ persistence: memoryPersistence() })
+    const session = createSession({ mcpManager })
+    await session.startMcp()
+    session.dispose()
+    await session.startMcp()
+    expect(mcpManager.isDisposed()).toBe(false)
+    expect(mcpManager.store.getState().loaded).toBe(true)
+    session.dispose()
   })
 
   it('stops following conversations once disposed', async () => {

@@ -176,3 +176,44 @@ describe('resolveAgentToolNames', () => {
     expect(result.ok).toBe(false)
   })
 })
+
+describe('resolveAgentToolNames with MCP tools', () => {
+  it('lets a sub-agent inherit an MCP tool from the parent pool but never above its mode ceiling', () => {
+    const { toolRegistry, skillRegistry } = build({ enabled: false })
+    toolRegistry.setExternalTools('mcp:a', [
+      {
+        name: 'mcp_linear_list_issues',
+        kind: 'mcp',
+        create: () =>
+          tool({ description: 'mcp', inputSchema: jsonSchema({ type: 'object' }), execute: async () => 'ok' }),
+      },
+    ])
+    const withMcp = { ...parent('editing'), toolNames: [...TOOL_NAMES, 'mcp_linear_list_issues'] }
+    const editing = resolveAgentToolNames({
+      toolRegistry,
+      skillRegistry,
+      ports: {} as ToolRuntimePorts,
+      parent: withMcp,
+      request: request({ mode: 'editing' }),
+    })
+    expect(editing.ok && editing.names).toContain('mcp_linear_list_issues')
+
+    const readOnly = resolveAgentToolNames({
+      toolRegistry,
+      skillRegistry,
+      ports: {} as ToolRuntimePorts,
+      parent: withMcp,
+      request: request({ mode: 'read_only' }),
+    })
+    expect(readOnly.ok && readOnly.names).not.toContain('mcp_linear_list_issues')
+
+    const notInParent = resolveAgentToolNames({
+      toolRegistry,
+      skillRegistry,
+      ports: {} as ToolRuntimePorts,
+      parent: parent('editing'),
+      request: request({ mode: 'editing' }),
+    })
+    expect(notInParent.ok && notInParent.names).not.toContain('mcp_linear_list_issues')
+  })
+})

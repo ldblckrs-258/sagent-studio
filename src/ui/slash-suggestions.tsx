@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { Popover as PopoverPrimitive } from "radix-ui";
 import { useMemo, useState } from "react";
+import { useStore } from "zustand";
 import type { KeyboardEvent, ReactNode } from "react";
 import { defaultSlashEntries } from "../chat/slash";
 import type { SlashEntry } from "../chat/slash";
@@ -52,9 +53,10 @@ export function SlashSuggestions({ children }: { children: ReactNode }) {
   // exact input and the next keystroke brings it back.
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
 
+  const mcpState = useStore(session.mcp.store);
   const entries = useMemo(
-    () => defaultSlashEntries(session.skillRegistry),
-    [session.skillRegistry],
+    () => defaultSlashEntries(session.skillRegistry, session.mcp, mcpState),
+    [session.skillRegistry, session.mcp, mcpState],
   );
   const matches = useMemo(() => suggestionsFor(entries, text), [entries, text]);
   const open = matches.length > 0 && dismissedAt !== text;

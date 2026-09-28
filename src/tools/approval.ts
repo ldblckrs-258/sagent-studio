@@ -2,7 +2,7 @@ import type { ChatMode } from '../chat/types'
 import { DEFAULT_APPROVAL_DECISION } from '../vault/settings'
 import type { ApprovalDecision, ApprovalSettings } from '../vault/settings'
 
-export type ToolGateKind = 'builtin' | 'sandbox-js' | 'http'
+export type ToolGateKind = 'builtin' | 'sandbox-js' | 'http' | 'mcp'
 
 export interface ToolGateDescriptor {
   name: string
@@ -54,6 +54,8 @@ const READ_ONLY_TOOLS = new Set([
   'update_memory',
   'forget',
   'recall_memory',
+  'list_mcp_resources',
+  'read_mcp_resource',
 ])
 
 const EDITING_TOOLS = new Set([
@@ -95,7 +97,8 @@ function nameOf(tool: string | ToolGateDescriptor): string {
 
 function isUserCodeOrNetwork(tool: string | ToolGateDescriptor): boolean {
   return (
-    typeof tool !== 'string' && (tool.kind === 'sandbox-js' || tool.kind === 'http')
+    typeof tool !== 'string' &&
+    (tool.kind === 'sandbox-js' || tool.kind === 'http' || tool.kind === 'mcp')
   )
 }
 
@@ -192,5 +195,6 @@ export function resolveApprovalStatus(
   if (!isGatedTool(tool)) return 'approved'
   if (persisted === 'allow') return 'approved'
   if (persisted === 'ask') return 'user-approval'
+  if (typeof tool !== 'string' && tool.kind === 'mcp') return 'approved'
   return MODE_GRANTED_TOOLS.has(name) ? 'approved' : 'user-approval'
 }

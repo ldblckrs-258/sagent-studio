@@ -13,6 +13,9 @@ import { createAgentsToolProvider } from './agents'
 import { createCodeToolProvider } from './code'
 import { createHistoryToolProvider } from './history'
 import { createMemoryToolProvider } from './memory'
+import { MCP_RESOURCE_TEXT_MAX, createMcpResourceToolProvider } from './mcp-resources'
+import { MCP_RESOURCE_LIST_MAX } from '../../mcp/resource-port'
+import { MCP_RESULT_TEXT_MAX } from '../../mcp/tool-bridge'
 import { createRagToolProvider } from './rag'
 import { createSandboxControlProvider } from './sandbox-control'
 import { createSkillManagementProvider } from './skill-management'
@@ -56,6 +59,7 @@ const COVERED_BY_PROVIDERS = new Set(
     createRagToolProvider(() => undefined),
     createAgentsToolProvider(),
     createMemoryToolProvider(),
+    createMcpResourceToolProvider(),
   ].flatMap((provider) => [...provider.names]),
 )
 
@@ -145,6 +149,11 @@ describe('read_tool_guide', () => {
     expect(sandbox).toContain(String(DEFAULT_SANDBOX_JS_TIMEOUT_MS))
     expect(sandbox).toContain(String(DEFAULT_SANDBOX_PY_TIMEOUT_MS))
     expect(sandbox).toContain(String(DEFAULT_SANDBOX_IDLE_TIMEOUT_MS / 60_000))
+
+    const mcp = await guideFor('mcp')
+    expect(mcp).toContain(MCP_RESOURCE_TEXT_MAX.toLocaleString('en-US'))
+    expect(mcp).toContain(MCP_RESULT_TEXT_MAX.toLocaleString('en-US'))
+    expect(mcp).toContain(`up to ${MCP_RESOURCE_LIST_MAX} per server`)
   })
 
   it('only covers tool names the registry knows', async () => {

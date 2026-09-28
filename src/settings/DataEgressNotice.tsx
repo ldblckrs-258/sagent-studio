@@ -23,7 +23,9 @@ export function DataEgressNotice() {
           <h2 className="text-xs font-medium text-ink">What leaves this device</h2>
           <p className="mt-1 text-xs leading-relaxed text-muted">
             Query text and matched document chunks are sent to TypeSafe and to whichever LLM
-            provider you select. Keys, settings and the document index never leave.
+            provider you select. MCP tool arguments, prompt arguments, and resource requests go to
+            the MCP servers you add, through their proxy when one is set, along with that server's
+            headers or sign-in token. Provider keys, settings and the document index never leave.
           </p>
           <button
             type="button"

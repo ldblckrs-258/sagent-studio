@@ -92,4 +92,26 @@ describe('resolveSnapshot', () => {
     ])
     expect(useChatStore.getState().error).toContain('gone.ts')
   })
+
+  it('sends MCP resource chips even when no workspace folder is open', async () => {
+    useWorkspaceStore.setState({ fs: null, boundThreadId: 't1' })
+    const path = 'mcp:Docs:file:///a.md'
+    const resolved = await resolveSnapshot(
+      {
+        threadId: 't1',
+        fs: null,
+        attachments: [{ id: path, kind: 'mcp-resource', path, source: 'mention', serverId: 's', uri: 'file:///a.md' }],
+      },
+      't1',
+      { servers: () => [], read: async () => [{ uri: 'file:///a.md', text: 'hi' }] },
+    )
+    expect(resolved?.items[0]?.record.mode).toBe('inline')
+  })
+
+  it('still drops workspace chips when no folder is open', async () => {
+    useWorkspaceStore.setState({ fs: null, boundThreadId: 't1' })
+    await expect(resolveSnapshot(snapshot('t1', null, ['a.ts']), 't1')).rejects.toBeInstanceOf(
+      AttachmentsDroppedError,
+    )
+  })
 })

@@ -1,6 +1,7 @@
 import type { SkillRegistry } from '../skills/registry'
 import type { AppSession } from '../session/session'
 import { ChatError } from './errors'
+import { MCP_PROMPT_PREFIX, mcpPromptEntries } from '../mcp/prompt-invoke'
 import { invokeSkill } from './skill-invoke'
 import type { ChatThread, SkillRef } from './types'
 
@@ -29,7 +30,7 @@ export interface SlashCommand {
  * has a single dispatch.
  */
 export interface SlashEntry extends SlashCommand {
-  kind: 'command' | 'skill'
+  kind: 'command' | 'skill' | 'mcp-prompt'
   /** Set for a skill entry, so the list can tag an untrusted workspace source. */
   source?: 'vault' | 'workspace'
 }
@@ -123,6 +124,7 @@ function skillEntry(
 export function slashEntries(
   commands: readonly SlashCommand[],
   skillRegistry: SkillRegistry,
+  promptEntries: readonly SlashEntry[] = [],
 ): SlashEntry[] {
   const builtins: SlashEntry[] = commands.map((command) => ({
     ...command,
@@ -146,7 +148,11 @@ export function slashEntries(
         (counts.get(skill.id) ?? 0) > 1,
       ),
     )
-  return [...builtins, ...skills]
+  for (const skill of skills) reserved.add(skill.id)
+  const prompts = promptEntries.map((entry) =>
+    reserved.has(entry.id) ? { ...entry, id: `${MCP_PROMPT_PREFIX}${entry.id}` } : entry,
+  )
+  return [...builtins, ...skills, ...prompts]
 }
 
 /**
@@ -162,6 +168,8 @@ export function resolveSlash(
   if (source === undefined) {
     const command = entries.find((entry) => entry.kind === 'command' && entry.id === name)
     if (command) return command
+    const prompt = entries.find((entry) => entry.kind === 'mcp-prompt' && entry.id === name)
+    if (prompt) return prompt
   }
   const skills = entries.filter((entry) => entry.kind === 'skill')
   const matching = skills.filter((entry) => {
@@ -212,6 +220,14 @@ export const compactCommand: SlashCommand = {
 export const BUILTIN_SLASH_COMMANDS: readonly SlashCommand[] = [compactCommand]
 
 /** Convenience for the send path and the composer, which need the same list. */
-export function defaultSlashEntries(skillRegistry: SkillRegistry): SlashEntry[] {
-  return slashEntries(BUILTIN_SLASH_COMMANDS, skillRegistry)
+export function defaultSlashEntries(
+  skillRegistry: SkillRegistry,
+  mcp?: Parameters<typeof mcpPromptEntries>[0],
+  mcpState?: Parameters<typeof mcpPromptEntries>[1],
+): SlashEntry[] {
+  return slashEntries(
+    BUILTIN_SLASH_COMMANDS,
+    skillRegistry,
+    mcp ? mcpPromptEntries(mcp, mcpState) : [],
+  )
 }

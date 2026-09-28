@@ -1,7 +1,7 @@
 ---
 phase: 5
 title: "Prompts and resources"
-status: pending
+status: completed
 priority: P2
 effort: "7h"
 dependencies: [2, 4]

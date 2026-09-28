@@ -28,7 +28,7 @@ function resolveSkillRef(registry: SkillRegistry, id: string): SkillRef | null {
 }
 
 function descriptorFor(toolRegistry: ToolRegistry, name: string): ToolGateDescriptor {
-  const kind = toolRegistry.userToolKind(name)
+  const kind = toolRegistry.toolKind(name)
   return kind ? { name, kind } : { name }
 }
 

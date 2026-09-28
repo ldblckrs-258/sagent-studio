@@ -4,6 +4,7 @@ import { useSession } from '../../session/session-context'
 import type { ApprovalDecision } from '../../vault/settings'
 import { useVaultStore } from '../../vault/store'
 import { Row } from '../primitives'
+import { useRegistryVersion } from '../use-registry-version'
 
 interface GatedEntry {
   name: string
@@ -22,10 +23,12 @@ export function ApprovalsPanel() {
   const builtins: GatedEntry[] = session
     .builtinProviders()
     .map((entry) => ({ name: entry.name, kind: 'builtin' as const }))
+  useRegistryVersion(session.toolRegistry)
   const userTools: GatedEntry[] = session.toolRegistry
     .list()
     .map((definition) => ({ name: definition.name, kind: definition.kind }))
-  const gated = [...builtins, ...userTools].filter((tool) => isGatedTool(tool))
+  const externalTools: GatedEntry[] = session.toolRegistry.listExternal()
+  const gated = [...builtins, ...userTools, ...externalTools].filter((tool) => isGatedTool(tool))
 
   const setDecision = (name: string, decision: ApprovalDecision) => {
     void update({ approvals: { tools: { [name]: decision } } })

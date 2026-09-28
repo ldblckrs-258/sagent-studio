@@ -38,6 +38,7 @@ import { decisionFor } from "../tools/approval";
 import type { ToolGateDescriptor } from "../tools/approval";
 import type {
   AgentSpawnPort,
+  McpResourcePort,
   MemoryPort,
   SandboxControlPort,
   SkillLoadPort,
@@ -93,6 +94,7 @@ export interface PipelineDeps {
   skillRegistry: SkillRegistry;
   toolRegistry: ToolRegistry;
   rag?: RagPort;
+  mcp?: McpResourcePort;
   workspace?: WorkspaceApi;
   codeRunner?: CodeRunner;
   sandbox?: SandboxControlPort;
@@ -453,6 +455,7 @@ export async function buildRunStream(
     .catch(() => undefined);
   const ports = {
     rag: deps.rag,
+    mcp: deps.mcp,
     workspace: deps.workspace,
     codeRunner: deps.codeRunner,
     sandbox: deps.sandbox,
@@ -498,7 +501,7 @@ export async function buildRunStream(
   );
 
   const gateTools: ToolGateDescriptor[] = Object.keys(toolSet).map((name) => {
-    const kind = deps.toolRegistry.userToolKind(name);
+    const kind = deps.toolRegistry.toolKind(name);
     return kind ? { name, kind } : { name };
   });
   const toolApproval = createToolApproval(mode, settings.approvals, gateTools);

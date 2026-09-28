@@ -1,10 +1,12 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import '@fontsource-variable/archivo'
+import '@fontsource-variable/archivo/wght-italic.css'
 import '@fontsource-variable/jetbrains-mono'
 import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from './vault/ErrorBoundary'
+import { handleMcpOAuthCallback } from './mcp/oauth-callback'
 import { useVaultStore } from './vault/store'
 
 window.addEventListener('unhandledrejection', (event) => {
@@ -30,10 +32,14 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 })
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </StrictMode>,
-)
+if (handleMcpOAuthCallback(window)) {
+  document.getElementById('root')!.textContent = 'Sign-in finished. You can close this window.'
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </StrictMode>,
+  )
+}
