@@ -20,6 +20,7 @@ import { createRagToolProvider } from './rag'
 import { createSandboxControlProvider } from './sandbox-control'
 import { createSkillManagementProvider } from './skill-management'
 import { createSkillToolProvider } from './skills'
+import { createTerminalToolProvider } from './terminal'
 import { createToolManagementProvider } from './tool-management'
 import { workspaceToolProvider } from './workspace'
 import { TOOL_GUIDE_TOPICS, createToolGuideProvider, toolGuideHint } from './tool-guide'
@@ -60,6 +61,7 @@ const COVERED_BY_PROVIDERS = new Set(
     createAgentsToolProvider(),
     createMemoryToolProvider(),
     createMcpResourceToolProvider(),
+    createTerminalToolProvider(),
   ].flatMap((provider) => [...provider.names]),
 )
 

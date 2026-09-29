@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  COMMAND_TOOLS,
   decisionFor,
   isGatedTool,
   isWithinCeiling,
@@ -131,6 +132,8 @@ describe('modeCeiling and resolveApprovalStatus', () => {
         'recall_memory',
         'list_mcp_resources',
         'read_mcp_resource',
+        'terminal_read',
+        'terminal_list',
       ].sort(),
     )
     expect((ceiling as ReadonlySet<string>).has('create_skill')).toBe(false)
@@ -262,5 +265,35 @@ describe('MCP tools and the approval gate', () => {
     expect(resolveApprovalStatus('read_only', { tools: { [mcp.name]: 'allow' } }, mcp)).toBe(
       'user-approval',
     )
+  })
+})
+
+describe('terminal tools', () => {
+  const commandTools = ['run_command', 'terminal_start', 'terminal_write']
+
+  it('marks the three command tools for per-call classification', () => {
+    expect([...COMMAND_TOOLS].sort()).toEqual([...commandTools].sort())
+  })
+
+  it('lets read-only list and read sessions but not start, write or kill them', () => {
+    expect(resolveApprovalStatus('read_only', undefined, 'terminal_read')).toBe('approved')
+    expect(resolveApprovalStatus('read_only', undefined, 'terminal_list')).toBe('approved')
+    for (const name of [...commandTools, 'terminal_kill']) {
+      expect(resolveApprovalStatus('read_only', undefined, name)).toBe('user-approval')
+    }
+  })
+
+  it('grants every terminal tool in editing, so editing sub-agents receive them in their pool', () => {
+    const ceiling = modeCeiling('editing') as ReadonlySet<string>
+    for (const name of [...commandTools, 'terminal_kill', 'terminal_read', 'terminal_list']) {
+      expect(ceiling.has(name)).toBe(true)
+      expect(resolveApprovalStatus('editing', undefined, name)).toBe('approved')
+    }
+  })
+
+  it('gates the four mutating terminal tools so a saved Ask or Deny applies', () => {
+    for (const name of [...commandTools, 'terminal_kill']) expect(isGatedTool(name)).toBe(true)
+    expect(resolveApprovalStatus('god', { tools: { run_command: 'deny' } }, 'run_command')).toBe('denied')
+    expect(resolveApprovalStatus('editing', { tools: { terminal_kill: 'ask' } }, 'terminal_kill')).toBe('user-approval')
   })
 })

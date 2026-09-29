@@ -44,7 +44,7 @@ function cspPlugin(): Plugin {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self'",
-    "connect-src 'self' https: http://localhost:* http://127.0.0.1:*",
+    "connect-src 'self' https: http://localhost:* http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*",
     "base-uri 'none'",
     "form-action 'self'",
     "object-src 'none'",
@@ -71,6 +71,16 @@ function cspPlugin(): Plugin {
  */
 const TYPESAFE_PROXY_TARGET = "https://api.typesafe.ai";
 
+const BRIDGE_DIR = fileURLToPath(
+  new URL("./packages/sagent-bridge", import.meta.url),
+);
+const BRIDGE_PROTOCOL = `${BRIDGE_DIR}/src/protocol.ts`;
+
+function isIgnoredBridgePath(path: string): boolean {
+  if (!path.startsWith(`${BRIDGE_DIR}/`)) return false;
+  return path !== BRIDGE_PROTOCOL && !BRIDGE_PROTOCOL.startsWith(`${path}/`);
+}
+
 const typesafeProxy = {
   "/typesafe": {
     target: TYPESAFE_PROXY_TARGET,
@@ -89,7 +99,7 @@ export default defineConfig({
   ],
   server: {
     watch: {
-      ignored: ["**/plans/**"],
+      ignored: ["**/plans/**", isIgnoredBridgePath],
     },
     proxy: typesafeProxy,
   },
@@ -102,6 +112,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "sagent-bridge/protocol": BRIDGE_PROTOCOL,
     },
   },
 });

@@ -11,6 +11,7 @@ import {
   migrate,
   SETTINGS_VERSION,
   validateContextSettings,
+  validateTerminalSettings,
 } from './settings'
 import { VaultMigrationError } from './errors'
 
@@ -340,5 +341,35 @@ describe('agent settings', () => {
     expect(
       migrate(SETTINGS_VERSION, { agents: { autoContinue: 'yes', maxAutoContinues: 99 } }).agents,
     ).toEqual({ autoContinue: false, maxAutoContinues: 3 })
+  })
+})
+
+describe('terminal pairing', () => {
+  const token = 'tok_0123456789abcdef'
+
+  it('round-trips a valid loopback pairing through migrate', () => {
+    const terminal = { url: 'ws://127.0.0.1:7717', token }
+    expect(migrate(SETTINGS_VERSION, { terminal }).terminal).toEqual(terminal)
+  })
+
+  it('is absent by default, so an unpaired vault never tries to connect', () => {
+    expect(defaultSettings().terminal).toBeUndefined()
+    expect(migrate(SETTINGS_VERSION, {}).terminal).toBeUndefined()
+  })
+
+  it('drops a pairing that points off the loopback interface, since the token would go to another host', () => {
+    expect(validateTerminalSettings({ url: 'ws://evil.com:7717', token })).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'wss://127.0.0.1:7717', token })).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'http://127.0.0.1:7717', token })).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'ws://user:pw@127.0.0.1:7717', token })).toBeUndefined()
+    expect(migrate(SETTINGS_VERSION, { terminal: { url: 'ws://10.0.0.2:7717', token } }).terminal).toBeUndefined()
+  })
+
+  it('drops invalid shapes and tokens that cannot travel as a subprotocol', () => {
+    expect(validateTerminalSettings('ws://127.0.0.1:7717')).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'ws://127.0.0.1:7717' })).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'ws://127.0.0.1:7717', token: 'a,b' })).toBeUndefined()
+    expect(validateTerminalSettings({ url: 'ws://localhost:7717', token })).toEqual({ url: 'ws://localhost:7717', token })
+    expect(validateTerminalSettings({ url: 'ws://[::1]:7717', token })).toEqual({ url: 'ws://[::1]:7717', token })
   })
 })

@@ -20,7 +20,7 @@ import {
   WrongPasswordError,
 } from './errors'
 import { defaultSettings, deepMerge, migrate, SETTINGS_VERSION } from './settings'
-import type { DeepPartial, Settings } from './settings'
+import type { DeepPartial, Settings, TerminalSettings } from './settings'
 import type { KdfParams } from './types'
 import { vaultWriteQueue } from './write-queue'
 import * as keyring from './keyring'
@@ -42,6 +42,7 @@ export interface VaultState {
   lock(): Promise<void>
   update(patch: DeepPartial<Settings>): Promise<void>
   forgetApprovals(names: readonly string[]): Promise<void>
+  setTerminal(terminal: TerminalSettings | null): Promise<void>
   recover(): Promise<void>
   clearError(): void
   /** Requests persistent storage from the browser and records the outcome. */
@@ -330,6 +331,21 @@ export const useVaultStore = create<VaultState>((set, get) => ({
       const tools = { ...(latest.approvals?.tools ?? {}) }
       for (const name of names) delete tools[name]
       const next = { ...latest, approvals: { ...latest.approvals, tools } }
+      await persistSettings(currentKey, next)
+      if (keyring.getKey() === currentKey) set({ settings: next })
+    })
+  },
+
+  async setTerminal(terminal) {
+    const currentKey = keyring.getKey()
+    if (!currentKey) throw new VaultLockedError()
+    await vaultWriteQueue.enqueue(async () => {
+      if (keyring.getKey() !== currentKey) throw new VaultLockedError()
+      const latest = get().settings
+      if (!latest) throw new VaultLockedError()
+      const next: Settings = { ...latest }
+      if (terminal) next.terminal = terminal
+      else delete next.terminal
       await persistSettings(currentKey, next)
       if (keyring.getKey() === currentKey) set({ settings: next })
     })

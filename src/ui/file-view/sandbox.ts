@@ -17,3 +17,7 @@ export const PREVIEW_SANDBOX =
  * `srcdoc` document inherits the parent policy but cannot be given a distinct one.
  */
 export const ARTIFACT_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals'
+
+export function workspacePreviewSandbox(bridgePaired: boolean): string {
+  return bridgePaired ? ARTIFACT_PREVIEW_SANDBOX : PREVIEW_SANDBOX
+}

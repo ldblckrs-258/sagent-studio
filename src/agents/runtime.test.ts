@@ -14,6 +14,7 @@ import type { AgentRunPersistence, AgentRunSnapshot } from './runtime'
 import { AgentRunStore } from './store'
 import type { AgentRunRecord } from './store'
 import type { AgentParentContext } from './types'
+import { createFakePort } from '../terminal/test-utils/fake-port'
 
 type Chunk =
   | { type: 'stream-start'; warnings: never[] }
@@ -121,7 +122,11 @@ function context(parentThreadId = 'parent-1'): AgentParentContext {
   }
 }
 
-function build(model: MockLanguageModelV4, persistence?: AgentRunPersistence) {
+function build(
+  model: MockLanguageModelV4,
+  persistence?: AgentRunPersistence,
+  portsFor: (context: AgentParentContext, runId?: string) => ToolRuntimePorts = () => ({}) as ToolRuntimePorts,
+) {
   const store = new AgentRunStore()
   const toolRegistry = new ToolRegistry()
   toolRegistry.registerProvider(recorderProvider())
@@ -132,7 +137,7 @@ function build(model: MockLanguageModelV4, persistence?: AgentRunPersistence) {
     toolRegistry,
     store,
     modelFactory: () => model as unknown as LanguageModel,
-    portsFor: () => ({}) as ToolRuntimePorts,
+    portsFor,
     onSettle,
     ...(persistence ? { persistence } : {}),
   })
@@ -349,6 +354,29 @@ describe('createAgentRuntime', () => {
     expect(settled.status).toBe('stopped')
     expect(settled.stopReason).toBe('user_stop')
     await vi.waitFor(() => expect(onSettle).toHaveBeenCalledTimes(1))
+    runtime.dispose()
+  })
+
+  it('kills the terminal sessions a stopped run started, so no process outlives its owner', async () => {
+    const killed: unknown[] = []
+    const port = createFakePort()
+    port.killOwned = async (filter) => {
+      killed.push(filter)
+      return []
+    }
+    const { runtime, store } = build(pendingModel(), undefined, (ctx, runId) => ({
+      terminal: { port, threadId: ctx.parentThreadId, ...(runId !== undefined ? { runId } : {}) },
+    }))
+    const outcome = await runtime.spawn(context('thread-a'), {
+      prompt: 'go',
+      mode: 'editing',
+      tier: 'medium',
+      background: true,
+    })
+    if (outcome.status !== 'running') throw new Error('expected a running outcome')
+    runtime.stop('thread-a', outcome.runId)
+    await waitForStatus(store, outcome.runId)
+    await vi.waitFor(() => expect(killed).toEqual([{ runId: outcome.runId }]))
     runtime.dispose()
   })
 

@@ -9,6 +9,7 @@ import { createMemoryToolProvider } from '../tools/builtin/memory'
 import type { SkillStore } from '../skills/registry'
 import { ToolRegistry } from '../tools/registry'
 import type { ToolProvider, ToolRuntimePorts } from '../tools/types'
+import { createFakePort } from '../terminal/test-utils/fake-port'
 import { defaultSettings } from '../vault/settings'
 import { createApprovalQueue } from './approval-queue'
 import { runAgent } from './runner'
@@ -829,5 +830,84 @@ describe('runAgent', () => {
       expect(model.doGenerateCalls).toHaveLength(0)
       expect('structured' in result).toBe(false)
     })
+  })
+})
+
+describe('runAgent terminal commands', () => {
+  const commandProvider = (executed: string[]): ToolProvider => ({
+    names: ['run_command'],
+    isAvailable: () => true,
+    create: (name) =>
+      tool({
+        description: name,
+        inputSchema: jsonSchema({ type: 'object' }),
+        execute: async (args) => {
+          executed.push((args as { command: string }).command)
+          return 'ran'
+        },
+      }),
+  })
+
+  function commandDeps(model: MockLanguageModelV4, executed: string[], withBridge = true) {
+    const built = buildDeps(model, [])
+    built.deps.toolRegistry.registerProvider(commandProvider(executed))
+    const port = createFakePort({
+      classify: (command) =>
+        command.startsWith('rm')
+          ? { sensitive: true, reasons: ['recursive delete'], commands: ['rm'] }
+          : { sensitive: false, reasons: [], commands: [] },
+    })
+    if (withBridge) built.deps.ports = { terminal: { port, threadId: 'th1', runId: 'run-1' } }
+    return built
+  }
+
+  const commandInput = (): AgentRunInput => ({
+    ...input(),
+    parent: { ...parent(), toolNames: [...TOOL_NAMES, 'run_command'] },
+  })
+
+  it('queues a sensitive sub-agent command with its reason, and a denial runs nothing', async () => {
+    const executed: string[] = []
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'run_command', { command: 'rm -rf dist' })) },
+        { stream: streamOf(textStep('t2', 'ok')) },
+      ],
+    })
+    const { controller, deps, queue } = commandDeps(model, executed)
+    const run = runAgent(commandInput(), deps, controller.signal, () => {})
+    await waitFor(() => queue.pending().length > 0)
+    expect(queue.pending()[0]).toMatchObject({ toolName: 'run_command', reason: 'Sensitive: recursive delete' })
+    queue.resolve(queue.pending()[0].id, false)
+    await run
+    expect(executed).toEqual([])
+  })
+
+  it('runs a safe command in an editing sub-agent without asking', async () => {
+    const executed: string[] = []
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'run_command', { command: 'git --version' })) },
+        { stream: streamOf(textStep('t2', 'ok')) },
+      ],
+    })
+    const { controller, deps, queue } = commandDeps(model, executed)
+    await runAgent(commandInput(), deps, controller.signal, () => {})
+    expect(queue.pending()).toHaveLength(0)
+    expect(executed).toEqual(['git --version'])
+  })
+
+  it('denies commands when the sub-agent has no bridge scope', async () => {
+    const executed: string[] = []
+    const model = new MockLanguageModelV4({
+      doStream: [
+        { stream: streamOf(toolStep('c1', 'run_command', { command: 'ls' })) },
+        { stream: streamOf(textStep('t2', 'ok')) },
+      ],
+    })
+    const { controller, deps, queue } = commandDeps(model, executed, false)
+    await runAgent(commandInput(), deps, controller.signal, () => {})
+    expect(queue.pending()).toHaveLength(0)
+    expect(executed).toEqual([])
   })
 })

@@ -4,7 +4,10 @@ import { ChevronRight, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { pluralize } from "../components/assistant-ui/elements/tool-view/helpers";
 import { ToolDiff } from "../components/assistant-ui/elements/tool-view/primitives";
+import { agentRunStore } from "../agents/store";
 import { useSession } from "../session/session-context";
+import { commandsInMessages } from "../terminal/transcript";
+import { CommandsNotice } from "./message-rewind";
 import type { RunFileChange } from "../workspace/journal";
 import type { RunRevertOutcome } from "../workspace/run-journal";
 import { Button } from "./primitives";
@@ -67,6 +70,10 @@ export function RunChanges({ runId, status }: { runId: string; status: string })
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const running = status === "running";
+  const commands = commandsInMessages(agentRunStore.get(runId)?.messages ?? []);
+  const liveSessions = session.terminal
+    .sessions()
+    .filter((entry) => entry.owner.runId === runId && entry.running).length;
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +96,7 @@ export function RunChanges({ runId, status }: { runId: string; status: string })
     setReverting(true);
     setError(null);
     try {
+      if (liveSessions > 0) await session.terminal.killOwned({ runId });
       const result = await session.revertAgentRun(runId);
       if ("error" in result) setError(result.error);
       else setOutcome(result);
@@ -99,9 +107,11 @@ export function RunChanges({ runId, status }: { runId: string; status: string })
       setConfirming(false);
       setVersion((current) => current + 1);
     }
-  }, [session, runId]);
+  }, [session, runId, liveSessions]);
 
-  if (changes.length === 0 && !expired && outcome === null && error === null) return null;
+  if (changes.length === 0 && commands.length === 0 && !expired && outcome === null && error === null) {
+    return null;
+  }
 
   return (
     <section
@@ -113,7 +123,10 @@ export function RunChanges({ runId, status }: { runId: string; status: string })
         <span className="label-micro flex-1">{pluralize(changes.length, "file")} changed</span>
         {confirming ? (
           <>
-            <span className="text-ink text-xs">Revert {pluralize(changes.length, "file")}?</span>
+            <span className="text-ink text-xs">
+              Revert {pluralize(changes.length, "file")}
+              {liveSessions > 0 ? ` and stop ${pluralize(liveSessions, "running command")}` : ""}?
+            </span>
             <Button size="sm" variant="quiet" onClick={() => setConfirming(false)} disabled={reverting}>
               Cancel
             </Button>
@@ -141,6 +154,7 @@ export function RunChanges({ runId, status }: { runId: string; status: string })
           ))}
         </div>
       ) : null}
+      <CommandsNotice commands={commands} />
       {expired ? (
         <p className="text-caution text-xs">
           Part of this run's history is older than the journal keeps, so it can no longer be reverted safely.

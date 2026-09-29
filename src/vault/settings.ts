@@ -178,6 +178,11 @@ export const DEFAULT_SANDBOX_JS_TIMEOUT_MS = 10_000;
 export const DEFAULT_SANDBOX_PY_TIMEOUT_MS = 30_000;
 export const DEFAULT_SANDBOX_IDLE_TIMEOUT_MS = 300_000;
 
+export interface TerminalSettings {
+  url: string;
+  token: string;
+}
+
 export interface Settings {
   version: number;
   providers: ProviderConfig[];
@@ -202,6 +207,7 @@ export interface Settings {
    */
   skills?: { enabled?: PersistedSkillRef[] };
   agents?: AgentSettings;
+  terminal?: TerminalSettings;
 }
 
 export const MAX_PROVIDERS = 20;
@@ -274,6 +280,39 @@ export function validateContextSettings(value: unknown): ContextSettings {
     throw new VaultMigrationError("autoCompactEnabled must be a boolean.");
   }
   return { maxContextTokens, autoCompactRatio, autoCompactEnabled };
+}
+
+const TERMINAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const TERMINAL_TOKEN = /^[A-Za-z0-9_-]{16,256}$/;
+
+export function isTerminalBridgeUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "ws:" &&
+    TERMINAL_HOSTS.has(url.hostname) &&
+    url.username === "" &&
+    url.password === "" &&
+    (url.pathname === "/" || url.pathname === "") &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
+
+export function isTerminalToken(value: string): boolean {
+  return TERMINAL_TOKEN.test(value);
+}
+
+export function validateTerminalSettings(value: unknown): TerminalSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const { url, token } = value;
+  if (typeof url !== "string" || typeof token !== "string") return undefined;
+  if (!isTerminalBridgeUrl(url) || !isTerminalToken(token)) return undefined;
+  return { url, token };
 }
 
 type PlainObject = Record<string, unknown>;
@@ -475,6 +514,7 @@ export function migrate(version: number, data: unknown): Settings {
     modelTiers: rawModelTiers,
     lastModel: rawLastModel,
     agents: rawAgents,
+    terminal: rawTerminal,
     ...rest
   } = merged as typeof merged & {
     subModel?: unknown;
@@ -489,6 +529,7 @@ export function migrate(version: number, data: unknown): Settings {
   }
   const lastModel = normalizeLastModel(rawLastModel);
   const agents = normalizeAgentSettings(rawAgents);
+  const terminal = validateTerminalSettings(rawTerminal);
   return {
     ...rest,
     providers: normalizeProviders(merged.providers),
@@ -496,5 +537,6 @@ export function migrate(version: number, data: unknown): Settings {
     ...(tiers ? { modelTiers: tiers } : {}),
     ...(lastModel ? { lastModel } : {}),
     ...(agents ? { agents } : {}),
+    ...(terminal ? { terminal } : {}),
   };
 }

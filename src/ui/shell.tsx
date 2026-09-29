@@ -14,6 +14,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  SquareTerminal,
   Wrench,
   X,
 } from "lucide-react";
@@ -24,7 +25,7 @@ import type {
   ReactNode,
   RefObject,
 } from "react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { agentRunStore } from "../agents/store";
 import { listThreadSummaries } from "../chat/persistence";
 import { rehydrateThread } from "../chat/sanitize";
@@ -56,6 +57,8 @@ import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from "./resize";
 import { ResizeHandle } from "./resize-handle";
 import { useRegistryVersion } from "./use-registry-version";
 
+const TerminalPanel = lazy(() => import("./panels/terminal"));
+
 export type RailPanelId =
   | "config"
   | "workspace"
@@ -67,7 +70,8 @@ export type RailPanelId =
   | "mcp"
   | "sandbox"
   | "agents"
-  | "approvals";
+  | "approvals"
+  | "terminal";
 
 const RAIL_IDS: readonly RailPanelId[] = [
   "config",
@@ -81,6 +85,7 @@ const RAIL_IDS: readonly RailPanelId[] = [
   "sandbox",
   "agents",
   "approvals",
+  "terminal",
 ];
 
 interface RailPanelState {
@@ -408,6 +413,16 @@ export function Shell({ left }: { left?: ReactNode }) {
       label: "Approvals",
       icon: ShieldCheck,
       render: () => <ApprovalsPanel />,
+    },
+    {
+      id: "terminal",
+      label: "Terminal",
+      icon: SquareTerminal,
+      render: () => (
+        <Suspense fallback={<p className="p-2 text-xs text-faint">Loading…</p>}>
+          <TerminalPanel />
+        </Suspense>
+      ),
     },
   ];
   const active =

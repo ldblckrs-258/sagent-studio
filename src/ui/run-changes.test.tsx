@@ -8,6 +8,10 @@ import type { RunFileChange } from "../workspace/journal";
 const session = vi.hoisted(() => ({
   agentRunChanges: vi.fn(async (): Promise<{ changes: RunFileChange[]; expired: boolean }> => ({ changes: [], expired: false })),
   revertAgentRun: vi.fn(async (): Promise<unknown> => ({ reverted: [], conflicts: [], unrestorable: [] })),
+  terminal: {
+    sessions: vi.fn((): { owner: { runId?: string }; running: boolean }[] => []),
+    killOwned: vi.fn(async (): Promise<string[]> => []),
+  },
 }));
 
 vi.mock("../session/session-context", () => ({
@@ -67,6 +71,8 @@ function button(container: HTMLElement, text: string): HTMLButtonElement | undef
 beforeEach(() => {
   session.agentRunChanges.mockResolvedValue({ changes, expired: false });
   session.revertAgentRun.mockClear();
+  session.terminal.sessions.mockReturnValue([]);
+  session.terminal.killOwned.mockClear();
 });
 
 afterEach(() => {
@@ -74,6 +80,25 @@ afterEach(() => {
 });
 
 describe("RunChanges", () => {
+  it("stops the run's live commands before reverting its files", async () => {
+    session.revertAgentRun.mockResolvedValue({ reverted: ["src/a.ts"], conflicts: [], unrestorable: [] });
+    session.terminal.sessions.mockReturnValue([{ owner: { runId: "run-1" }, running: true }]);
+    const view = await mount(<RunChanges runId="run-1" status="completed" />);
+    await act(async () => {
+      button(view.container, "Revert this run")?.click();
+    });
+    expect(view.container.textContent).toContain("and stop 1 running command");
+    await act(async () => {
+      button(view.container, "Confirm")?.click();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(session.terminal.killOwned).toHaveBeenCalledWith({ runId: "run-1" });
+    expect(session.revertAgentRun).toHaveBeenCalledWith("run-1");
+    view.unmount();
+  });
+
   it("lists each changed file with its line counts and diff", async () => {
     const view = await mount(<RunChanges runId="run-1" status="completed" />);
 

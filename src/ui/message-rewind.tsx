@@ -18,6 +18,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { useSession } from "../session/session-context";
+import { commandsFromMessage } from "../terminal/transcript";
 import { Button } from "./primitives";
 import { useRegistryVersion } from "./use-registry-version";
 
@@ -106,6 +107,25 @@ function PathList({
   );
 }
 
+export function CommandsNotice({ commands }: { commands: string[] }) {
+  if (commands.length === 0) return null;
+  return (
+    <div data-slot="commands-not-undone" className="flex flex-col gap-1">
+      <p className="text-caution text-xs">
+        Commands are not undone. This span ran{" "}
+        {pluralize(commands.length, "command")}:
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {commands.map((command, index) => (
+          <li key={index} className="text-muted truncate font-mono text-xs">
+            {command}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function FilesSummary({ preview }: { preview: RewindPreview }) {
   if (preview.files !== "ok") {
     return (
@@ -163,6 +183,10 @@ export function RewindDialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useThreadBusy(threadId);
+  const messages = useChatStore((s) =>
+    threadId === null ? undefined : s.threads[threadId]?.messages,
+  );
+  const commands = messages ? commandsFromMessage(messages, messageId) : [];
 
   useEffect(() => {
     if (threadId === null) return;
@@ -229,6 +253,7 @@ export function RewindDialog({ onClose }: { onClose: () => void }) {
           </DialogDescription>
         </DialogHeader>
         {preview ? <FilesSummary preview={preview} /> : null}
+        {preview ? <CommandsNotice commands={commands} /> : null}
         {preview && draft.trim().length > 0 ? (
           <p className="text-caution text-xs">
             The draft in the composer will be replaced by this message's text.

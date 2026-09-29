@@ -27,4 +27,21 @@ describe("AgentApprovalCard", () => {
     expect(markup).not.toContain("supersecret");
     expect(markup).not.toContain("abc123");
   });
+
+  it("shows the command and why it needs approval", () => {
+    const markup = renderToStaticMarkup(
+      <AgentApprovalCard
+        approval={{
+          id: "ap2",
+          runId: "run-1",
+          toolName: "run_command",
+          input: { command: "rm -rf dist" },
+          reason: "Sensitive: recursive delete",
+          createdAt: 1,
+        }}
+      />,
+    );
+    expect(markup).toContain("$ rm -rf dist");
+    expect(markup).toContain("Sensitive: recursive delete");
+  });
 });

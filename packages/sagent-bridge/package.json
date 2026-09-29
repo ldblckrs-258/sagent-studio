@@ -1,0 +1,47 @@
+{
+  "name": "sagent-bridge",
+  "version": "0.1.0",
+  "description": "Local terminal bridge for sagent-studio: runs shell sessions for the browser app over an authenticated loopback WebSocket.",
+  "license": "MIT",
+  "author": "Le Duc Bao",
+  "type": "module",
+  "bin": {
+    "sagent-bridge": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./protocol": "./dist/protocol.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "npm-shrinkwrap.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "strip-ansi": "7.2.0",
+    "web-tree-sitter": "0.25.10",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "@types/ws": "8.18.1",
+    "tree-sitter-bash": "0.25.1",
+    "tsup": "8.5.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

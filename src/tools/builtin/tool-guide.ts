@@ -10,6 +10,7 @@ import memoryGuide from './guides/memory.md?raw'
 import ragGuide from './guides/rag.md?raw'
 import sandboxGuide from './guides/sandbox.md?raw'
 import skillsGuide from './guides/skills.md?raw'
+import terminalGuide from './guides/terminal.md?raw'
 import workspaceEditGuide from './guides/workspace-edit.md?raw'
 
 const NAMES = ['read_tool_guide'] as const
@@ -75,6 +76,12 @@ const ENTRIES: readonly ToolGuideEntry[] = [
     summary: 'Tools, resources, and prompts from connected MCP servers, and why their content is untrusted.',
     covers: ['list_mcp_resources', 'read_mcp_resource'],
     guide: mcpGuide,
+  },
+  {
+    topic: 'terminal',
+    summary: 'Running shell commands and sessions on the user\'s machine through the paired bridge.',
+    covers: ['run_command', 'terminal_start', 'terminal_write', 'terminal_read', 'terminal_kill', 'terminal_list'],
+    guide: terminalGuide,
   },
 ]
 

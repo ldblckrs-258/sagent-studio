@@ -29,6 +29,7 @@ const session = vi.hoisted(() => ({
   steerAgentRun: vi.fn(() => true),
   stopAgentRun: vi.fn(() => true),
   continueAgentRun: vi.fn(async () => ({ status: "running", runId: "run-1" }) as { status: string; runId?: string; message?: string }),
+  terminal: { sessions: () => [], killOwned: async () => [] },
 }));
 
 vi.mock("../session/session-context", () => ({

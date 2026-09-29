@@ -61,6 +61,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         failures.push(describe(error))
       }
       if (!cancelled) void session.startMcp()
+      if (!cancelled) session.startTerminal()
       await useMemoryStore.getState().hydrate()
       const memoryError = useMemoryStore.getState().error
       if (memoryError) failures.push(memoryError)

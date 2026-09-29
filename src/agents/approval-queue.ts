@@ -11,6 +11,7 @@ export interface AgentApprovalRequest {
   runId: string
   toolName: string
   input: unknown
+  reason?: string
 }
 
 export interface PendingAgentApproval {
@@ -18,6 +19,7 @@ export interface PendingAgentApproval {
   runId: string
   toolName: string
   input: unknown
+  reason?: string
   createdAt: number
 }
 
@@ -81,7 +83,7 @@ export function createApprovalQueue(options: CreateApprovalQueueOptions): AgentA
   )
 
   return {
-    request({ runId, toolName, input }) {
+    request({ runId, toolName, input, reason }) {
       if (closed || options.signal.aborted) return Promise.resolve(false)
       const id = createId()
       const entry: PendingAgentApproval = {
@@ -89,6 +91,7 @@ export function createApprovalQueue(options: CreateApprovalQueueOptions): AgentA
         runId,
         toolName,
         input,
+        ...(reason !== undefined ? { reason } : {}),
         createdAt: Date.now(),
       }
       entries.set(id, entry)

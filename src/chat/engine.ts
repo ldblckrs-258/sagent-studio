@@ -80,6 +80,7 @@ import { contextTokensOf, outputCharsOf, turnUsageFrom } from "./usage";
 import { normalizeTitle, patchThreadMode } from "./threads";
 import { countUserMessages, generateConversationTitle, shouldGenerateTitle } from "./title";
 import { convertAgentNoticePart, isAgentNoticePart } from "./types";
+import type { TerminalPort } from "../terminal/types";
 import type {
   AgentNoticeMeta,
   AgentNoticePart,
@@ -118,6 +119,7 @@ export interface PipelineDeps {
   agentPortsFor?(context: AgentParentContext): AgentSpawnPort | undefined;
   activeAgentsFor?(threadId: string): number;
   memory?(threadId: string | undefined): Promise<MemoryPort | undefined>;
+  terminal?: TerminalPort;
 }
 
 export interface ApprovalResponse {
@@ -466,6 +468,9 @@ export async function buildRunStream(
     journal,
     ...(agents ? { agents } : {}),
     ...(memory ? { memory } : {}),
+    ...(deps.terminal && agentContext
+      ? { terminal: { port: deps.terminal, threadId: agentContext.parentThreadId } }
+      : {}),
     approvals: {
       decision: (toolName: string) => decisionFor(settings.approvals, toolName),
     },
@@ -504,7 +509,14 @@ export async function buildRunStream(
     const kind = deps.toolRegistry.toolKind(name);
     return kind ? { name, kind } : { name };
   });
-  const toolApproval = createToolApproval(mode, settings.approvals, gateTools);
+  const toolApproval = createToolApproval(
+    mode,
+    settings.approvals,
+    gateTools,
+    deps.terminal && agentContext
+      ? { port: deps.terminal, threadId: agentContext.parentThreadId }
+      : undefined,
+  );
 
   const modelFactory = deps.modelFactory ?? createLLM;
   const model = modelFactory(settings, config.providerId, config.modelId);

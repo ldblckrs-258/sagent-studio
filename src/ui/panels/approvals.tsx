@@ -1,4 +1,4 @@
-import { isGatedTool } from '../../tools/approval'
+import { COMMAND_TOOLS, isGatedTool } from '../../tools/approval'
 import type { ToolGateKind } from '../../tools/approval'
 import { useSession } from '../../session/session-context'
 import type { ApprovalDecision } from '../../vault/settings'
@@ -40,6 +40,11 @@ export function ApprovalsPanel() {
         Destructive, code-running, and network tools ask before they run. A persisted Deny blocks even
         in the god mode.
       </p>
+      {gated.some((tool) => COMMAND_TOOLS.has(tool.name)) ? (
+        <p className="px-1 pb-2 text-xs leading-relaxed text-muted">
+          Allow runs sensitive commands without asking.
+        </p>
+      ) : null}
       {gated.length === 0 ? (
         <p className="px-1 text-xs text-muted">No gated tools are registered.</p>
       ) : (

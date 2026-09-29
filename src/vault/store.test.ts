@@ -44,6 +44,19 @@ describe('vault store', () => {
     expect(useVaultStore.getState().settings?.approvals.tools).toEqual({ write_file: 'ask' })
   })
 
+  it('stores and clears the terminal pairing inside the encrypted settings', async () => {
+    await useVaultStore.getState().setup('terminal-password')
+    const terminal = { url: 'ws://127.0.0.1:7717', token: 'tok_0123456789abcdef' }
+    await useVaultStore.getState().setTerminal(terminal)
+    await useVaultStore.getState().lock()
+    await useVaultStore.getState().unlock('terminal-password')
+    expect(useVaultStore.getState().settings?.terminal).toEqual(terminal)
+    await useVaultStore.getState().setTerminal(null)
+    await useVaultStore.getState().lock()
+    await useVaultStore.getState().unlock('terminal-password')
+    expect(useVaultStore.getState().settings?.terminal).toBeUndefined()
+  })
+
   it('reports no vault before setup', async () => {
     expect(await hasVault()).toBe('none')
   })

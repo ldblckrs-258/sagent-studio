@@ -1,7 +1,20 @@
-import { isGatedTool, resolveApprovalStatus } from '../tools/approval'
+import { COMMAND_TOOLS, isGatedTool, resolveApprovalStatus } from '../tools/approval'
 import type { ApprovalStatus, ToolGateDescriptor } from '../tools/approval'
+import { commandApprovalFor, createCommandLane } from '../terminal/approval'
+import type { CommandApprovalResult } from '../terminal/approval'
+import type { TerminalPort } from '../terminal/types'
 import type { ApprovalSettings } from '../vault/settings'
 import type { ChatMode } from './types'
+
+export type CommandApprovalFunction = (
+  input: unknown,
+  options: { toolCallId: string; messages: readonly unknown[] },
+) => Promise<CommandApprovalResult>
+
+export interface CommandApprovalScope {
+  port: TerminalPort
+  threadId: string
+}
 
 /**
  * Builds the per-tool `toolApproval` map for one run. Only gated tools and the
@@ -12,10 +25,28 @@ export function createToolApproval(
   mode: ChatMode,
   settings: ApprovalSettings | undefined,
   tools: readonly ToolGateDescriptor[],
-): Record<string, ApprovalStatus> {
-  const config: Record<string, ApprovalStatus> = {}
+  command?: CommandApprovalScope,
+): Record<string, ApprovalStatus | CommandApprovalFunction> {
+  const config: Record<string, ApprovalStatus | CommandApprovalFunction> = {}
+  const lane = createCommandLane()
   for (const tool of tools) {
     if (!isGatedTool(tool) && tool.name !== 'change_mode') continue
+    if (COMMAND_TOOLS.has(tool.name)) {
+      const name = tool.name
+      config[name] = command
+        ? (input, options) =>
+            lane(options.messages.length, () =>
+              commandApprovalFor(
+                command.port,
+                { threadId: command.threadId, mode, settings },
+                name,
+                input,
+                options.toolCallId,
+              ),
+            )
+        : 'denied'
+      continue
+    }
     config[tool.name] = resolveApprovalStatus(mode, settings, tool)
   }
   return config

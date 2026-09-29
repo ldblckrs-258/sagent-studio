@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node-tests.tsbuildinfo",
+    "types": ["vite/client", "vitest/globals", "node"]
+  },
+  "include": [
+    "src/terminal/test-utils",
+    "src/terminal/**/*.test.ts",
+    "src/tools/builtin/terminal.test.ts"
+  ],
+  "exclude": []
+}

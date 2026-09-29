@@ -7,7 +7,9 @@ import { MonacoEditor } from '../monaco-editor'
 import { Button } from '../primitives'
 import { ArtifactHtmlRuntime } from './artifact-html-runtime'
 import { ViewerError, ViewerLoading, ViewerNotice } from './feedback'
-import { PREVIEW_SANDBOX } from './sandbox'
+import { peekPendingPair } from '../../terminal/pairing'
+import { useVaultStore } from '../../vault/store'
+import { PREVIEW_SANDBOX, workspacePreviewSandbox } from './sandbox'
 import { useTextDocument } from './use-text-document'
 import { ViewerModeToggle } from './viewer-mode-toggle'
 
@@ -22,6 +24,7 @@ export function HtmlView({ fs, target }: { fs: WorkspaceFs | null; target: FileT
   const authored = useFileViewStore((s) =>
     s.target?.kind === 'workspace' ? s.authored.has(s.target.path) : false,
   )
+  const bridgePaired = useVaultStore((s) => s.settings?.terminal !== undefined) || peekPendingPair() !== null
 
   if (remoteUrl !== null) {
     return (
@@ -75,9 +78,10 @@ export function HtmlView({ fs, target }: { fs: WorkspaceFs | null; target: FileT
             <ArtifactHtmlRuntime html={doc.draft} />
           ) : (
             <iframe
+              key={bridgePaired ? 'opaque' : 'same-origin'}
               title={workspacePath ?? 'HTML preview'}
               srcDoc={doc.draft}
-              sandbox={PREVIEW_SANDBOX}
+              sandbox={workspacePreviewSandbox(bridgePaired)}
               className="h-full w-full border-0 bg-white"
             />
           )

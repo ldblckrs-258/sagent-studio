@@ -461,6 +461,7 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
     }
 
     const cleanup = (): void => {
+      ports.terminal?.port.killOwned({ runId }).catch(() => undefined)
       deps.store.detachQueue(runId)
       deps.store.detachSteering(runId)
       controllers.delete(runId)

@@ -70,6 +70,9 @@ import { McpConnectionManager } from '../mcp/manager'
 import { bindMcpTools, mcpToolPrefix } from '../mcp/tool-bridge'
 import { createMcpResourcePort } from '../mcp/resource-port'
 import { createMcpResourceToolProvider } from '../tools/builtin/mcp-resources'
+import { createTerminalToolProvider } from '../tools/builtin/terminal'
+import { TerminalManager } from '../terminal/manager'
+import { restoreWorkspace, restoreWorkspaceHandle, threadHandleId } from '../workspace/handle'
 import { useFileViewStore } from './file-view-state'
 import { useWorkspaceStore } from './workspace-state'
 
@@ -118,7 +121,7 @@ export interface AppSession {
   threadStore: ThreadStore
   runnerSource: CodeRunnerSource
   engineFor(threadId: string): ChatEngine
-  disposeThread(threadId: string): void
+  disposeThread(threadId: string, options?: { deleted?: boolean }): void
   dispose(): void
   /** Aborts one delegated run by id. */
   cancelAgentRun(runId: string): void
@@ -137,6 +140,8 @@ export interface AppSession {
   mcp: McpConnectionManager
   mcpResources: McpResourcePort
   startMcp(): Promise<void>
+  terminal: TerminalManager
+  startTerminal(): void
 }
 
 export interface SessionOptions {
@@ -148,6 +153,7 @@ export interface SessionOptions {
   sandboxManager?: SandboxManager
   getSettings?: () => Settings | null
   mcpManager?: McpConnectionManager
+  terminalManager?: TerminalManager
 }
 
 function currentSandbox(): SandboxSettings {
@@ -398,6 +404,22 @@ export function createSession(options: SessionOptions = {}): AppSession {
     unbindMcpTools = bindMcpTools(mcp, toolRegistry)
     return mcp.hydrate()
   }
+  const terminal =
+    options.terminalManager ??
+    new TerminalManager({
+      getSettings,
+      saveConfig: (config) => useVaultStore.getState().setTerminal(config),
+      handleFor: async (threadId) => {
+        const stored = await restoreWorkspaceHandle(threadHandleId(threadId))
+        if (stored) return stored.handle
+        const live = useWorkspaceStore.getState()
+        if (live.boundThreadId === threadId && live.fs) return live.fs.handle
+        return (await restoreWorkspace())?.handle ?? null
+      },
+    })
+  function startTerminal(): void {
+    terminal.revive()
+  }
   const codeProvider = createCodeToolProvider(runnerSource)
 
   const sandboxControlPort = (): SandboxControlPort | undefined => {
@@ -454,6 +476,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
   const agentsProvider = createAgentsToolProvider()
   const memoryProvider = createMemoryToolProvider()
   const mcpResourceProvider = createMcpResourceToolProvider()
+  const terminalProvider = createTerminalToolProvider()
   const mcpResourcePort = createMcpResourcePort(mcp)
 
   async function memoryPortFor(threadId: string | undefined): Promise<MemoryPort | undefined> {
@@ -483,6 +506,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     toolRegistry.registerProvider(agentsProvider)
     toolRegistry.registerProvider(memoryProvider)
     toolRegistry.registerProvider(mcpResourceProvider)
+    toolRegistry.registerProvider(terminalProvider)
   }
 
   // The session-scoped agent runtime owns every detached run: caps, per-run
@@ -533,6 +557,11 @@ export function createSession(options: SessionOptions = {}): AppSession {
         skills: createSkillLoadPort(skillRegistry.resolve(skillRegistry.snapshotEnabled())),
         plan: { get: () => [], set: async () => {} },
         ...(memory ? { memory } : {}),
+        terminal: {
+          port: terminal,
+          threadId: context.parentThreadId,
+          ...(runId !== undefined ? { runId } : {}),
+        },
         ...createAdminPorts({ skillRegistry, toolRegistry }),
       }
     },
@@ -574,6 +603,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     mcp: mcpResourcePort,
     journalFor: (threadId) => workspaceJournalStore.forThread(threadId),
     memory: memoryPortFor,
+    terminal,
   }
 
   const engines = new Map<string, ChatEngine>()
@@ -587,8 +617,9 @@ export function createSession(options: SessionOptions = {}): AppSession {
     return engine
   }
 
-  function disposeThread(threadId: string): void {
+  function disposeThread(threadId: string, options: { deleted?: boolean } = {}): void {
     agentRuntime.abortThread(threadId)
+    if (options.deleted) terminal.killOwned({ threadId }).catch(() => undefined)
     const engine = engines.get(threadId)
     if (!engine) return
     engine.dispose()
@@ -615,6 +646,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
     unbindMcpTools?.()
     unbindMcpTools = null
     void mcp.dispose()
+    terminal.dispose()
   }
 
   return {
@@ -623,6 +655,8 @@ export function createSession(options: SessionOptions = {}): AppSession {
     mcp,
     mcpResources: mcpResourcePort,
     startMcp,
+    terminal,
+    startTerminal,
     agentProfiles,
     threadStore,
     runnerSource,
@@ -702,6 +736,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         ...(memoryStore.status === 'ready'
           ? { memory: bindMemoryPort({ store: memoryStore, scopeId: null, handle: null }) }
           : {}),
+        terminal: { port: terminal, threadId: '' },
         ...createAdminPorts({ skillRegistry, toolRegistry }),
       }
       return [
@@ -721,6 +756,7 @@ export function createSession(options: SessionOptions = {}): AppSession {
         agentsProvider,
         memoryProvider,
         mcpResourceProvider,
+        terminalProvider,
       ]
         .flatMap((provider) =>
           provider.names.map((name) => ({

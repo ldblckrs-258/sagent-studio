@@ -12,6 +12,12 @@ import { HtmlView } from './html-view'
 const store = vi.hoisted(() => ({
   target: { kind: 'workspace', path: 'artifacts/report.html' },
   authored: new Set<string>(),
+  terminal: undefined as { url: string; token: string } | undefined,
+}))
+
+vi.mock('../../vault/store', () => ({
+  useVaultStore: (selector: (state: unknown) => unknown) =>
+    selector({ settings: { terminal: store.terminal } }),
 }))
 
 vi.mock('../../session/file-view-state', () => ({
@@ -42,6 +48,7 @@ function render(): string {
 
 afterEach(() => {
   store.authored = new Set<string>()
+  store.terminal = undefined
 })
 
 describe('HtmlView artifact sandbox', () => {
@@ -57,5 +64,12 @@ describe('HtmlView artifact sandbox', () => {
     const html = render()
     expect(html).toContain('srcDoc')
     expect(html).toContain('allow-same-origin')
+  })
+
+  it('drops same-origin access for workspace previews while a terminal bridge is paired', () => {
+    store.terminal = { url: 'ws://127.0.0.1:7717', token: 'tok_0123456789abcdef' }
+    const html = render()
+    expect(html).toContain('srcDoc')
+    expect(html).not.toContain('allow-same-origin')
   })
 })

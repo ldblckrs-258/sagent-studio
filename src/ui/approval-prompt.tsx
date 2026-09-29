@@ -2,6 +2,7 @@
 
 import { findPendingApproval } from "@/chat/approval-pending";
 import { useChatStore } from "@/chat/store";
+import { describeCommandInput } from "@/terminal/approval";
 import { useSession } from "@/session/session-context";
 import { redactForDisplay, redactSecrets } from "@/tools/redact";
 import { Button } from "@/ui/primitives";
@@ -48,8 +49,11 @@ export function ApprovalPrompt() {
     });
   };
 
+  const command = describeCommandInput(pending.toolName, pending.input);
   const detail =
-    pending.prompt !== undefined
+    command !== null
+      ? redactSecrets(command)
+      : pending.prompt !== undefined
       ? redactSecrets(pending.prompt)
       : (() => {
           try {
@@ -93,6 +97,9 @@ export function ApprovalPrompt() {
             <pre className="border-rule bg-paper-sunk text-muted mt-2 max-h-36 overflow-auto rounded-sm border px-2.5 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap">
               {detail}
             </pre>
+            {command !== null && pending.prompt !== undefined ? (
+              <p className="text-caution mt-1.5 text-xs">{redactSecrets(pending.prompt)}</p>
+            ) : null}
           </div>
         </div>
         <div className="border-rule bg-caution-soft/40 flex flex-wrap items-center justify-end gap-2 border-t px-3 py-2">

@@ -11,7 +11,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bridge:test": "pnpm --filter sagent-bridge test",
+    "bridge:build": "pnpm --filter sagent-bridge build"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.52",
@@ -22,6 +24,9 @@
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@modelcontextprotocol/sdk": "1.30.1",
     "@typesafe-ai/sdk": "^0.6.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/xterm": "6.0.0",
     "ai": "^7.0.105",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -58,6 +63,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
     "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^10.10.0",
@@ -70,6 +76,7 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.69.0",
     "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "ws": "8.22.0"
   }
 }

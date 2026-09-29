@@ -91,6 +91,8 @@ That's it — start a conversation.
 | `pnpm test` | Run the test suite once |
 | `pnpm test:watch` | Re-run tests on change |
 | `pnpm lint` | Lint the codebase |
+| `pnpm bridge:test` | Run the `sagent-bridge` package tests |
+| `pnpm bridge:build` | Build the `sagent-bridge` package into `packages/sagent-bridge/dist/` |
 
 `dev` and `build` both run a small pre-step that copies the Pyodide runtime out of
 `node_modules` into `public/pyodide/`. That is normal.
@@ -103,9 +105,9 @@ Each conversation runs in a mode that decides how much the model may do without 
 
 | Mode | The model can… |
 | --- | --- |
-| **Read-only** | Read and search the workspace. Every change asks first. |
-| **Editing** | Make changes, with an approval prompt for anything destructive. |
-| **Full access** | Act autonomously, including writes and command execution. |
+| **Read-only** | Read and search the workspace. Every change and every terminal command asks first. |
+| **Editing** | Make changes, with an approval prompt for anything destructive. Terminal commands run unless they are sensitive. |
+| **Full access** | Act autonomously, including writes and command execution. Sensitive terminal commands still ask. |
 
 Approval prompts appear inline above the composer and can be allowed or denied — per call,
 or remembered for the session. Turn on the approval sound if you want a nudge when the
@@ -332,6 +334,93 @@ servers. The browser talks to each server directly; there is no backend in betwe
 - **Lifecycle.** Enabled servers connect in the background after unlock. Locking the vault
   closes every connection.
 
+## Running terminal commands
+
+The app itself cannot start processes. A small companion, **`sagent-bridge`**, runs on your
+machine and gives the model (and you) a real shell in your project folder. It supports macOS
+and Linux, and needs Node 20 or newer.
+
+**Set up.**
+
+1. In your project folder, run `npx sagent-bridge@0.1.0 --root .`
+2. The bridge prints a pairing link and copies it to the clipboard. Open it in your browser
+   (pass `--open` to have the bridge open it for you).
+3. Unlock the vault in that tab. The app connects on its own, and the **Terminal** rail panel
+   shows `Connected · root: <folder>`.
+
+The link carries a one-time code that works once and expires after 10 minutes. The bridge
+answers it with a redirect that puts the access token in the URL fragment, and the app
+strips the fragment from the address bar right away. The token lives only in the bridge's
+memory and is new every time the bridge starts, so **after a restart** the panel shows
+*needs pairing*: press Enter in the bridge terminal and open the new link. You can also
+pair by hand in the Terminal panel with the address and a token.
+
+The bridge only runs inside the folder you pass to `--root`, and the conversation's
+workspace folder must be that same folder. It refuses `/`, your home folder and its parents
+unless you pass `--allow-broad-root`. If you serve the app from somewhere other than
+`http://localhost:5173`, pass `--app-url <that URL>`.
+
+**The six tools.**
+
+| Tool | What it does |
+| --- | --- |
+| `run_command` | Runs one command to completion and returns its exit code and output (default timeout 120 s, max 600 s). |
+| `terminal_start` | Starts a long-running or interactive session: a dev server, a watcher, a REPL, or a shell. |
+| `terminal_write` | Types into a session: text, keys like `ctrl-c` or `up`, then Enter. |
+| `terminal_read` | Reads more output, from an offset. |
+| `terminal_kill` | Stops a session and every process it started, including background jobs. |
+| `terminal_list` | Lists the sessions this conversation started. |
+
+Model commands run in `bash` without your profile, so your aliases and shell functions do
+not apply. The model only sees and controls sessions its own conversation started. Your own
+shells in the Terminal panel are invisible to it.
+
+**When commands ask.**
+
+| Mode | Safe command | Sensitive command | Saved Deny | Saved Ask | Saved Allow |
+| --- | --- | --- | --- | --- | --- |
+| Read-only | asks | asks | blocked | asks | runs |
+| Editing | runs | asks | blocked | asks every call | runs, even when sensitive |
+| Full access | runs | asks | blocked | asks every call | runs, even when sensitive |
+
+The bridge parses each command with a bash grammar and marks it sensitive when it deletes
+recursively or by force, uses `sudo`, pipes into a shell or interpreter (`curl … | sh`), runs
+inline code (`bash -c`, `node -e`, `python -c`), force-pushes or rewrites git history,
+publishes a package, opens a remote connection, uploads files, redirects output, uses command
+substitution or variables, reads or writes outside the workspace, starts a nested shell,
+defines aliases, traps or prompt hooks, detaches from the session (`setsid`, `tmux`), or
+cannot be parsed. The prompt shows the command and the reason. In an interactive shell, each line the model submits
+is checked as a whole, so splitting `rm -r` and `f` across two writes still asks, and history
+keys (`up`), tab completion and other line-editing keys always ask. The model's shell keeps
+no command history, and a write is refused if anything else was typed into the session
+after it was checked. Anything typed into a running program other than `y`, `n`, `q` or an
+empty line also asks.
+
+If the bridge is not connected, or runs in a different folder than the conversation, every
+command is refused with *Terminal unavailable* and nothing runs.
+
+**Sub-agents** can use the terminal tools within their own mode. A sensitive command from a
+sub-agent queues an Allow/Deny card in the Agents panel. When a sub-agent stops or finishes,
+its sessions are killed. Deleting a conversation kills its sessions too.
+
+**Locking the vault** closes the connection but leaves sessions running. After you unlock,
+the app reconnects and the panel shows their output again. Stopping the bridge (Ctrl+C in its
+terminal) kills every session.
+
+**Rewinding or reverting** a conversation restores files but does not undo commands. The
+rewind and revert previews list the commands the span ran.
+
+**Troubleshooting.**
+
+- *Bridge not running* — start it with the command the panel shows.
+- *Start the bridge with --app-url …* — the bridge does not allow this page's origin.
+- *Pairing expired* — the bridge restarted. Press Enter in its terminal and open the new link.
+- *Allow local network access for this site* — Chrome blocked the connection to
+  `127.0.0.1`. Allow it in the site settings.
+- *Update the bridge* — the bridge speaks a different protocol version than the app.
+- A command is refused with *different folder* — restart the bridge with `--root` pointing at
+  the conversation's workspace folder.
+
 ## Your data and what leaves your machine
 
 sagent-studio has **no server side**. Everything below happens in your browser.
@@ -373,6 +462,19 @@ sagent-studio has **no server side**. Everything below happens in your browser.
   parsing an attacker-controlled PDF is a real attack surface. The vault key never enters
   the worker and only raw PDF bytes are posted to it, so the exposure is availability and
   egress, not key material; file size and extracted-text caps bound the work.
+- **The terminal bridge gives the model your user's shell. It is not a sandbox.** A command
+  runs with your permissions and can `cd` anywhere. The folder rule only stops the working
+  directory from leaving your project. A program that daemonizes itself (for example
+  `docker run -d` or `pm2 start`) outlives the session that started it.
+- **Classification is a prompting aid, not a boundary.** A script the model writes into the
+  workspace and then runs (`sh build.sh`, `pnpm test`) does not ask, and can do anything.
+- **A saved Allow for a terminal tool turns its prompts off,** including for sensitive
+  commands.
+- **While a bridge is paired, workspace HTML previews run without same-origin access,** so a
+  previewed page cannot reach the bridge connection. Sandbox workers cannot open sockets at
+  all.
+- **The bridge token stays on your machine.** It is stored in the encrypted vault, never
+  shown to the model, and removed from command output before the model sees it.
 - **Reachable over the network.** The app allows outbound `https:` connections because
   provider endpoints are arbitrary and configured by you. Scripts are locked down hard,
   and model-authored HTML renders in an isolated frame that cannot read app storage or the
@@ -415,9 +517,12 @@ src/
   rag/         encrypted document library, ingest, vector index, Jev gate
   workspace/   file system access, search, patching, change journal
   sandbox/     JavaScript worker and Python (Pyodide) runners
+  terminal/    bridge client, pairing, root binding, and command approval
   skills/      skill discovery and loading
   ui/          application shell, panels, composer, and file viewers
   session/     per-conversation state wiring
+packages/
+  sagent-bridge/  the local terminal bridge (published to npm)
 plans/         design documents and implementation history
 ```
 

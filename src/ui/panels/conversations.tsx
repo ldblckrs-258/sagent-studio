@@ -132,7 +132,7 @@ export function Conversations({
       setConfirmingId(null)
       await deleteConversation(id)
       useChatStore.getState().removeThread(id)
-      session.disposeThread(id)
+      session.disposeThread(id, { deleted: true })
       await refresh()
     },
     [session, refresh],

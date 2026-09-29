@@ -17,6 +17,7 @@ import { createRagToolProvider } from "@/tools/builtin/rag";
 import { createAgentsToolProvider } from "@/tools/builtin/agents";
 import { createMemoryToolProvider } from "@/tools/builtin/memory";
 import { createMcpResourceToolProvider } from "@/tools/builtin/mcp-resources";
+import { createTerminalToolProvider } from "@/tools/builtin/terminal";
 import { TOOL_VIEWS, ToolCallView, toolViewNames } from "./registry";
 import { GenericDetail, type ToolDetailProps } from "./primitives";
 import { taskAwareGroupBy, threadGroupBy } from "./grouping";
@@ -53,6 +54,7 @@ const BUILTIN_NAMES = [
   createAgentsToolProvider(),
   createMemoryToolProvider(),
   createMcpResourceToolProvider(),
+  createTerminalToolProvider(),
 ].flatMap((provider: ToolProvider) => [...provider.names]);
 
 function renderDetail(

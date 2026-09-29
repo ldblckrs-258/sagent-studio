@@ -19,6 +19,7 @@ import type { ChatMode, PlanItem } from '../chat/types'
 import type { MemoryPromptView } from '../chat/context'
 import type { Memory, MemoryDraft } from '../memory/types'
 import type { ApprovalDecision } from '../vault/settings'
+import type { TerminalScope } from '../terminal/types'
 
 export type JsonSchemaObject = Record<string, unknown>
 
@@ -337,6 +338,7 @@ export interface ToolRuntimePorts {
   agents?: AgentSpawnPort
   memory?: MemoryPort
   mcp?: McpResourcePort
+  terminal?: TerminalScope
 }
 
 export interface ToolProvider {

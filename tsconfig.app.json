@@ -10,7 +10,8 @@
 
     /* Import alias */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "sagent-bridge/protocol": ["./packages/sagent-bridge/src/protocol.ts"]
     },
 
     /* Bundler mode */
@@ -27,5 +28,10 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/terminal/test-utils",
+    "src/terminal/**/*.test.ts",
+    "src/tools/builtin/terminal.test.ts"
+  ]
 }

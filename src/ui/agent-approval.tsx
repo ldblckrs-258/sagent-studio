@@ -4,7 +4,8 @@ import { ShieldAlert } from "lucide-react";
 import { useEffect } from "react";
 import type { PendingAgentApproval } from "../agents/approval-queue";
 import { agentRunStore } from "../agents/store";
-import { redactForDisplay } from "../tools/redact";
+import { describeCommandInput } from "../terminal/approval";
+import { redactForDisplay, redactSecrets } from "../tools/redact";
 import { playApprovalChime } from "./approval-sound";
 import { Button } from "./primitives";
 
@@ -24,7 +25,9 @@ export function AgentApprovalCard({
     playApprovalChime(approval.id);
   }, [approval.id]);
 
+  const command = describeCommandInput(approval.toolName, approval.input);
   const detail = (() => {
+    if (command !== null) return redactSecrets(command);
     try {
       return JSON.stringify(redactForDisplay(approval.input ?? {}), null, 2);
     } catch {
@@ -53,6 +56,9 @@ export function AgentApprovalCard({
       <pre className="border-rule bg-paper-sunk text-muted mt-2 max-h-32 overflow-auto rounded-sm border px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
         {detail}
       </pre>
+      {approval.reason ? (
+        <p className="text-caution mt-1.5 text-[11px]">{redactSecrets(approval.reason)}</p>
+      ) : null}
       <div className="mt-2 flex items-center justify-end gap-2">
         <Button size="sm" variant="quiet" onClick={() => agentRunStore.resolveApproval(approval.id, false)}>
           Deny

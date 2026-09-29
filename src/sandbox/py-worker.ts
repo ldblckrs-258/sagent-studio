@@ -1,3 +1,4 @@
+import { lockDownNetwork } from './network-lockdown'
 import type { FromWorker, ToWorker } from './protocol'
 
 interface WorkerCtx {
@@ -16,6 +17,8 @@ interface PyodideLike {
 }
 
 const ctx = self as unknown as WorkerCtx
+
+lockDownNetwork()
 
 let port: MessagePort | null = null
 let pyodidePromise: Promise<PyodideLike> | null = null

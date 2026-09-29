@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { createFakePort } from '../terminal/test-utils/fake-port'
 import { createToolApproval } from './approval'
 
 describe('createToolApproval', () => {
@@ -63,6 +64,32 @@ describe('createToolApproval', () => {
     expect(createToolApproval('god', { tools: {} }, tools)).toEqual({
       create_skill: 'approved',
       delete_tool: 'approved',
+    })
+  })
+})
+
+describe('createToolApproval for command tools', () => {
+  const tools = [{ name: 'run_command' }, { name: 'terminal_kill' }, { name: 'write_file' }]
+
+  it('emits a per-call function only for command tools, so the command itself decides', () => {
+    const port = createFakePort()
+    const config = createToolApproval('editing', { tools: {} }, tools, { port, threadId: 't1' })
+    expect(typeof config.run_command).toBe('function')
+    expect(config.terminal_kill).toBe('approved')
+    expect(config.write_file).toBe('approved')
+  })
+
+  it('denies command tools outright when no bridge scope is available', () => {
+    expect(createToolApproval('god', { tools: {} }, tools).run_command).toBe('denied')
+  })
+
+  it('the emitted function consults the bridge classifier', async () => {
+    const port = createFakePort({ classify: () => ({ sensitive: true, reasons: ['recursive delete'], commands: ['rm'] }) })
+    const config = createToolApproval('god', { tools: {} }, tools, { port, threadId: 't1' })
+    const decide = config.run_command as (input: unknown, options: { toolCallId: string; messages: unknown[] }) => Promise<unknown>
+    expect(await decide({ command: 'rm -rf x' }, { toolCallId: 'c1', messages: [] })).toEqual({
+      type: 'user-approval',
+      reason: 'Sensitive: recursive delete',
     })
   })
 })

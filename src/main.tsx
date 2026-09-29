@@ -8,6 +8,7 @@ import App from './App.tsx'
 import { ErrorBoundary } from './vault/ErrorBoundary'
 import { handleMcpOAuthCallback } from './mcp/oauth-callback'
 import { useVaultStore } from './vault/store'
+import { capturePairingFragment } from './terminal/pairing'
 
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason
@@ -31,6 +32,8 @@ window.addEventListener('unhandledrejection', (event) => {
     useVaultStore.setState({ error })
   }
 })
+
+capturePairingFragment(window)
 
 if (handleMcpOAuthCallback(window)) {
   document.getElementById('root')!.textContent = 'Sign-in finished. You can close this window.'

@@ -27,6 +27,7 @@ import { toolsAdminViews } from "./details/tools-admin";
 import { agentsViews } from "./details/agents";
 import { memoryViews } from "./details/memory";
 import { mcpViews } from "./details/mcp";
+import { terminalViews } from "./details/terminal";
 
 /**
  * Tailored transcript views for every built-in tool. Keyed by the tool name the
@@ -46,6 +47,7 @@ export const TOOL_VIEWS: Record<string, ToolViewSpec> = {
   ...agentsViews,
   ...memoryViews,
   ...mcpViews,
+  ...terminalViews,
 };
 
 export const toolViewNames: readonly string[] = Object.keys(TOOL_VIEWS);

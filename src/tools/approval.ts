@@ -26,6 +26,10 @@ const GATED_BUILTINS = new Set([
   'update_tool',
   'delete_tool',
   'call_user_tool',
+  'run_command',
+  'terminal_start',
+  'terminal_write',
+  'terminal_kill',
 ])
 
 const READ_ONLY_TOOLS = new Set([
@@ -56,6 +60,8 @@ const READ_ONLY_TOOLS = new Set([
   'recall_memory',
   'list_mcp_resources',
   'read_mcp_resource',
+  'terminal_read',
+  'terminal_list',
 ])
 
 const EDITING_TOOLS = new Set([
@@ -74,6 +80,10 @@ const EDITING_TOOLS = new Set([
   'create_tool',
   'update_tool',
   'delete_tool',
+  'run_command',
+  'terminal_start',
+  'terminal_write',
+  'terminal_kill',
 ])
 
 /**
@@ -87,7 +97,13 @@ const MODE_GRANTED_TOOLS = new Set([
   'move',
   'run_js',
   'run_python',
+  'run_command',
+  'terminal_start',
+  'terminal_write',
+  'terminal_kill',
 ])
+
+export const COMMAND_TOOLS: ReadonlySet<string> = new Set(['run_command', 'terminal_start', 'terminal_write'])
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 

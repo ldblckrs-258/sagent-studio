@@ -16,7 +16,8 @@ import type { ProjectInstruction } from '../chat/context'
 import { resolveContextCap, shouldAutoCompact } from '../chat/context-cap'
 import { sanitizePartial } from '../chat/sanitize'
 import type { SkillRegistry } from '../skills/registry'
-import { resolveApprovalStatus } from '../tools/approval'
+import { commandApprovalFor } from '../terminal/approval'
+import { COMMAND_TOOLS, resolveApprovalStatus } from '../tools/approval'
 import type { ToolGateDescriptor } from '../tools/approval'
 import type { ToolRegistry } from '../tools/registry'
 import type { ToolRuntimePorts } from '../tools/types'
@@ -194,9 +195,42 @@ export async function runAgent(
       return kind ? { name, kind } : { name }
     }
 
+    let commandChain: Promise<unknown> = Promise.resolve()
+    const commandApproval = (name: string, toolInput: unknown, toolCallId: string) => {
+      const run = commandChain.then(async () => {
+        const scope = deps.ports.terminal
+        if (!scope) return { type: 'denied' as const, reason: 'Terminal unavailable: no bridge is connected.' }
+        const result = await commandApprovalFor(
+          scope.port,
+          {
+            threadId: scope.threadId,
+            ...(scope.runId !== undefined ? { runId: scope.runId } : {}),
+            mode,
+            settings: settings?.approvals,
+          },
+          name,
+          toolInput,
+          toolCallId,
+        )
+        if (result.type !== 'user-approval') return result
+        const allowed = await deps.queue.request({
+          runId: input.runId,
+          toolName: name,
+          input: toolInput,
+          ...(result.reason !== undefined ? { reason: result.reason } : {}),
+        })
+        return allowed ? ('approved' as const) : { type: 'denied' as const, reason: 'Denied by the user.' }
+      })
+      commandChain = run.catch(() => undefined)
+      return run
+    }
+
     const toolApproval: ToolApprovalConfiguration<ToolSet, unknown> = async ({ toolCall }) => {
       const name = (toolCall as { toolName?: string }).toolName ?? ''
       const toolInput = (toolCall as { input?: unknown }).input
+      if (COMMAND_TOOLS.has(name)) {
+        return commandApproval(name, toolInput, (toolCall as { toolCallId?: string }).toolCallId ?? '')
+      }
       const status = resolveApprovalStatus(mode, settings?.approvals, descriptorFor(name))
       if (status === 'denied') return 'denied'
       if (status === 'user-approval') {
