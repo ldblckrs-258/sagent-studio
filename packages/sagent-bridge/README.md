@@ -12,11 +12,11 @@ Supported platforms: **macOS and Linux**. Node **20** or newer. Windows exits wi
 
 ```sh
 cd your-project
-npx sagent-bridge@0.1.1 --root .
+npx sagent-bridge@0.2.0 --root .
 ```
 
-The bridge prints a pairing link. Open it in your browser, unlock the vault in that tab, and
-the app connects. Pass `--open` to have the bridge open the link in your default browser. No build tools are needed: the terminal backend ships
+The bridge pairs with the hosted app at <https://sagent-studio.vercel.app>. It prints a
+pairing link: open it in your browser, unlock the vault in that tab, and the app connects. Pass `--open` to have the bridge open the link in your default browser. No build tools are needed: the terminal backend ships
 prebuilt binaries and no install scripts run.
 
 ## Flags
@@ -25,7 +25,7 @@ prebuilt binaries and no install scripts run.
 | --- | --- | --- |
 | `--root <dir>` | required | The folder sessions run in. Commands may only start inside it. |
 | `--port <n>` | `7717` | Port on `127.0.0.1`. If it is taken the bridge exits; it never picks another port. |
-| `--app-url <url>` | `http://localhost:5173` | Where the app runs. Its origin (and the `localhost` ↔ `127.0.0.1` twin) may connect. |
+| `--app-url <url>` | `https://sagent-studio.vercel.app` | Where the app runs. Only its origin may connect (for a `localhost` URL, the `127.0.0.1` twin too). |
 | `--origin <url>` | none | Allow one more exact origin. Repeatable. Wildcards are rejected. |
 | `--open` | off | Also open the pairing link in the default browser. |
 | `--allow-broad-root` | off | Allow `/`, your home folder, or a parent of it as the root. |
@@ -57,8 +57,10 @@ other processes of your user may be able to read.
 
 - Chrome may ask to allow **local network access** the first time the page connects to
   `127.0.0.1`. Allow it, or the app reports "Allow local network access for this site".
-- If you run the app from a hosted URL, start the bridge with `--app-url <that URL>`. A
-  foreign origin gets `allowed: false` from `/health` and cannot open the socket.
+- If you run the app anywhere other than <https://sagent-studio.vercel.app>, for example
+  `pnpm dev` on `http://localhost:5173`, start the bridge with `--app-url <that URL>`. The
+  app's Terminal panel shows the command with the right flag. A foreign origin gets
+  `allowed: false` from `/health` and cannot open the socket.
 
 ## Root folder
 

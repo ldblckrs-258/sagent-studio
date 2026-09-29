@@ -3,9 +3,7 @@ import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname } from 'node:path'
 import { parseArgs } from 'node:util'
-import { DEFAULT_PORT } from './protocol.js'
-
-export const DEFAULT_APP_URL = 'http://localhost:5173'
+import { DEFAULT_APP_URL, DEFAULT_PORT } from './protocol.js'
 
 export const USAGE = `Usage: sagent-bridge --root <dir> [--port ${DEFAULT_PORT}] [--app-url ${DEFAULT_APP_URL}] [--origin <url>]... [--open] [--allow-broad-root]`
 

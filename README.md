@@ -94,7 +94,7 @@ WebSocket on `127.0.0.1`.
 **Start it** in your project folder:
 
 ```bash
-npx sagent-bridge@0.1.1 --root .
+npx sagent-bridge@0.2.0 --root .
 ```
 
 The bridge prints a pairing link and copies it to your clipboard. Open it, unlock the vault
@@ -102,11 +102,15 @@ in that tab, and the **Terminal** panel shows **connected** with your folder nam
 works once and expires after 10 minutes. The token is new every time the bridge starts, so
 after a restart press Enter in the bridge terminal for a new link.
 
+The bridge trusts <https://sagent-studio.vercel.app> by default. When you run the app yourself
+(`pnpm dev`), add `--app-url http://localhost:5173`. The Terminal panel always shows the
+command for the page you are on.
+
 | Flag | Meaning |
 | --- | --- |
 | `--root <dir>` | Folder sessions run in. It must match the conversation's workspace folder. |
 | `--port <n>` | Port on `127.0.0.1` (default `7717`). |
-| `--app-url <url>` | Where the app runs, if not `http://localhost:5173`. |
+| `--app-url <url>` | Where the app runs, if not `https://sagent-studio.vercel.app`. |
 | `--open` | Also open the pairing link in your browser. |
 | `--allow-broad-root` | Allow `/`, your home folder, or a parent of it as the root. |
 

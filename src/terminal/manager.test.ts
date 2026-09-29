@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { SessionInfo } from 'sagent-bridge/protocol'
 import { defaultSettings, type Settings } from '../vault/settings'
-import { TerminalManager } from './manager'
+import { bridgeStartCommand, TerminalManager } from './manager'
 import { nodeSocketFactory, startBridge, TEST_APP_ORIGIN, type BridgeProcess } from './test-utils/bridge-process'
 import { nodeDirHandle } from './test-utils/node-dir-handle'
 import type { BridgeConfig, BridgeStatus } from './types'
@@ -82,6 +82,16 @@ function waitForStatus(manager: TerminalManager, status: BridgeStatus, timeoutMs
     })
   })
 }
+
+describe('bridgeStartCommand', () => {
+  it('shows the plain command on the hosted app, which the published bridge trusts by default', () => {
+    expect(bridgeStartCommand('https://sagent-studio.vercel.app')).toMatch(/^npx sagent-bridge@\S+ --root <your project folder>$/)
+  })
+
+  it('adds --app-url for any other origin, so a copied command works in dev and self-hosted setups', () => {
+    expect(bridgeStartCommand('http://localhost:5173')).toMatch(/ --app-url http:\/\/localhost:5173$/)
+  })
+})
 
 describe('TerminalManager', { timeout: 30000 }, () => {
   it('stays unpaired with no stored pairing and no link', () => {

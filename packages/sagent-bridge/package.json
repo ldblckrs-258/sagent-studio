@@ -1,6 +1,6 @@
 {
   "name": "sagent-bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Local terminal bridge for sagent-studio: runs shell sessions for the browser app over an authenticated loopback WebSocket.",
   "license": "MIT",
   "author": "Le Duc Bao",

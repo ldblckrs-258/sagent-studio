@@ -1,5 +1,6 @@
 import {
   BRIDGE_VERSION,
+  DEFAULT_APP_URL,
   PROTOCOL_VERSION,
   decodeBase64,
   type Classification,
@@ -39,7 +40,13 @@ export const MAX_RECONNECT_ATTEMPTS = 10
 export const KILL_TIMEOUT_MS = 15000
 export const HEALTH_TIMEOUT_MS = 2000
 
-export const START_COMMAND = `npx sagent-bridge@${BRIDGE_VERSION} --root <your project folder>`
+export function bridgeStartCommand(appOrigin: string | undefined): string {
+  const base = `npx sagent-bridge@${BRIDGE_VERSION} --root <your project folder>`
+  if (!appOrigin || appOrigin === new URL(DEFAULT_APP_URL).origin) return base
+  return `${base} --app-url ${appOrigin}`
+}
+
+export const START_COMMAND = bridgeStartCommand(globalThis.location?.origin)
 
 export interface TerminalManagerDeps {
   getSettings(): Settings | null

@@ -21,6 +21,12 @@ describe('parseCliArgs', () => {
     expect(() => parseCliArgs([])).toThrow(ConfigError)
   })
 
+  it('trusts only the hosted app by default, so a published bridge pairs with sagent-studio.vercel.app', () => {
+    const options = parseCliArgs(['--root', '.'])
+    expect(options.appUrl).toBe('https://sagent-studio.vercel.app')
+    expect([...deriveOrigins(options.appUrl, options.origins)]).toEqual(['https://sagent-studio.vercel.app'])
+  })
+
   it('does not open a browser unless --open is passed', () => {
     expect(parseCliArgs(['--root', '.']).open).toBe(false)
   })

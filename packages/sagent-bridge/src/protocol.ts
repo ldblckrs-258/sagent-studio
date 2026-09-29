@@ -1,8 +1,9 @@
 export const PROTOCOL_VERSION = 1
-export const BRIDGE_VERSION = '0.1.1'
+export const BRIDGE_VERSION = '0.2.0'
 export const SUBPROTOCOL = 'sagent-bridge.v1'
 export const TOKEN_SUBPROTOCOL_PREFIX = 'sagent-token.'
 export const DEFAULT_PORT = 7717
+export const DEFAULT_APP_URL = 'https://sagent-studio.vercel.app'
 export const PAIR_FRAGMENT_KEY = 'sagent-bridge'
 export const PAIR_TOKEN_KEY = 'token'
 
