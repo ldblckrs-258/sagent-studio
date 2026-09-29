@@ -1,7 +1,6 @@
-@import "tailwindcss";
+@import "tailwindcss" source(".");
 @import "tw-shimmer";
 @import "tw-animate-css";
-@source not "../packages";
 
 /*
   Design tokens.
