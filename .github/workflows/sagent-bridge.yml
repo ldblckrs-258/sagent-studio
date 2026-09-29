@@ -83,8 +83,9 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@^11.5.1
+      - run: npm install -g npm@^12
       - run: pnpm install --frozen-lockfile --filter sagent-bridge
+      - run: pnpm --filter sagent-bridge build
       - name: Check the version
         id: version
         working-directory: packages/sagent-bridge
@@ -106,19 +107,19 @@ jobs:
         if: github.ref_type != 'tag'
         working-directory: packages/sagent-bridge
         run: npm publish --dry-run
-      - name: Publish
+      - name: Stage for publishing
         if: github.ref_type == 'tag'
         working-directory: packages/sagent-bridge
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm stage publish --provenance --access public
       - name: Summary
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PUBLISHED: ${{ github.ref_type == 'tag' }}
         run: |
           if [ "$PUBLISHED" = true ]; then
-            echo "Published [sagent-bridge@$VERSION](https://www.npmjs.com/package/sagent-bridge/v/$VERSION)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Staged sagent-bridge@$VERSION. Approve it on npmjs.com or with \`npm stage list sagent-bridge\` and \`npm stage approve <id>\`." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Dry run for sagent-bridge@$VERSION. Push the tag sagent-bridge-v$VERSION to publish." >> "$GITHUB_STEP_SUMMARY"
           fi

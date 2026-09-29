@@ -217,4 +217,7 @@ Linux and macOS for every change under `packages/sagent-bridge/`. To publish:
 2. Push a tag named after the version: `git tag sagent-bridge-v0.1.1 && git push origin sagent-bridge-v0.1.1`.
 
 The publish job checks that the tag matches the version and that the version is not on npm
-yet, then publishes with provenance. Running the workflow by hand does a dry run.
+yet, then stages it with provenance through npm trusted publishing. Nothing is public until
+you approve it on npmjs.com, or with `npm stage list sagent-bridge` and
+`npm stage approve <id>` (npm 12+), using your 2FA. Running the workflow by hand does a dry
+run.
