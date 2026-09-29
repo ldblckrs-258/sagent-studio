@@ -79,6 +79,23 @@
   --text-4xl: 2.52rem;
 }
 
+@theme static {
+  --color-term-bg: oklch(0.172 0.012 70);
+  --color-term-surface: oklch(0.215 0.013 72);
+  --color-term-rule: oklch(0.31 0.013 72);
+  --color-term-ink: oklch(0.945 0.009 85);
+  --color-term-muted: oklch(0.725 0.015 80);
+  --color-term-faint: oklch(0.62 0.015 78);
+  --color-term-black: oklch(0.36 0.012 72);
+  --color-term-red: oklch(0.725 0.152 27);
+  --color-term-green: oklch(0.765 0.115 152);
+  --color-term-yellow: oklch(0.822 0.1 78);
+  --color-term-blue: oklch(0.74 0.1 258);
+  --color-term-magenta: oklch(0.76 0.1 315);
+  --color-term-cyan: oklch(0.78 0.105 200);
+  --color-term-selection: oklch(0.38 0.06 202);
+}
+
 /*
   assistant-ui semantic tokens.
 
@@ -225,6 +242,15 @@
 
   .numeric {
     font-variant-numeric: tabular-nums;
+  }
+
+  .term-island {
+    color-scheme: dark;
+    scrollbar-color: var(--color-term-rule) transparent;
+  }
+
+  .term-island :focus-visible {
+    outline-color: var(--color-term-cyan);
   }
 }
 

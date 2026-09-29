@@ -29,6 +29,7 @@ export default function XtermView({
     const term = new Terminal({
       fontFamily: getComputedStyle(host).getPropertyValue('--font-mono').trim() || 'monospace',
       fontSize: 12,
+      lineHeight: 1.2,
       scrollback: 5000,
       screenReaderMode: true,
       cursorBlink: true,
@@ -66,14 +67,7 @@ export default function XtermView({
     observer.observe(host)
     resize()
 
-    const scheme = window.matchMedia('(prefers-color-scheme: dark)')
-    const onScheme = () => {
-      term.options.theme = readTerminalTheme(host)
-    }
-    scheme.addEventListener('change', onScheme)
-
     return () => {
-      scheme.removeEventListener('change', onScheme)
       observer.disconnect()
       cancelAnimationFrame(frame)
       detach()
@@ -84,10 +78,10 @@ export default function XtermView({
 
   return (
     <div
-      ref={hostRef}
-      data-slot="xterm-view"
-      className="bg-paper-sunk h-full min-h-0 w-full overflow-hidden p-1"
+      className="h-full min-h-0 w-full bg-term-bg py-2 pl-2"
       onClick={() => hostRef.current?.querySelector('textarea')?.focus()}
-    />
+    >
+      <div ref={hostRef} data-slot="xterm-view" className="h-full w-full overflow-hidden" />
+    </div>
   )
 }

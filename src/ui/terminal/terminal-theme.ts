@@ -20,24 +20,42 @@ export function readTerminalTheme(element: HTMLElement): ITheme {
     if (!context || value === '') return fallback
     return resolveColor(context, value, fallback)
   }
-  const ink = token('--color-ink', '#2b2622')
-  const paper = token('--color-paper-sunk', '#f5f1ea')
-  const accent = token('--color-accent', '#0f6f7a')
+  const background = token('--color-term-bg', '#16130f')
+  const ink = token('--color-term-ink', '#f0ece6')
+  const muted = token('--color-term-muted', '#aaa39b')
+  const faint = token('--color-term-faint', '#8b847c')
+  const rule = token('--color-term-rule', '#39342e')
+  const red = token('--color-term-red', '#f07a6e')
+  const green = token('--color-term-green', '#6fcf97')
+  const yellow = token('--color-term-yellow', '#e8c36f')
+  const blue = token('--color-term-blue', '#8fa9ea')
+  const magenta = token('--color-term-magenta', '#d39ad8')
+  const cyan = token('--color-term-cyan', '#62d0dc')
   return {
-    background: paper,
+    background,
     foreground: ink,
-    cursor: accent,
-    cursorAccent: paper,
-    selectionBackground: token('--color-accent-soft', '#dff1f3'),
+    cursor: cyan,
+    cursorAccent: background,
+    selectionBackground: token('--color-term-selection', '#28525a'),
     selectionForeground: ink,
-    black: ink,
-    red: token('--color-danger', '#b3261e'),
-    green: token('--color-positive', '#1f7a4d'),
-    yellow: token('--color-caution', '#8a5a14'),
-    blue: token('--color-file-code', '#3656b3'),
-    magenta: token('--color-file-media', '#8e3b8e'),
-    cyan: accent,
-    white: token('--color-muted', '#7a7068'),
-    brightBlack: token('--color-faint', '#8b8178'),
+    scrollbarSliderBackground: `${rule}99`,
+    scrollbarSliderHoverBackground: `${faint}99`,
+    scrollbarSliderActiveBackground: `${muted}99`,
+    black: token('--color-term-black', '#4a453f'),
+    red,
+    green,
+    yellow,
+    blue,
+    magenta,
+    cyan,
+    white: muted,
+    brightBlack: faint,
+    brightRed: red,
+    brightGreen: green,
+    brightYellow: yellow,
+    brightBlue: blue,
+    brightMagenta: magenta,
+    brightCyan: cyan,
+    brightWhite: ink,
   }
 }

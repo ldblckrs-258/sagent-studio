@@ -32,6 +32,10 @@ vi.mock("../../session/session-context", () => ({
   useSession: () => ({ terminal: controls }),
 }));
 
+vi.mock("../terminal/xterm-view", () => ({
+  default: ({ sessionId }: { sessionId: string }) => <div data-slot="xterm-view" data-session-id={sessionId} />,
+}));
+
 import { TerminalPanel } from "./terminal";
 import { attachSession, DROPPED_NOTICE } from "../terminal/use-terminal";
 
@@ -99,7 +103,10 @@ describe("TerminalPanel status", () => {
   it("shows the root and bridge version when connected", async () => {
     setView({ rootName: "sagent-studio", bridgeVersion: "0.1.0" });
     const view = await mount(<TerminalPanel />);
-    expect(view.container.textContent).toContain("Connected · root: sagent-studio · bridge 0.1.0");
+    const line = view.container.querySelector('[data-slot="terminal-status"]');
+    expect(line?.textContent).toContain("connected");
+    expect(line?.textContent).toContain("sagent-studio");
+    expect(line?.textContent).toContain("bridge 0.1.0");
     view.unmount();
   });
 });
@@ -146,12 +153,25 @@ describe("session list", () => {
       ],
     });
     const view = await mount(<TerminalPanel />);
+    await act(async () => button(view.container, "Finished")?.click());
     const rows = [...view.container.querySelectorAll('[role="option"]')].map((row) => row.textContent);
     expect(rows[0]).toContain("shell");
     expect(rows[0]).toContain("you");
     expect(rows[1]).toContain("model");
     expect(view.container.querySelector('[data-slot="finished-sessions"]')?.textContent).toContain("agent: run-1234");
     expect(view.container.querySelector('[data-slot="finished-sessions"]')?.textContent).toContain("exit 0");
+    view.unmount();
+  });
+
+  it("keeps finished sessions folded away until asked for", async () => {
+    setView({ sessions: [session("c", { source: "model", threadId: "t1" }, { running: false, exitCode: 0 })] });
+    const view = await mount(<TerminalPanel />);
+    const toggle = button(view.container, "Finished");
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.container.querySelector('[role="option"]')).toBeNull();
+    await act(async () => toggle?.click());
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(view.container.querySelector('[data-session="c"]')).not.toBeNull();
     view.unmount();
   });
 
@@ -199,5 +219,35 @@ describe("attachSession", () => {
     emit("more", 5004);
     expect(written[0]).toBe(DROPPED_NOTICE);
     expect(written).toHaveLength(3);
+  });
+});
+
+describe("terminal tab", () => {
+  function tab(container: HTMLElement, name: string) {
+    return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((entry) =>
+      entry.textContent?.startsWith(name),
+    );
+  }
+
+  it("opens a session in its own tab instead of inline under the list", async () => {
+    setView({ sessions: [session("a", { source: "user" }, { command: null }), session("b", { source: "model", threadId: "t1" })] });
+    const view = await mount(<TerminalPanel />);
+    expect(tab(view.container, "Sessions")?.getAttribute("aria-selected")).toBe("true");
+    expect(view.container.querySelector('[data-slot="xterm-view"]')).toBeNull();
+
+    await act(async () => view.container.querySelector<HTMLElement>('[data-session="b"]')?.click());
+    await act(async () => {});
+
+    expect(tab(view.container, "Terminal")?.getAttribute("aria-selected")).toBe("true");
+    expect(view.container.querySelector('[role="listbox"]')).toBeNull();
+    expect(view.container.querySelector('[data-slot="xterm-view"]')?.getAttribute("data-session-id")).toBe("b");
+    view.unmount();
+  });
+
+  it("points back to Sessions when the bridge is not connected", async () => {
+    const view = await mount(<TerminalPanel />);
+    await act(async () => tab(view.container, "Terminal")?.click());
+    expect(view.container.textContent).toContain("The bridge is not connected.");
+    view.unmount();
   });
 });
