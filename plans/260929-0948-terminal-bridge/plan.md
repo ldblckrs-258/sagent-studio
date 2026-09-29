@@ -185,6 +185,7 @@ The packed tarball was checked on macOS and Linux:
 - **Root mismatch is refused at approval** as `denied: Terminal unavailable: …different folder`, not as a `path_rejected` tool result.
 - **Sandbox workers delete more globals:** `WebSocketStream`, `Worker` and `SharedWorker`, in addition to `WebSocket`, `EventSource` and `WebTransport`.
 - **The bridge no longer opens a browser by default** (user, 2026-09-29). It prints the pairing link, and `--open` opts in. This replaces `--no-open`.
+- **`npm-shrinkwrap.json` removed** (user, 2026-09-30). npm 12 no longer packs or honors it, so 0.1.1 already shipped without it. The direct dependencies stay pinned to exact versions in `package.json`.
 - **Tests.** The phase-5 `harness-e2e` case is covered by `src/terminal/terminal-e2e.test.ts`, which has ten scenarios. Bridge-backed app tests use `tsconfig.node-tests.json`.
 
 ### Review
