@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1
-export const BRIDGE_VERSION = '0.1.0'
+export const BRIDGE_VERSION = '0.1.1'
 export const SUBPROTOCOL = 'sagent-bridge.v1'
 export const TOKEN_SUBPROTOCOL_PREFIX = 'sagent-token.'
 export const DEFAULT_PORT = 7717

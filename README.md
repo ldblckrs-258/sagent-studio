@@ -94,9 +94,7 @@ WebSocket on `127.0.0.1`.
 **Start it** in your project folder:
 
 ```bash
-npx sagent-bridge@0.1.0 --root .
-# or, from this repo before the package is published:
-pnpm bridge:build && node packages/sagent-bridge/dist/cli.js --root .
+npx sagent-bridge@0.1.1 --root .
 ```
 
 The bridge prints a pairing link and copies it to your clipboard. Open it, unlock the vault
@@ -208,3 +206,15 @@ plans/         design documents and implementation history
   dev so hot reload works.
 - Tests run on Vitest with jsdom and `fake-indexeddb` (setup in `src/test-setup.ts`). The
   terminal tests build and start a real bridge.
+
+### Releasing `sagent-bridge`
+
+The [`sagent-bridge` workflow](.github/workflows/sagent-bridge.yml) tests the package on
+Linux and macOS for every change under `packages/sagent-bridge/`. To publish:
+
+1. Bump `version` in `packages/sagent-bridge/package.json` and `BRIDGE_VERSION` in
+   `packages/sagent-bridge/src/protocol.ts` (a test fails if they differ), and commit.
+2. Push a tag named after the version: `git tag sagent-bridge-v0.1.1 && git push origin sagent-bridge-v0.1.1`.
+
+The publish job checks that the tag matches the version and that the version is not on npm
+yet, then publishes with provenance. Running the workflow by hand does a dry run.

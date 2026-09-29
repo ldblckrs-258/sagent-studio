@@ -12,7 +12,7 @@ Supported platforms: **macOS and Linux**. Node **20** or newer. Windows exits wi
 
 ```sh
 cd your-project
-npx sagent-bridge@0.1.0 --root .
+npx sagent-bridge@0.1.1 --root .
 ```
 
 The bridge prints a pairing link. Open it in your browser, unlock the vault in that tab, and

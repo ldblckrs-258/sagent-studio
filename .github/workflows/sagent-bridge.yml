@@ -1,0 +1,124 @@
+name: sagent-bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/sagent-bridge/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/sagent-bridge.yml
+    tags:
+      - sagent-bridge-v*
+  pull_request:
+    paths:
+      - packages/sagent-bridge/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/sagent-bridge.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sagent-bridge-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter sagent-bridge
+      - run: pnpm --filter sagent-bridge typecheck
+      - run: pnpm --filter sagent-bridge test
+      - run: pnpm --filter sagent-bridge build
+      - name: Smoke-test the packed tarball
+        working-directory: packages/sagent-bridge
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/smoke/app" "$RUNNER_TEMP/smoke/root"
+          cd "$RUNNER_TEMP/smoke/app"
+          npm init -y > /dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/sagent-bridge-*.tgz
+          ./node_modules/.bin/sagent-bridge --root "$RUNNER_TEMP/smoke/root" --port 0 > out.txt 2>&1 &
+          pid=$!
+          for _ in $(seq 1 30); do grep -q "listen" out.txt && break; sleep 0.5; done
+          kill "$pid"
+          wait "$pid" || true
+          grep -q "listen" out.txt || { cat out.txt; exit 1; }
+
+  publish:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/sagent-bridge-v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1
+      - run: pnpm install --frozen-lockfile --filter sagent-bridge
+      - name: Check the version
+        id: version
+        working-directory: packages/sagent-bridge
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "sagent-bridge-v$version" ]; then
+            echo "::error::Tag $REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+          if npm view "sagent-bridge@$version" version > /dev/null 2>&1; then
+            echo "::error::sagent-bridge@$version is already on npm. Bump the version first."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish (dry run)
+        if: github.ref_type != 'tag'
+        working-directory: packages/sagent-bridge
+        run: npm publish --dry-run
+      - name: Publish
+        if: github.ref_type == 'tag'
+        working-directory: packages/sagent-bridge
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLISHED: ${{ github.ref_type == 'tag' }}
+        run: |
+          if [ "$PUBLISHED" = true ]; then
+            echo "Published [sagent-bridge@$VERSION](https://www.npmjs.com/package/sagent-bridge/v/$VERSION)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Dry run for sagent-bridge@$VERSION. Push the tag sagent-bridge-v$VERSION to publish." >> "$GITHUB_STEP_SUMMARY"
+          fi

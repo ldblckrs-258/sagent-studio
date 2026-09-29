@@ -1,9 +1,18 @@
 {
   "name": "sagent-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local terminal bridge for sagent-studio: runs shell sessions for the browser app over an authenticated loopback WebSocket.",
   "license": "MIT",
   "author": "Le Duc Bao",
+  "homepage": "https://github.com/ldblckrs-258/sagent-studio/tree/main/packages/sagent-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ldblckrs-258/sagent-studio.git",
+    "directory": "packages/sagent-bridge"
+  },
+  "bugs": {
+    "url": "https://github.com/ldblckrs-258/sagent-studio/issues"
+  },
   "type": "module",
   "bin": {
     "sagent-bridge": "dist/cli.js"
