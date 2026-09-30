@@ -40,7 +40,7 @@ export default function App() {
 
   if (presence === null) {
     return (
-      <p className="flex min-h-[100dvh] items-center justify-center gap-3 font-mono text-xs text-faint">
+      <p className="flex min-h-dvh items-center justify-center gap-3 font-mono text-xs text-faint">
         <LoaderCircle
           size={20}
           strokeWidth={2}
