@@ -48,7 +48,7 @@ const MB = Math.round(MAX_UPLOAD_BYTES / (1024 * 1024));
  * path carries no extension of its own. An unknown type falls through to a
  * bare name and lets `sanitizeUploadName` decide.
  */
-const EXTENSION_BY_MEDIA_TYPE: Record<string, string> = {
+export const EXTENSION_BY_MEDIA_TYPE: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/gif": "gif",

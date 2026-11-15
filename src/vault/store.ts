@@ -16,11 +16,24 @@ import type { MetaRecord, VaultRecord } from './db'
 import {
   CorruptVaultError,
   VaultLockedError,
+  VaultSettingsError,
   VaultStorageError,
   WrongPasswordError,
 } from './errors'
-import { defaultSettings, deepMerge, migrate, SETTINGS_VERSION } from './settings'
-import type { DeepPartial, Settings, TerminalSettings } from './settings'
+import {
+  defaultSettings,
+  deepMerge,
+  migrate,
+  normalizePlaygroundBaseURL,
+  SETTINGS_VERSION,
+} from './settings'
+import type {
+  DeepPartial,
+  PlaygroundProviderId,
+  PlaygroundProviderSettings,
+  Settings,
+  TerminalSettings,
+} from './settings'
 import type { KdfParams } from './types'
 import { vaultWriteQueue } from './write-queue'
 import * as keyring from './keyring'
@@ -43,6 +56,7 @@ export interface VaultState {
   update(patch: DeepPartial<Settings>): Promise<void>
   forgetApprovals(names: readonly string[]): Promise<void>
   setTerminal(terminal: TerminalSettings | null): Promise<void>
+  setPlaygroundProvider(id: PlaygroundProviderId, config: PlaygroundProviderSettings | null): Promise<void>
   recover(): Promise<void>
   clearError(): void
   /** Requests persistent storage from the browser and records the outcome. */
@@ -351,6 +365,35 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     })
   },
 
+  async setPlaygroundProvider(id, config) {
+    let entry: PlaygroundProviderSettings | undefined
+    if (config) {
+      const baseURL = normalizePlaygroundBaseURL(config.baseURL ?? '')
+      if (baseURL === null) {
+        throw new VaultSettingsError(
+          'The base URL must be a same-origin path such as /replicate or an https:// URL.',
+        )
+      }
+      const apiKey = config.apiKey.trim()
+      if (apiKey !== '') entry = baseURL ? { apiKey, baseURL } : { apiKey }
+    }
+    const currentKey = keyring.getKey()
+    if (!currentKey) throw new VaultLockedError()
+    await vaultWriteQueue.enqueue(async () => {
+      if (keyring.getKey() !== currentKey) throw new VaultLockedError()
+      const latest = get().settings
+      if (!latest) throw new VaultLockedError()
+      const providers = { ...(latest.playgroundProviders ?? {}) }
+      if (entry) providers[id] = entry
+      else delete providers[id]
+      const next: Settings = { ...latest }
+      if (Object.keys(providers).length > 0) next.playgroundProviders = providers
+      else delete next.playgroundProviders
+      await persistSettings(currentKey, next)
+      if (keyring.getKey() === currentKey) set({ settings: next })
+    })
+  },
+
   async recover() {
     keyring.clear()
     await vaultWriteQueue.drain()
@@ -367,6 +410,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         db.chunks,
         db.memories,
         db.mcpServers,
+        db.playgroundRuns,
+        db.playgroundImages,
       ],
       async () => {
         await db.vault.clear()
@@ -379,6 +424,8 @@ export const useVaultStore = create<VaultState>((set, get) => ({
         await db.chunks.clear()
         await db.memories.clear()
         await db.mcpServers.clear()
+        await db.playgroundRuns.clear()
+        await db.playgroundImages.clear()
       },
     )
     invalidateClients()
@@ -418,6 +465,8 @@ export const vaultInternals = {
     await db.chunks.clear()
     await db.memories.clear()
     await db.mcpServers.clear()
+    await db.playgroundRuns.clear()
+    await db.playgroundImages.clear()
     keyring.reset()
     createInFlight = null
     vaultWriteQueue.reset()

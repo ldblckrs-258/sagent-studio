@@ -9,6 +9,7 @@ import { useSession } from "../../session/session-context";
 import { DataEgressNotice } from "../../settings/DataEgressNotice";
 import { ModelTiersPanel } from "../../settings/ModelTiersPanel";
 import { ProvidersPanel } from "../../settings/ProvidersPanel";
+import type { ProvidersSection } from "../../settings/ProvidersPanel";
 import { StorageWarning } from "../../settings/StorageWarning";
 import { useVaultStore } from "../../vault/store";
 import { Button, Input, Row, Select, Textarea } from "../primitives";
@@ -279,9 +280,13 @@ function ThreadTab({ thread }: { thread: ChatThread }) {
 export function ChatConfig({
   tab,
   onTabChange,
+  providersSection,
+  onProvidersSectionChange,
 }: {
   tab: ConfigTab;
   onTabChange(tab: ConfigTab): void;
+  providersSection: ProvidersSection;
+  onProvidersSectionChange(section: ProvidersSection): void;
 }) {
   const activeThreadId = useChatStore((s) => s.activeThreadId);
   const thread = useChatStore((s) =>
@@ -336,7 +341,9 @@ export function ChatConfig({
             </p>
           )
         ) : null}
-        {tab === "providers" ? <ProvidersPanel /> : null}
+        {tab === "providers" ? (
+          <ProvidersPanel section={providersSection} onSectionChange={onProvidersSectionChange} />
+        ) : null}
         {tab === "models" ? <ModelTiersPanel /> : null}
         {tab === "vault" ? (
           <div className="flex flex-col gap-2 p-3">

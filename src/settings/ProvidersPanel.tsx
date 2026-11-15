@@ -5,18 +5,31 @@ import {
   CircleX,
   LoaderCircle,
   Plus,
+  Server,
   Trash2,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { createLLM } from "../ai/llm";
 import { ModelManager } from "../ai/model-manager";
 import type { ProviderValidationErrors } from "../ai/providers";
 import { MAX_PROVIDERS, validateProvider } from "../ai/providers";
 import { SecretField } from "../ai/secret-field";
-import { Button, Input, Row } from "../ui/primitives";
+import { Button, EmptyState, Input, Row } from "../ui/primitives";
 import type { ProviderConfig, Settings } from "../vault/settings";
 import { useVaultStore } from "../vault/store";
+import { PlaygroundProvidersSection } from "./PlaygroundProvidersSection";
 import { SectionHeader } from "./SectionHeader";
+
+export type ProvidersSection = "llm" | "typesafe" | "playground";
+
+const SECTIONS: readonly ProvidersSection[] = ["llm", "typesafe", "playground"];
+
+const SECTION_LABEL: Record<ProvidersSection, string> = {
+  llm: "LLM",
+  typesafe: "TypeSafe",
+  playground: "Playground",
+};
 
 function emptyProvider(): ProviderConfig {
   return {
@@ -107,7 +120,13 @@ function ProviderEntry({
           <h3 className="truncate text-sm font-medium text-ink">
             {draft.label || "Untitled provider"}
           </h3>
-          <p className="truncate font-mono text-xs text-faint">{host}</p>
+          <p className="truncate font-mono text-xs text-faint">
+            {host}
+            {draft.models.length > 0
+              ? ` · ${draft.models.length === 1 ? "1 model" : `${draft.models.length} models`}`
+              : ""}
+            {draft.defaultModel ? ` · ${draft.defaultModel}` : ""}
+          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button
@@ -287,10 +306,10 @@ function TypeSafeSection({ settings }: { settings: Settings }) {
   };
 
   return (
-    <section className="mt-3 border-t border-rule pt-3">
+    <section className="flex flex-col">
       <SectionHeader
         title="TypeSafe"
-        description="Common-sense judgments are requested from TypeSafe. The key is encrypted at rest with everything else. TypeSafe sends no CORS headers, so the app calls it through a same-origin /typesafe proxy (included for dev and preview); a static host must proxy that path or you can set an explicit endpoint below."
+        description="Common-sense judgments are requested from TypeSafe. The key is encrypted at rest with everything else."
       />
       <div className="mt-1">
         <Row label="Credential" hint="Encrypted, revealed only on request.">
@@ -322,21 +341,22 @@ function TypeSafeSection({ settings }: { settings: Settings }) {
             className="font-mono"
             onChange={(event) => patch({ baseURL: event.target.value })}
           />
+          <p className="text-xs leading-relaxed text-faint">
+            TypeSafe sends no CORS headers, so the app calls it through a same-origin /typesafe proxy, included for dev
+            and preview. A static host must proxy that path, or set an explicit endpoint here.
+          </p>
         </Row>
       </div>
     </section>
   );
 }
 
-export function ProvidersPanel() {
-  const settings = useVaultStore((s) => s.settings);
+function LlmSection({ settings }: { settings: Settings }) {
   const update = useVaultStore((s) => s.update);
   const [adding, setAdding] = useState(false);
   const [newProvider, setNewProvider] = useState<ProviderConfig | null>(null);
 
-  const providers = useMemo(() => settings?.providers ?? [], [settings]);
-
-  if (!settings) return null;
+  const providers = useMemo(() => settings.providers, [settings]);
 
   const startAdd = () => {
     if (adding) {
@@ -366,7 +386,7 @@ export function ProvidersPanel() {
   };
 
   return (
-    <section className="flex flex-col px-3 py-3">
+    <section className="flex flex-col">
       <SectionHeader
         title="LLM providers"
         description="OpenAI-compatible endpoints this app may call. A request only leaves the device when you run a query or test a connection."
@@ -417,13 +437,107 @@ export function ProvidersPanel() {
         ) : null}
 
         {providers.length === 0 && !adding ? (
-          <p className="border-t border-rule py-6 text-xs text-muted">
-            No providers configured. Add one to send a query.
-          </p>
+          <EmptyState
+            icon={<Server size={18} strokeWidth={1.75} aria-hidden="true" />}
+            title="No providers configured."
+            hint="Add an OpenAI-compatible endpoint to send a query."
+            action={
+              <Button
+                type="button"
+                size="sm"
+                variant="primary"
+                onClick={startAdd}
+                icon={<Plus size={14} strokeWidth={1.75} aria-hidden="true" />}
+              >
+                Add provider
+              </Button>
+            }
+          />
         ) : null}
       </div>
-
-      <TypeSafeSection settings={settings} />
     </section>
+  );
+}
+
+export function ProvidersPanel({
+  section,
+  onSectionChange,
+}: {
+  section: ProvidersSection;
+  onSectionChange(section: ProvidersSection): void;
+}) {
+  const settings = useVaultStore((s) => s.settings);
+  const baseId = useId();
+  if (!settings) return null;
+
+  const status: Record<ProvidersSection, string | null> = {
+    llm: settings.providers.length > 0 ? String(settings.providers.length) : null,
+    typesafe: settings.typesafe.apiKey.trim() !== "" ? "on" : null,
+    playground: (() => {
+      const count = Object.values(settings.playgroundProviders ?? {}).filter(
+        (entry) => (entry?.apiKey ?? "").trim() !== "",
+      ).length;
+      return count > 0 ? String(count) : null;
+    })(),
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const index = SECTIONS.indexOf(section);
+    const next =
+      event.key === "ArrowRight"
+        ? (index + 1) % SECTIONS.length
+        : (index - 1 + SECTIONS.length) % SECTIONS.length;
+    onSectionChange(SECTIONS[next]);
+    document.getElementById(`${baseId}-${SECTIONS[next]}-tab`)?.focus();
+  };
+
+  return (
+    <div className="flex flex-col">
+      <div
+        role="tablist"
+        aria-label="Provider type"
+        onKeyDown={onKeyDown}
+        className="sticky top-0 z-10 flex items-end gap-4 border-b border-rule bg-paper px-3"
+      >
+        {SECTIONS.map((entry) => (
+          <button
+            key={entry}
+            id={`${baseId}-${entry}-tab`}
+            type="button"
+            role="tab"
+            aria-selected={section === entry}
+            aria-controls={`${baseId}-${entry}-panel`}
+            tabIndex={section === entry ? 0 : -1}
+            onClick={() => onSectionChange(entry)}
+            className={`relative -mb-px flex items-baseline gap-1.5 border-b-2 py-2 text-sm transition-colors duration-150 ease-out-quart after:absolute after:-inset-x-1 after:inset-y-0 after:content-[''] ${
+              section === entry
+                ? "border-accent text-ink"
+                : "border-transparent text-muted hover:border-rule-strong hover:text-ink"
+            }`}
+          >
+            {SECTION_LABEL[entry]}
+            {status[entry] ? (
+              <span className="numeric font-mono text-xs text-faint">{status[entry]}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+      {SECTIONS.map((entry) => (
+        <div
+          key={entry}
+          id={`${baseId}-${entry}-panel`}
+          role="tabpanel"
+          aria-labelledby={`${baseId}-${entry}-tab`}
+          hidden={section !== entry}
+          className="px-3 py-3"
+        >
+          {entry === "llm" ? <LlmSection settings={settings} /> : null}
+          {entry === "typesafe" ? <TypeSafeSection settings={settings} /> : null}
+          {entry === "playground" ? <PlaygroundProvidersSection settings={settings} /> : null}
+        </div>
+      ))}
+    </div>
   );
 }

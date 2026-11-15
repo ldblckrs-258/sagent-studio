@@ -29,7 +29,7 @@ const SENSITIVE_KEYS = new Set([
 const MAX_DEPTH = 12
 const UNSERIALIZABLE = '[unserializable]'
 
-function isSensitiveKey(key: string): boolean {
+export function isSensitiveKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[-_]/g, '')
   // A match anywhere catches prefixed headers like `X-Api-Key` and
   // `access_token`; over-redacting a display value is the safe direction.

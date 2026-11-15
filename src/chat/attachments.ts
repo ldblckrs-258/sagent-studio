@@ -253,7 +253,7 @@ function textPart(text: string): MessagePart {
   return { type: 'text', text } as MessagePart
 }
 
-function toDataUrl(bytes: Uint8Array, mediaType: string): string {
+export function toDataUrl(bytes: Uint8Array, mediaType: string): string {
   let binary = ''
   const chunk = 0x8000
   for (let index = 0; index < bytes.length; index += chunk) {

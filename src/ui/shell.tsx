@@ -42,6 +42,7 @@ import { AgentsPanel } from "./panels/agents";
 import { ApprovalsPanel } from "./panels/approvals";
 import type { ConfigTab } from "./panels/chat-config";
 import { ChatConfig } from "./panels/chat-config";
+import type { ProvidersSection } from "../settings/ProvidersPanel";
 import { Conversations } from "./panels/conversations";
 import { FilePanel } from "./panels/file-editor";
 import { LibraryPanel } from "./panels/library";
@@ -55,9 +56,12 @@ import { PlanPanel } from "./plan-panel";
 import { Button } from "./primitives";
 import { PANEL_DEFAULT_WIDTH, clampPanelWidth, panelWidthMax } from "./resize";
 import { ResizeHandle } from "./resize-handle";
+import { useShellView } from "./shell-view";
 import { useRegistryVersion } from "./use-registry-version";
+import { ViewSwitch } from "./view-switch";
 
 const TerminalPanel = lazy(() => import("./panels/terminal"));
+const PlaygroundView = lazy(() => import("./playground/playground-view"));
 
 export type RailPanelId =
   | "config"
@@ -266,6 +270,7 @@ export function Shell({ left }: { left?: ReactNode }) {
   const agentPending = agentRunStore.pendingApprovalCount(activeThreadId ?? undefined);
   const wide = useMediaQuery(WIDE_QUERY);
   const bootstrapped = useRef(false);
+  const { view, setView, pendingApprovalId } = useShellView();
 
   // One-time bootstrap so the center column is usable on first load, on any
   // viewport: select the most recent conversation when none is active.
@@ -293,6 +298,7 @@ export function Shell({ left }: { left?: ReactNode }) {
     useState(readSidebarCollapsed);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigTab>("thread");
+  const [providersSection, setProvidersSection] = useState<ProvidersSection>("llm");
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const railTriggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -362,7 +368,14 @@ export function Shell({ left }: { left?: ReactNode }) {
       id: "config",
       label: "Config",
       icon: Settings2,
-      render: () => <ChatConfig tab={configTab} onTabChange={setConfigTab} />,
+      render: () => (
+        <ChatConfig
+          tab={configTab}
+          onTabChange={setConfigTab}
+          providersSection={providersSection}
+          onProvidersSectionChange={setProvidersSection}
+        />
+      ),
     },
     {
       id: "workspace",
@@ -437,8 +450,9 @@ export function Shell({ left }: { left?: ReactNode }) {
   };
 
   const closeRail = () => setRail((prev) => ({ ...prev, open: false }));
-  const openProviders = () => {
+  const openProviders = (section: ProvidersSection) => {
     setConfigTab("providers");
+    setProvidersSection(section);
     setDrawerOpen(false);
     setRail((prev) => ({ ...prev, open: true, activePanel: "config" }));
   };
@@ -452,12 +466,12 @@ export function Shell({ left }: { left?: ReactNode }) {
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-paper text-ink">
-      {wide ? (
+      {view === "playground" ? null : wide ? (
         sidebarCollapsed ? null : (
           <aside className="flex w-72 shrink-0 flex-col border-r border-rule">
             {left ?? (
               <Conversations
-                onOpenProviders={openProviders}
+                onOpenProviders={() => openProviders("llm")}
                 onCollapse={() => setSidebarCollapsed(true)}
               />
             )}
@@ -472,7 +486,7 @@ export function Shell({ left }: { left?: ReactNode }) {
         >
           {left ?? (
             <Conversations
-              onOpenProviders={openProviders}
+              onOpenProviders={() => openProviders("llm")}
               onClose={closeDrawer}
             />
           )}
@@ -482,7 +496,7 @@ export function Shell({ left }: { left?: ReactNode }) {
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-rule px-3 sm:px-4">
           <div className="flex items-center gap-2">
-            {!wide ? (
+            {view === "playground" ? null : !wide ? (
               <button
                 type="button"
                 aria-label="Open conversations"
@@ -517,6 +531,11 @@ export function Shell({ left }: { left?: ReactNode }) {
             <span className="text-sm font-medium tracking-tight text-ink">
               Sagent Studio
             </span>
+            <ViewSwitch
+              view={view}
+              onChange={setView}
+              chatBadge={pendingApprovalId !== null}
+            />
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -531,10 +550,16 @@ export function Shell({ left }: { left?: ReactNode }) {
           </div>
         </header>
 
-        <PlanPanel />
+        {view === "chat" ? <PlanPanel /> : null}
 
         <div className="min-h-0 flex-1">
-          {selectedRunId !== null ? (
+          {view === "playground" ? (
+            <Suspense
+              fallback={<p className="p-3 text-xs text-faint">Loading…</p>}
+            >
+              <PlaygroundView onOpenProviders={() => openProviders("playground")} />
+            </Suspense>
+          ) : selectedRunId !== null ? (
             <AgentRunView key={selectedRunId} runId={selectedRunId} />
           ) : (
             <AssistantRuntimeProvider runtime={runtime}>

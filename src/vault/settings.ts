@@ -183,6 +183,19 @@ export interface TerminalSettings {
   token: string;
 }
 
+export const PLAYGROUND_PROVIDER_IDS = ["replicate"] as const;
+
+export type PlaygroundProviderId = (typeof PLAYGROUND_PROVIDER_IDS)[number];
+
+export interface PlaygroundProviderSettings {
+  apiKey: string;
+  baseURL?: string;
+}
+
+export type PlaygroundProvidersSettings = Partial<
+  Record<PlaygroundProviderId, PlaygroundProviderSettings>
+>;
+
 export interface Settings {
   version: number;
   providers: ProviderConfig[];
@@ -208,12 +221,13 @@ export interface Settings {
   skills?: { enabled?: PersistedSkillRef[] };
   agents?: AgentSettings;
   terminal?: TerminalSettings;
+  playgroundProviders?: PlaygroundProvidersSettings;
 }
 
 export const MAX_PROVIDERS = 20;
 export const MAX_MODELS_PER_PROVIDER = 500;
 
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export function defaultSettings(): Settings {
   return {
@@ -313,6 +327,50 @@ export function validateTerminalSettings(value: unknown): TerminalSettings | und
   if (typeof url !== "string" || typeof token !== "string") return undefined;
   if (!isTerminalBridgeUrl(url) || !isTerminalToken(token)) return undefined;
   return { url, token };
+}
+
+export function normalizePlaygroundBaseURL(raw: string): string | null {
+  const value = raw.trim();
+  if (value === "") return "";
+  if (value.includes("\\") || value.startsWith("//")) return null;
+  if (value.startsWith("/")) {
+    let url: URL;
+    try {
+      url = new URL(value, "https://app.invalid");
+    } catch {
+      return null;
+    }
+    if (url.origin !== "https://app.invalid") return null;
+    return value.replace(/\/+$/, "");
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  return value.replace(/\/+$/, "");
+}
+
+export function validatePlaygroundProviders(
+  value: unknown,
+): PlaygroundProvidersSettings | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const providers: PlaygroundProvidersSettings = {};
+  for (const id of PLAYGROUND_PROVIDER_IDS) {
+    if (!Object.hasOwn(value, id)) continue;
+    const entry = value[id];
+    if (!isPlainObject(entry) || typeof entry.apiKey !== "string") continue;
+    const apiKey = entry.apiKey.trim();
+    if (apiKey === "") continue;
+    const baseURL =
+      typeof entry.baseURL === "string"
+        ? normalizePlaygroundBaseURL(entry.baseURL)
+        : null;
+    providers[id] = baseURL ? { apiKey, baseURL } : { apiKey };
+  }
+  return Object.keys(providers).length > 0 ? providers : undefined;
 }
 
 type PlainObject = Record<string, unknown>;
@@ -515,6 +573,7 @@ export function migrate(version: number, data: unknown): Settings {
     lastModel: rawLastModel,
     agents: rawAgents,
     terminal: rawTerminal,
+    playgroundProviders: rawPlaygroundProviders,
     ...rest
   } = merged as typeof merged & {
     subModel?: unknown;
@@ -530,6 +589,7 @@ export function migrate(version: number, data: unknown): Settings {
   const lastModel = normalizeLastModel(rawLastModel);
   const agents = normalizeAgentSettings(rawAgents);
   const terminal = validateTerminalSettings(rawTerminal);
+  const playgroundProviders = validatePlaygroundProviders(rawPlaygroundProviders);
   return {
     ...rest,
     providers: normalizeProviders(merged.providers),
@@ -538,5 +598,6 @@ export function migrate(version: number, data: unknown): Settings {
     ...(lastModel ? { lastModel } : {}),
     ...(agents ? { agents } : {}),
     ...(terminal ? { terminal } : {}),
+    ...(playgroundProviders ? { playgroundProviders } : {}),
   };
 }

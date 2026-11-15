@@ -184,7 +184,7 @@ describe('schema upgrade', () => {
 
     const upgraded = new VaultDatabase(name)
     await upgraded.open()
-    expect(upgraded.verno).toBe(8)
+    expect(upgraded.verno).toBe(9)
     expect(await upgraded.memories.get('mem_1')).toEqual({ id: 'mem_1', blob: { iv: 1 }, updatedAt: 1 })
     expect(await upgraded.mcpServers.count()).toBe(0)
     upgraded.close()

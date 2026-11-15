@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useDocumentLibraryStore } from '../rag/library-state'
 import { useMemoryStore } from '../memory/state'
+import { usePlaygroundStore } from '../playground/state'
 import { isDatabaseBlocked, subscribeDatabaseBlocked } from '../vault/db'
 import { startRagIndex } from '../rag/lifecycle'
 import { createSession } from './session'
@@ -89,6 +90,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       stopRagIndex?.()
       useDocumentLibraryStore.getState().clear()
       useMemoryStore.getState().clear()
+      usePlaygroundStore.getState().clear()
       session.dispose()
       void useWorkspaceStore.getState().clear()
     }

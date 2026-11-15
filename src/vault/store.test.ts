@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, META_ID, VAULT_ID } from './db'
 import { hasVault, useVaultStore, vaultInternals } from './store'
-import { CorruptVaultError, VaultStorageError, WrongPasswordError } from './errors'
+import { CorruptVaultError, VaultSettingsError, VaultStorageError, WrongPasswordError } from './errors'
 import { decrypt, deriveKey, encrypt, AAD_SETTINGS } from './crypto'
 import { SETTINGS_VERSION } from './settings'
 import {
@@ -55,6 +55,32 @@ describe('vault store', () => {
     await useVaultStore.getState().lock()
     await useVaultStore.getState().unlock('terminal-password')
     expect(useVaultStore.getState().settings?.terminal).toBeUndefined()
+  })
+
+  it('stores playground provider tokens encrypted and deletes the block when the last one is cleared', async () => {
+    await useVaultStore.getState().setup('playground-password')
+    await useVaultStore.getState().setPlaygroundProvider('replicate', { apiKey: 'r8_secret_token', baseURL: '/replicate/' })
+    const raw = await db.vault.get(VAULT_ID)
+    expect(JSON.stringify(raw)).not.toContain('r8_secret_token')
+    await useVaultStore.getState().lock()
+    await useVaultStore.getState().unlock('playground-password')
+    expect(useVaultStore.getState().settings?.playgroundProviders).toEqual({
+      replicate: { apiKey: 'r8_secret_token', baseURL: '/replicate' },
+    })
+    await useVaultStore.getState().setPlaygroundProvider('replicate', null)
+    expect(useVaultStore.getState().settings).not.toHaveProperty('playgroundProviders')
+    await useVaultStore.getState().lock()
+    await useVaultStore.getState().unlock('playground-password')
+    expect(useVaultStore.getState().settings?.playgroundProviders).toBeUndefined()
+  })
+
+  it('refuses an unsafe playground base URL with an error the settings form can show', async () => {
+    await useVaultStore.getState().setup('playground-password')
+    await expect(
+      useVaultStore.getState().setPlaygroundProvider('replicate', { apiKey: 'k', baseURL: '//evil.example' }),
+    ).rejects.toBeInstanceOf(VaultSettingsError)
+    await useVaultStore.getState().setPlaygroundProvider('replicate', { apiKey: '  ' })
+    expect(useVaultStore.getState().settings?.playgroundProviders).toBeUndefined()
   })
 
   it('reports no vault before setup', async () => {

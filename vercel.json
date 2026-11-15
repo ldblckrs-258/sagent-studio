@@ -1,0 +1,100 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/replicate/v1/:path*",
+      "destination": "https://api.replicate.com/v1/:path*"
+    },
+    {
+      "source": "/replicate-files/_/:path((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\\.(?:png|jpe?g|webp|gif|avif))",
+      "destination": "https://replicate.delivery/:path"
+    },
+    {
+      "source": "/replicate-files/:sub([a-z0-9-]{1,32})/:path((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\\.(?:png|jpe?g|webp|gif|avif))",
+      "destination": "https://:sub.replicate.delivery/:path"
+    },
+    {
+      "source": "/replicate-r2/:account([0-9a-f]{32})/provider-outputs/:run([0-9a-f-]{36})/:file([0-9a-f-]{36})",
+      "destination": "https://ai-gateway-outputs.:account.r2.cloudflarestorage.com/provider-outputs/:run/:file",
+      "has": [
+        {
+          "type": "query",
+          "key": "X-Amz-Signature"
+        }
+      ]
+    }
+  ],
+  "headers": [
+    {
+      "source": "/replicate/v1/:path*",
+      "headers": [
+        {
+          "key": "x-vercel-enable-rewrite-caching",
+          "value": "0"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/replicate-files/:path*",
+      "headers": [
+        {
+          "key": "x-vercel-enable-rewrite-caching",
+          "value": "0"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "sandbox; default-src 'none'"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "same-origin"
+        }
+      ]
+    },
+    {
+      "source": "/replicate-r2/:path*",
+      "headers": [
+        {
+          "key": "x-vercel-enable-rewrite-caching",
+          "value": "0"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "sandbox; default-src 'none'"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "same-origin"
+        }
+      ]
+    }
+  ]
+}

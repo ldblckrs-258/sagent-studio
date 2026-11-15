@@ -37,6 +37,9 @@ encrypted on your machine. There is no backend: the app is a static bundle.
   and verified before they reach the prompt.
 - **Memories.** The model keeps short notes about you, global or per folder, which you manage
   in the **Memory** panel.
+- **Playground.** Switch the header to **Playground** to run image generation and editing
+  models with a form built from each model's input schema. Replicate is the first provider;
+  add its token in Config → Providers. Runs and their images are kept encrypted in the vault.
 
 The model reads a detailed guide for each area through `read_tool_guide`. The same guides
 are the best reference for people too: [`src/tools/builtin/guides/`](src/tools/builtin/guides/).
@@ -158,6 +161,12 @@ More in the [bridge README](packages/sagent-bridge/README.md) and the
   - Library ingest and search go to your embedding provider and to TypeSafe. TypeSafe is
     called through a same-origin `/typesafe` proxy, which a static deployment must also
     provide.
+  - Playground prompts, parameters, and input images go to the image provider whose token
+    you set. The deployment relays `/replicate/v1/*` to `api.replicate.com`, image paths
+    under `/replicate-files/` to `replicate.delivery`, and signed output links under
+    `/replicate-r2/` to Replicate's Cloudflare R2 output bucket, without storing anything; the
+    token is sent from the browser with each request. Larger input images are uploaded to Replicate's
+    file storage and stay there until Replicate expires them.
   - Nothing else is sent anywhere.
 - **Isolation.** Model-written HTML cannot read app storage or the parent page. While a
   bridge is paired, workspace HTML previews lose same-origin access and sandbox workers
@@ -177,6 +186,12 @@ More in the [bridge README](packages/sagent-bridge/README.md) and the
   open the new link.
 - **Terminal says *different folder*.** Restart the bridge with `--root` set to the
   conversation's workspace folder.
+- **Playground cannot reach Replicate.** The app calls Replicate through same-origin
+  `/replicate/v1/*`, `/replicate-files/*`, and `/replicate-r2/*` paths. Dev and preview proxy them, and
+  `vercel.json` rewrites them on Vercel. Other hosts must provide the same rewrites and
+  headers, or set a base URL for the provider in Config → Providers. Anyone can relay their
+  own token through these paths, so a public Vercel deployment may add a WAF rate-limit rule
+  for them.
 
 ## Development
 
@@ -197,6 +212,7 @@ src/
   mcp/         MCP client, transports, OAuth
   rag/         document library, ingest, vector index
   memory/      personal memories
+  playground/  image providers, schema forms, encrypted run history
   skills/      skill discovery and loading
   session/     per-conversation state wiring
   settings/    provider, model tier, and storage settings
@@ -208,6 +224,9 @@ plans/         design documents and implementation history
 
 - The Content-Security-Policy is injected at build time in `vite.config.ts`. It is omitted in
   dev so hot reload works.
+- A Playground provider is one adapter module under `src/playground/providers/`, one entry in
+  `src/playground/registry.ts`, and its same-origin rewrite in `vite-proxy.ts` and
+  `vercel.json`.
 - Tests run on Vitest with jsdom and `fake-indexeddb` (setup in `src/test-setup.ts`). The
   terminal tests build and start a real bridge.
 

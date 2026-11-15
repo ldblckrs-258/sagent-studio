@@ -82,6 +82,18 @@ export interface ChunkRecord {
   updatedAt: number
 }
 
+export interface PlaygroundRunRecord {
+  id: string
+  blob: EncryptedBlob
+  createdAt: number
+}
+
+export interface PlaygroundImageRecord {
+  id: string
+  runId: string
+  blob: EncryptedBlob
+}
+
 type DatabaseBlockedListener = () => void
 
 let blocked = false
@@ -122,6 +134,8 @@ export class VaultDatabase extends Dexie {
   chunks!: Table<ChunkRecord, string>
   memories!: Table<MemoryRecord, string>
   mcpServers!: Table<McpServerRecord, string>
+  playgroundRuns!: Table<PlaygroundRunRecord, string>
+  playgroundImages!: Table<PlaygroundImageRecord, string>
 
   constructor(name = 'sagent-vault') {
     super(name)
@@ -193,6 +207,21 @@ export class VaultDatabase extends Dexie {
       chunks: 'id, docId, [docId+ordinal]',
       memories: 'id, updatedAt',
       mcpServers: 'id, updatedAt',
+    })
+    this.version(9).stores({
+      vault: 'id',
+      meta: 'id',
+      threads: 'id, updatedAt',
+      skills: 'id, updatedAt',
+      tools: 'id, updatedAt',
+      fs: 'id',
+      journals: 'id, updatedAt',
+      documents: 'id, updatedAt',
+      chunks: 'id, docId, [docId+ordinal]',
+      memories: 'id, updatedAt',
+      mcpServers: 'id, updatedAt',
+      playgroundRuns: 'id, createdAt',
+      playgroundImages: 'id, runId',
     })
 
     // Another tab opening a higher schema version fires `versionchange` here.

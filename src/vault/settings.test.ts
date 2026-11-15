@@ -11,6 +11,8 @@ import {
   migrate,
   SETTINGS_VERSION,
   validateContextSettings,
+  normalizePlaygroundBaseURL,
+  validatePlaygroundProviders,
   validateTerminalSettings,
 } from './settings'
 import { VaultMigrationError } from './errors'
@@ -371,5 +373,39 @@ describe('terminal pairing', () => {
     expect(validateTerminalSettings({ url: 'ws://127.0.0.1:7717', token: 'a,b' })).toBeUndefined()
     expect(validateTerminalSettings({ url: 'ws://localhost:7717', token })).toEqual({ url: 'ws://localhost:7717', token })
     expect(validateTerminalSettings({ url: 'ws://[::1]:7717', token })).toEqual({ url: 'ws://[::1]:7717', token })
+  })
+})
+
+describe('playground provider tokens', () => {
+  it('keeps a valid entry through migrate and is absent by default', () => {
+    const playgroundProviders = { replicate: { apiKey: 'r8_token', baseURL: '/replicate' } }
+    expect(migrate(SETTINGS_VERSION, { playgroundProviders }).playgroundProviders).toEqual(playgroundProviders)
+    expect(defaultSettings().playgroundProviders).toBeUndefined()
+    expect(migrate(SETTINGS_VERSION, {}).playgroundProviders).toBeUndefined()
+  })
+
+  it('drops blank tokens and unknown providers, and removes the block when nothing is left', () => {
+    expect(validatePlaygroundProviders({ replicate: { apiKey: '   ' } })).toBeUndefined()
+    expect(validatePlaygroundProviders({ other: { apiKey: 'x' } })).toBeUndefined()
+    expect(validatePlaygroundProviders({ replicate: { apiKey: ' r8_x ', other: 1 } })).toEqual({
+      replicate: { apiKey: 'r8_x' },
+    })
+    expect(migrate(SETTINGS_VERSION, { playgroundProviders: { replicate: { apiKey: '' } } }).playgroundProviders).toBeUndefined()
+  })
+
+  it('rejects base URLs that would send the token to another origin over an ambiguous or plain-text path', () => {
+    expect(normalizePlaygroundBaseURL('//evil.example')).toBeNull()
+    expect(normalizePlaygroundBaseURL('/\\evil.example')).toBeNull()
+    expect(normalizePlaygroundBaseURL('http://evil.example')).toBeNull()
+    expect(normalizePlaygroundBaseURL('javascript:alert(1)')).toBeNull()
+    expect(validatePlaygroundProviders({ replicate: { apiKey: 'k', baseURL: '//evil.example' } })).toEqual({
+      replicate: { apiKey: 'k' },
+    })
+  })
+
+  it('accepts a same-origin path or an https proxy and strips the trailing slash', () => {
+    expect(normalizePlaygroundBaseURL('/replicate/')).toBe('/replicate')
+    expect(normalizePlaygroundBaseURL('https://proxy.example/')).toBe('https://proxy.example')
+    expect(normalizePlaygroundBaseURL('  ')).toBe('')
   })
 })

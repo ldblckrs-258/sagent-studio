@@ -4,6 +4,7 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { defineConfig } from "vite";
+import { replicateProxy } from "./vite-proxy.ts";
 
 /**
  * Injects the strict Content-Security-Policy meta tag into the production build only.
@@ -42,7 +43,7 @@ function cspPlugin(): Plugin {
     "frame-src 'self' blob:",
     "worker-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
     "font-src 'self'",
     "connect-src 'self' https: http://localhost:* http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*",
     "base-uri 'none'",
@@ -81,12 +82,13 @@ function isIgnoredBridgePath(path: string): boolean {
   return path !== BRIDGE_PROTOCOL && !BRIDGE_PROTOCOL.startsWith(`${path}/`);
 }
 
-const typesafeProxy = {
+const devProxy = {
   "/typesafe": {
     target: TYPESAFE_PROXY_TARGET,
     changeOrigin: true,
     rewrite: (path: string) => path.replace(/^\/typesafe/, ""),
   },
+  ...replicateProxy,
 };
 
 // https://vite.dev/config/
@@ -101,10 +103,10 @@ export default defineConfig({
     watch: {
       ignored: ["**/plans/**", isIgnoredBridgePath],
     },
-    proxy: typesafeProxy,
+    proxy: devProxy,
   },
   preview: {
-    proxy: typesafeProxy,
+    proxy: devProxy,
   },
   worker: {
     format: "es",

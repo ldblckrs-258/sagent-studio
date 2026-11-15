@@ -27,6 +27,12 @@ export function DataEgressNotice() {
             the MCP servers you add, through their proxy when one is set, along with that server's
             headers or sign-in token. Provider keys, settings and the document index never leave.
           </p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            With a Playground provider token set, prompts, parameters, and input images go to that
+            provider through its same-origin path. Larger input images are uploaded to the
+            provider's file storage and stay there until the provider expires them. Outputs are
+            downloaded from the provider's file host.
+          </p>
           <button
             type="button"
             onClick={() => void update({ egressNoticeDismissed: true }).catch(() => undefined)}

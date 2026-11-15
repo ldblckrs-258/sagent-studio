@@ -63,3 +63,10 @@ export class VaultMigrationError extends VaultError {
     this.name = 'VaultMigrationError'
   }
 }
+
+export class VaultSettingsError extends VaultError {
+  constructor(message = 'The settings value is not valid.', options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'VaultSettingsError'
+  }
+}
